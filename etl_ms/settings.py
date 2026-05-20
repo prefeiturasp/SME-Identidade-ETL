@@ -123,7 +123,10 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "ETL-MS API — SME Identidade",
-    "DESCRIPTION": "Microsserviço ETL: extração (SE1426, EOL_DB, CORESSO), transformação, carga no Keycloak e PostgreSQL.",
+    "DESCRIPTION": (
+        "Microsserviço ETL: extração (SE1426, EOL_DB, CORESSO),"
+        " transformação, carga no Keycloak e PostgreSQL."
+    ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SWAGGER_UI_DIST": "SIDECAR",
@@ -132,10 +135,12 @@ SPECTACULAR_SETTINGS = {
 }
 
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "").split(",") if not DEBUG else []
+_cors_raw = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+CORS_ALLOW_ALL_ORIGINS = DEBUG or "*" in _cors_raw
+CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else _cors_raw
 
 
+# Broker: KeyDB (drop-in Redis replacement) — em produção injeta CELERY_BROKER_URL=redis://keydb:6379/2
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/2")
 CELERY_RESULT_BACKEND = "django-db"
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -147,6 +152,7 @@ CELERY_ENABLE_UTC = True
 CELERY_TASK_ROUTES = {
     "extract.tasks.extract_se1426": {"queue": "etl_extract"},
     "extract.tasks.extract_eol_db": {"queue": "etl_extract"},
+    "extract.tasks.extract_eol_alunos": {"queue": "etl_extract"},
     "extract.tasks.extract_coresso": {"queue": "etl_extract"},
     "staging.tasks.transform_staging": {"queue": "etl_transform"},
     "staging.tasks.crossref_dedup": {"queue": "etl_transform"},
@@ -176,7 +182,11 @@ KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "api-middleware")
 KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET", "")
 KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
+KEYCLOAK_CLIENT_SUFFIX = os.environ.get("KEYCLOAK_CLIENT_SUFFIX", "prod")
 KEYCLOAK_VERIFY_SSL = os.environ.get("KEYCLOAK_VERIFY_SSL", "true").lower() == "true"
+ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
+    os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
+)
 
 
 TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "http://token-ms:8000")

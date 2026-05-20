@@ -1,9 +1,13 @@
-from django.db.models import Count, Q
-from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import action, api_view
+"""ViewSets de API para navegar e gerenciar os registros de dados de staging."""
+from django.db.models import Count
+from rest_framework import mixins, viewsets
+from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import DedupResult, StagingLotacao, StagingPerfil, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+from .models import (
+    DedupResult, StagingLotacao, StagingPerfil,
+    StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro,
+)
 from .serializers import (
     DedupResultSerializer,
     StagingLotacaoSerializer,
@@ -19,6 +23,8 @@ class StagingUsuarioServidorViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet somente-leitura para registros de staging de servidor."""
+
     queryset = StagingUsuarioServidor.objects.all()
     serializer_class = StagingUsuarioServidorSerializer
     filterset_fields = ["source", "status", "execution_id", "dre"]
@@ -31,6 +37,8 @@ class StagingUsuarioAlunoViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet somente-leitura para registros de staging de aluno."""
+
     queryset = StagingUsuarioAluno.objects.all()
     serializer_class = StagingUsuarioAlunoSerializer
     filterset_fields = ["source", "status", "execution_id", "dre"]
@@ -43,6 +51,8 @@ class StagingUsuarioTerceiroViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet somente-leitura para registros de staging de usuario terceiro."""
+
     queryset = StagingUsuarioTerceiro.objects.all()
     serializer_class = StagingUsuarioTerceiroSerializer
     filterset_fields = ["source", "status", "execution_id", "tipo_acesso"]
@@ -57,6 +67,8 @@ class StagingPerfilViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet para gerenciar registros de mapeamento de perfil/role em staging."""
+
     queryset = StagingPerfil.objects.all()
     serializer_class = StagingPerfilSerializer
     filterset_fields = ["keycloak_role", "is_active"]
@@ -70,6 +82,8 @@ class StagingLotacaoViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet para gerenciar registros de lotacao (unidade escolar / DRE) em staging."""
+
     queryset = StagingLotacao.objects.all()
     serializer_class = StagingLotacaoSerializer
     filterset_fields = ["tipo", "dre_codigo", "is_active"]
@@ -82,6 +96,8 @@ class DedupResultViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet para navegar e resolver os resultados de deduplicacao."""
+
     queryset = DedupResult.objects.all()
     serializer_class = DedupResultSerializer
     filterset_fields = ["execution_id", "match_type", "decision", "reviewed", "cpf", "rf"]
@@ -90,6 +106,7 @@ class DedupResultViewSet(
 
     @action(detail=False, methods=["get"])
     def stats(self, request):
+        """Retorna estatisticas agregadas de dedup, opcionalmente filtradas por execution_id."""
         execution_id = request.query_params.get("execution_id")
         qs = self.get_queryset()
         if execution_id:
@@ -112,6 +129,7 @@ class DedupResultViewSet(
 
     @action(detail=False, methods=["get"])
     def conflicts(self, request):
+        """Return unresolved conflict dedup results, optionally filtered by execution_id."""
         qs = self.get_queryset().filter(decision="conflict", reviewed=False)
         execution_id = request.query_params.get("execution_id")
         if execution_id:

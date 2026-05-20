@@ -1,3 +1,4 @@
+"""Core ETL models: execution tracking, step logging, and upsert control."""
 import uuid
 
 from django.db import models
@@ -5,8 +6,11 @@ from django.utils import timezone
 
 
 class ETLExecution(models.Model):
+    """Representa uma unica execucao do pipeline ETL, da extracao a carga."""
 
     class Status(models.TextChoices):
+        """Valores de status do ciclo de vida de uma execucao ETL."""
+
         PENDING = "pending", "Pendente"
         RUNNING = "running", "Em execução"
         SUCCESS = "success", "Sucesso"
@@ -15,6 +19,8 @@ class ETLExecution(models.Model):
         CANCELLED = "cancelled", "Cancelado"
 
     class TriggerType(models.TextChoices):
+        """Como a execucao ETL foi iniciada."""
+
         SCHEDULED = "scheduled", "Agendado (Beat)"
         MANUAL = "manual", "Manual (API)"
         NIFI = "nifi", "Trigger NiFi"
@@ -65,6 +71,8 @@ class ETLExecution(models.Model):
     )
 
     class Meta:
+        """Configuracao de banco e ordenacao do ETLExecution."""
+
         db_table = "etl_execution"
         ordering = ["-created_at"]
         verbose_name = "Execução ETL"
@@ -75,21 +83,25 @@ class ETLExecution(models.Model):
             models.Index(fields=["source"], name="idx_exec_source"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta e legivel desta execucao."""
         return f"ETL-{self.id.hex[:8]} [{self.status}] {self.source}"
 
     @property
-    def duration_seconds(self):
+    def duration_seconds(self) -> float | None:
+        """Retorna o tempo total decorrido da execucao em segundos, ou None se nao finalizada."""
         if self.started_at and self.finished_at:
             return (self.finished_at - self.started_at).total_seconds()
         return None
 
-    def mark_running(self):
+    def mark_running(self) -> None:
+        """Faz a transicao do status da execucao para RUNNING e registra o timestamp de inicio."""
         self.status = self.Status.RUNNING
         self.started_at = timezone.now()
         self.save(update_fields=["status", "started_at", "updated_at"])
 
-    def mark_finished(self, status: str = "success"):
+    def mark_finished(self, status: str = "success") -> None:
+        """Faz a transicao da execucao para um status terminal e registra o timestamp de finalizacao."""
         self.status = status
         self.finished_at = timezone.now()
         self.save(
@@ -107,8 +119,11 @@ class ETLExecution(models.Model):
 
 
 class ETLStepLog(models.Model):
+    """Registra metricas e status de uma unica etapa dentro de uma execucao ETL."""
 
     class StepName(models.TextChoices):
+        """Enumeracao das etapas nomeadas do pipeline."""
+
         EXTRACT_SE1426 = "extract_se1426", "1. Extract SE1426"
         EXTRACT_EOL_DB = "extract_eol_db", "1b. Extract EOL_DB"
         EXTRACT_CORESSO = "extract_coresso", "2. Extract CORESSO"
@@ -120,6 +135,8 @@ class ETLStepLog(models.Model):
         AUDIT = "audit", "8. Audit"
 
     class StepStatus(models.TextChoices):
+        """Valores de status de conclusao para uma etapa individual do pipeline."""
+
         RUNNING = "running", "Em execução"
         SUCCESS = "success", "Sucesso"
         FAILED = "failed", "Falhou"
@@ -151,19 +168,25 @@ class ETLStepLog(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
+        """Configuracao de banco e ordenacao do ETLStepLog."""
+
         db_table = "etl_step_log"
         ordering = ["execution", "step_order"]
         verbose_name = "Log de Etapa ETL"
         verbose_name_plural = "Logs de Etapas ETL"
         unique_together = [("execution", "step_name")]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta e legivel deste log de etapa."""
         return f"{self.execution_id.hex[:8]} → {self.step_name} [{self.status}]"
 
 
 class UpsertControl(models.Model):
+    """Rastreia o estado de sincronizacao de cada entidade dos sistemas-fonte para o Keycloak."""
 
     class EntityType(models.TextChoices):
+        """Tipo de entidade do Keycloak sendo rastreada."""
+
         USER = "user", "Usuário"
         GROUP = "group", "Grupo"
         ROLE = "role", "Role"
@@ -210,6 +233,8 @@ class UpsertControl(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Configuracao de banco e ordenacao do UpsertControl."""
+
         db_table = "etl_upsert_control"
         verbose_name = "Controle de Upsert"
         verbose_name_plural = "Controles de Upsert"
@@ -221,5 +246,6 @@ class UpsertControl(models.Model):
             models.Index(fields=["content_hash"], name="idx_upsert_hash"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de controle de upsert."""
         return f"{self.entity_type}:{self.source_system}:{self.source_id} v{self.version}"

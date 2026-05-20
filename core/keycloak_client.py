@@ -1,3 +1,4 @@
+"""Auxiliares do cliente admin do Keycloak para provisionamento de usuarios, clients e roles."""
 from __future__ import annotations
 
 import hashlib
@@ -53,6 +54,7 @@ def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kw
 
 
 def get_admin_client(realm: str | None = None):
+    """Instancia e retorna um cliente KeycloakAdmin autenticado."""
     from keycloak import KeycloakAdmin
 
     return KeycloakAdmin(
@@ -135,26 +137,51 @@ def _generate_initial_password(usuario) -> str:
     return _resolve_username(usuario)
 
 
+def _build_email(usuario) -> str:
+    """Retorna o e-mail do usuario, gerando um placeholder para alunos sem e-mail."""
+    email = (usuario.email or "").strip()
+    if email:
+        return email
+    from staging.models import StagingUsuarioAluno
+    if isinstance(usuario, StagingUsuarioAluno):
+        matricula = (getattr(usuario, "matricula", None) or "").strip()
+        if matricula:
+            return f"{matricula}@aluno.sme.prefeitura.sp.gov.br"
+    return email
+
+
 def build_kc_payload(usuario) -> dict[str, Any]:
+    """Monta o dict de representacao do usuario para o Keycloak a partir de um registro de staging."""
     nome = (usuario.nome or "").strip()
     parts = nome.split()
     first_name = parts[0] if parts else ""
     last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
 
+    attributes: dict[str, list[str]] = {
+        "cpf": [(usuario.cpf or "").strip()],
+        "rf": [(getattr(usuario, "rf", None) or "").strip()],
+        "matricula": [(getattr(usuario, "matricula", None) or "").strip()],
+        "source": [usuario.source],
+        "tipo_usuario": [_infer_tipo_usuario(usuario)],
+    }
+
+    # Campos específicos de alunos EOL
+    cod_escola = (getattr(usuario, "cod_escola", None) or "").strip()
+    cod_dre = (getattr(usuario, "dre", None) or "").strip()
+    if cod_escola:
+        attributes["cod_escola"] = [cod_escola]
+    if cod_dre:
+        attributes["cod_dre"] = [cod_dre]
+
     return {
         "username": _resolve_username(usuario),
-        "email": (usuario.email or "").strip(),
+        "email": _build_email(usuario),
         "firstName": first_name,
         "lastName": last_name,
         "enabled": (usuario.situacao or "").lower() != "inativo",
         "emailVerified": False,
-        "attributes": {
-            "cpf": [(usuario.cpf or "").strip()],
-            "rf": [(getattr(usuario, "rf", None) or "").strip()],
-            "matricula": [(getattr(usuario, "matricula", None) or "").strip()],
-            "source": [usuario.source],
-            "tipo_usuario": [_infer_tipo_usuario(usuario)],
-        },
+        "requiredActions": [],
+        "attributes": attributes,
         "realmRoles": _derive_realm_roles(usuario),
         "groups": _derive_group_paths(usuario),
     }
@@ -177,6 +204,7 @@ def _infer_tipo_usuario(usuario) -> str:
 
 
 def build_token_ms_payload(usuario) -> dict[str, Any]:
+    """Monta o dict de payload do usuario para o token-ms a partir de um registro de staging."""
     return {
         "rf": getattr(usuario, "rf", None),
         "cpf": usuario.cpf,
@@ -200,6 +228,7 @@ def build_token_ms_payload(usuario) -> dict[str, Any]:
 
 
 def compute_content_hash(payload: dict) -> str:
+    """Calcula o hash SHA-256 de um dict para detectar mudancas entre sincronizacoes."""
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str).encode()
     ).hexdigest()
@@ -222,8 +251,6 @@ def _assign_roles_and_groups(admin, kc_user_id: str, realm_roles: list[str], gro
             logger.info("KC group '%s' indisponível (ignorado): %s", group_path, e)
 
 
-
-
 def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     new_username = payload.get("username", "")
     email = (payload.get("email") or "").strip()
@@ -236,7 +263,7 @@ def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
             pass
 
     if not candidates:
-        rf = (usuario.rf or "").strip()
+        rf = (getattr(usuario, "rf", None) or "").strip()
         if rf:
             try:
                 candidates = admin.get_users({"username": rf, "exact": True})
@@ -271,6 +298,7 @@ def upsert_user_to_keycloak(
     realm: str = "sme-apps",
     execution=None,
 ) -> dict[str, Any]:
+    """Cria ou atualiza um usuario no Keycloak a partir de um registro de staging e registra em UpsertControl."""
     from .models import UpsertControl
 
     payload = build_kc_payload(usuario)
@@ -278,7 +306,7 @@ def upsert_user_to_keycloak(
 
     _source_id = (
         "".join(c for c in (usuario.cpf or "") if c.isdigit())
-        or (usuario.rf or "").strip()
+        or (getattr(usuario, "rf", None) or "").strip()
         or str(usuario.id)
     )
     upsert, created = UpsertControl.objects.get_or_create(
@@ -348,6 +376,7 @@ def upsert_user_to_keycloak(
 
 
 def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]:
+    """Cria ou atualiza um client OIDC no Keycloak a partir de um registro StagingSistema."""
     import json as _json
     import requests as _requests
     from keycloak.exceptions import KeycloakPostError
@@ -462,6 +491,7 @@ def _slugify_for_client(nome: str) -> str:
 
 
 def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
+    """Cria ou verifica uma client role do Keycloak para um registro StagingPerfilCoreSSO."""
     from staging.models import StagingPerfilCoreSSO
 
     sistema = perfil.sistema
@@ -513,6 +543,7 @@ def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
 
 
 def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, Any]:
+    """Atribui ao usuario todas as client roles aplicaveis do Keycloak com base em seus grupos do CoreSSO."""
     from extract.tasks import fetch_coresso_groups_for_login
     from staging.models import StagingPerfilCoreSSO
 
@@ -563,8 +594,8 @@ def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, An
     }
 
 
-
 def emit_retroalim(tipo: str, usuario, payload: dict | None = None) -> None:
+    """Emite um registro de evento de retroalimentacao para o CoreSSO apos uma operacao no Keycloak."""
     from staging.models import RetroalimentacaoCoreSSO
 
     try:

@@ -165,7 +165,7 @@ class TestCleanupOldStaging:
         from core.models import ETLExecution
         from staging.models import StagingUsuarioServidor
 
-        # Create 3 executions with staging records
+        # Cria 3 execucoes com registros de staging
         executions = []
         for i in range(3):
             ex = ETLExecution.objects.create(source="se1426", status="success")
@@ -178,16 +178,16 @@ class TestCleanupOldStaging:
             )
             executions.append(ex)
 
-        # keep_last=1 should delete staging for oldest executions
+        # keep_last=1 deve apagar staging das execucoes mais antigas
         cleanup_old_staging(keep_last=1)
 
-        # At least one staging record should be removed
+        # Pelo menos um registro de staging deve ser removido
         total = StagingUsuarioServidor.objects.count()
         assert total <= 3
 
     def test_no_executions_does_not_fail(self):
         from core.tasks import cleanup_old_staging
-        # Should complete silently with no executions
+        # Deve terminar silenciosamente quando nao ha execucoes
         cleanup_old_staging()
 
 
@@ -206,7 +206,7 @@ class TestRunEtlPipelineSourceFiltering:
         execution = _make_execution(source="all")
         run_etl_pipeline(str(execution.id))
 
-        # chord should have been called with 4 tasks (se1426, eol_db, eol_alunos, coresso)
+        # chord deve ter sido chamado com 4 tasks (se1426, eol_db, eol_alunos, coresso)
         assert mock_chord.called
         chord_args = mock_chord.call_args[0][0]
         assert len(chord_args) == 4

@@ -1,3 +1,4 @@
+"""Views de health check para validar conectividade com as fontes externas do ETL."""
 import logging
 import time
 
@@ -222,10 +223,19 @@ def _check_sme_integracao_auth_only() -> dict:
 @extend_schema(
     tags=["ETL Health"],
     summary="Health check de fontes externas",
-    description="Valida conectividade e disponibilidade das fontes externas do ETL (CoreSSO e SME Integração API).",
+    description=(
+        "Valida conectividade e disponibilidade das fontes externas do ETL"
+        " (CoreSSO e SME Integração API)."
+    ),
     responses={
-        200: OpenApiResponse(response=ETLExternalHealthResponseSerializer, description="Todas as fontes saudáveis"),
-        503: OpenApiResponse(response=ETLExternalHealthResponseSerializer, description="Uma ou mais fontes indisponíveis"),
+        200: OpenApiResponse(
+            response=ETLExternalHealthResponseSerializer,
+            description="Todas as fontes saudáveis",
+        ),
+        503: OpenApiResponse(
+            response=ETLExternalHealthResponseSerializer,
+            description="Uma ou mais fontes indisponíveis",
+        ),
     },
     examples=[
         OpenApiExample(
@@ -263,6 +273,7 @@ def _check_sme_integracao_auth_only() -> dict:
 )
 @api_view(["GET"])
 def health_sources(request):
+    """Retorna o status combinado de health de todas as fontes externas do ETL (CoreSSO e SME Integracao)."""
     coresso = _check_coresso_db()
     sme = _check_sme_integracao()
 
@@ -319,7 +330,10 @@ def health_sme_integracao(request):
 @extend_schema(
     tags=["ETL Health"],
     summary="Health check autenticação SME Integração",
-    description="Valida somente o endpoint de autenticação da SME Integração API sem expor token no payload de resposta.",
+    description=(
+        "Valida somente o endpoint de autenticação da SME Integração API"
+        " sem expor token no payload de resposta."
+    ),
     responses={
         200: OpenApiResponse(response=SMEIntegracaoHealthSerializer, description="Autenticação disponível"),
         503: OpenApiResponse(response=SMEIntegracaoHealthSerializer, description="Falha na autenticação"),

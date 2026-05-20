@@ -1,6 +1,7 @@
+"""ViewSets de API e views baseadas em funcao para gerenciamento das execucoes do ETL."""
 import logging
 
-from django.db.models import Avg, Count, Sum
+from django.db.models import Count, Sum
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
@@ -12,7 +13,7 @@ from .keycloak_client import (
     get_admin_client,
     upsert_user_to_keycloak,
 )
-from .models import ETLExecution, ETLStepLog, UpsertControl
+from .models import ETLExecution, UpsertControl
 from .serializers import (
     ETLExecutionCreateSerializer,
     ETLExecutionListSerializer,
@@ -29,11 +30,13 @@ class ETLExecutionViewSet(
     mixins.CreateModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet para listagem, recuperacao e disparo de execucoes do pipeline ETL."""
 
     queryset = ETLExecution.objects.all()
     lookup_field = "id"
 
     def get_serializer_class(self):
+        """Retorna o serializer apropriado conforme a action atual."""
         if self.action == "list":
             return ETLExecutionListSerializer
         if self.action == "create":
@@ -41,6 +44,7 @@ class ETLExecutionViewSet(
         return ETLExecutionSerializer
 
     def create(self, request, *args, **kwargs):
+        """Dispara uma nova execucao do pipeline ETL a partir de uma requisicao da API."""
         serializer = ETLExecutionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -66,6 +70,7 @@ class ETLExecutionViewSet(
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, id=None):
+        """Cancela uma execucao em PENDING ou RUNNING, revogando sua task Celery."""
         execution = self.get_object()
         if execution.status not in (
             ETLExecution.Status.PENDING,
@@ -94,6 +99,7 @@ class UpsertControlViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
+    """ViewSet somente-leitura para navegar pelos registros de controle de upsert do Keycloak."""
 
     queryset = UpsertControl.objects.all()
     serializer_class = UpsertControlSerializer
@@ -108,6 +114,7 @@ class UpsertControlViewSet(
 
 @api_view(["GET"])
 def etl_stats(request):
+    """Retorna estatisticas agregadas de execucoes do ETL dos ultimos 30 dias."""
     last_30_days = timezone.now() - timezone.timedelta(days=30)
 
     executions = ETLExecution.objects.filter(created_at__gte=last_30_days)
@@ -148,6 +155,7 @@ def etl_stats(request):
 
 @api_view(["POST"])
 def test_kc_upsert(request, cpf: str | None = None):
+    """Endpoint apenas-teste: faz upsert de um unico usuario no Keycloak por CPF."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
     body = request.data or {}
@@ -299,6 +307,7 @@ def sistemas_extract(request):
 
 @api_view(["POST"])
 def sistemas_load_keycloak(request):
+    """Load staging sistemas into Keycloak as OIDC clients."""
     from core.keycloak_client import get_admin_client, upsert_kc_client
     from staging.models import StagingSistema
 
@@ -334,6 +343,7 @@ def sistemas_load_keycloak(request):
 
 @api_view(["GET"])
 def sistemas_list(request):
+    """Retorna a lista de todos os staging sistemas com o respectivo mapeamento de client Keycloak."""
     from staging.models import StagingSistema
 
     return Response([
@@ -351,9 +361,9 @@ def sistemas_list(request):
     ])
 
 
-
 @api_view(["POST"])
 def perfis_extract(request):
+    """Dispara extracao sincrona dos perfis do CoreSSO para staging."""
     from extract.tasks import extract_coresso_perfis
 
     try:
@@ -366,6 +376,7 @@ def perfis_extract(request):
 
 @api_view(["POST"])
 def perfis_load_keycloak(request):
+    """Carrega os perfis CoreSSO de staging como client roles no Keycloak."""
     from core.keycloak_client import get_admin_client, upsert_kc_client_role
     from staging.models import StagingPerfilCoreSSO
 
@@ -412,6 +423,7 @@ def perfis_load_keycloak(request):
 
 @api_view(["GET"])
 def perfis_list(request):
+    """Retorna a lista de todos os perfis CoreSSO de staging com o mapeamento de roles do Keycloak."""
     from staging.models import StagingPerfilCoreSSO
 
     sis_id = request.query_params.get("coresso_sis_id")
@@ -434,6 +446,7 @@ def perfis_list(request):
 
 @api_view(["GET"])
 def retroalim_list(request):
+    """Retorna uma lista paginada de registros de retroalimentacao do CoreSSO."""
     from staging.models import RetroalimentacaoCoreSSO
 
     qs = RetroalimentacaoCoreSSO.objects.all()

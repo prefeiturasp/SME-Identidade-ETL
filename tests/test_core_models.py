@@ -77,7 +77,7 @@ class TestETLExecutionModel:
         e1 = self._make_execution()
         e2 = self._make_execution()
         executions = list(ETLExecution.objects.all())
-        assert executions[0].id == e2.id  # last created first
+        assert executions[0].id == e2.id  # criada por ultimo aparece primeiro
 
     def test_trigger_types(self):
         from core.models import ETLExecution

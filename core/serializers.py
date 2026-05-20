@@ -1,10 +1,15 @@
+"""Serializers DRF para rastreamento das execucoes do ETL e respostas de health check."""
 from rest_framework import serializers
 
 from .models import ETLExecution, ETLStepLog, UpsertControl
 
 
 class ETLStepLogSerializer(serializers.ModelSerializer):
+    """Serializer somente-leitura para entradas de log de etapa do ETL."""
+
     class Meta:
+        """Metadados do serializer ETLStepLogSerializer."""
+
         model = ETLStepLog
         fields = [
             "id",
@@ -23,10 +28,14 @@ class ETLStepLogSerializer(serializers.ModelSerializer):
 
 
 class ETLExecutionSerializer(serializers.ModelSerializer):
+    """Serializer completo para uma execucao de ETL, incluindo logs de etapas aninhados."""
+
     steps = ETLStepLogSerializer(many=True, read_only=True)
     duration_seconds = serializers.FloatField(read_only=True)
 
     class Meta:
+        """Metadados do serializer ETLExecutionSerializer."""
+
         model = ETLExecution
         fields = [
             "id",
@@ -68,6 +77,7 @@ class ETLExecutionSerializer(serializers.ModelSerializer):
 
 
 class ETLExecutionCreateSerializer(serializers.Serializer):
+    """Serializer de entrada para criar uma nova execucao de ETL via API."""
 
     source = serializers.ChoiceField(
         choices=["all", "se1426", "eol_db", "coresso"],
@@ -78,8 +88,11 @@ class ETLExecutionCreateSerializer(serializers.Serializer):
 
 
 class ETLExecutionListSerializer(serializers.ModelSerializer):
+    """Serializer enxuto para listagem de execucoes de ETL."""
 
     class Meta:
+        """Metadados do serializer ETLExecutionListSerializer."""
+
         model = ETLExecution
         fields = [
             "id",
@@ -98,7 +111,11 @@ class ETLExecutionListSerializer(serializers.ModelSerializer):
 
 
 class UpsertControlSerializer(serializers.ModelSerializer):
+    """Serializer somente-leitura para registros de controle de upsert."""
+
     class Meta:
+        """Metadados do serializer UpsertControlSerializer."""
+
         model = UpsertControl
         fields = [
             "id",
@@ -118,6 +135,8 @@ class UpsertControlSerializer(serializers.ModelSerializer):
 
 
 class CoreSSOHealthSerializer(serializers.Serializer):
+    """Schema da resposta de health check do CoreSSO / banco SQL Server."""
+
     source = serializers.CharField()
     server = serializers.CharField(allow_blank=True)
     server_host = serializers.CharField(allow_blank=True, required=False)
@@ -132,6 +151,8 @@ class CoreSSOHealthSerializer(serializers.Serializer):
 
 
 class SMEIntegracaoHealthSerializer(serializers.Serializer):
+    """Schema da resposta de health check da API SME Integracao."""
+
     source = serializers.CharField()
     base_url = serializers.CharField(allow_blank=True)
     status = serializers.CharField()
@@ -147,10 +168,14 @@ class SMEIntegracaoHealthSerializer(serializers.Serializer):
 
 
 class ETLExternalSourcesSerializer(serializers.Serializer):
+    """Dados de health agregados de todas as fontes externas."""
+
     coresso_db = CoreSSOHealthSerializer()
     sme_integracao_api = SMEIntegracaoHealthSerializer()
 
 
 class ETLExternalHealthResponseSerializer(serializers.Serializer):
+    """Schema da resposta principal do endpoint de health das fontes externas."""
+
     status = serializers.CharField()
     sources = ETLExternalSourcesSerializer()

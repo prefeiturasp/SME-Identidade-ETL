@@ -1,16 +1,22 @@
+"""Modelos da area de staging para dados intermediarios do ETL entre extracao e carga no Keycloak."""
 import uuid
 
 from django.db import models
 
 
 class StagingUsuarioBase(models.Model):
+    """Abstract base model shared by all staging user types."""
 
     class Source(models.TextChoices):
+        """Sistema-fonte que produziu o registro bruto."""
+
         SE1426 = "se1426", "SE1426 (PRODAM)"
         EOL_DB = "eol_db", "EOL_DB"
         CORESSO = "coresso", "CORESSO"
 
     class Status(models.TextChoices):
+        """Status de processamento de um registro de staging ao longo do pipeline ETL."""
+
         RAW = "raw", "Bruto (recém extraído)"
         TRANSFORMED = "transformed", "Transformado"
         READY = "ready", "Pronto para carga"
@@ -33,10 +39,13 @@ class StagingUsuarioBase(models.Model):
     transformed_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
+        """Declara este modelo como abstrato."""
+
         abstract = True
 
 
 class StagingUsuarioServidor(StagingUsuarioBase):
+    """Registro de staging de um servidor (funcionario escolar) vindo de SE1426/CoreSSO."""
 
     rf = models.CharField(max_length=255, blank=True, null=True, help_text="Registro Funcional")
     cargo = models.CharField(max_length=255, blank=True, null=True)
@@ -47,6 +56,8 @@ class StagingUsuarioServidor(StagingUsuarioBase):
     ue = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
+        """Configuracao de banco do StagingUsuarioServidor."""
+
         db_table = "staging_usuario_servidor"
         ordering = ["-extracted_at"]
         verbose_name = "Staging Usuário Servidor"
@@ -59,11 +70,13 @@ class StagingUsuarioServidor(StagingUsuarioBase):
             models.Index(fields=["execution_id", "status"], name="idx_stg_srv_exec_status"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de staging de servidor."""
         return f"[srv/{self.source}] {self.rf or self.cpf} — {self.nome}"
 
 
 class StagingUsuarioAluno(StagingUsuarioBase):
+    """Registro de staging de um aluno vindo do EOL_DB."""
 
     matricula = models.CharField(max_length=20, blank=True, null=True)
     cod_escola = models.CharField(max_length=20, blank=True, null=True)
@@ -72,6 +85,8 @@ class StagingUsuarioAluno(StagingUsuarioBase):
     ue = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
+        """Configuracao de banco do StagingUsuarioAluno."""
+
         db_table = "staging_usuario_aluno"
         ordering = ["-extracted_at"]
         verbose_name = "Staging Usuário Aluno"
@@ -83,11 +98,13 @@ class StagingUsuarioAluno(StagingUsuarioBase):
             models.Index(fields=["execution_id"], name="idx_stg_aluno_exec"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de staging de aluno."""
         return f"[aluno/{self.source}] {self.matricula or self.cpf} — {self.nome}"
 
 
 class StagingUsuarioTerceiro(StagingUsuarioBase):
+    """Registro de staging de um usuario terceiro ou contratado vindo do CoreSSO."""
 
     tipo_acesso = models.CharField(
         max_length=50, blank=True, null=True,
@@ -95,6 +112,8 @@ class StagingUsuarioTerceiro(StagingUsuarioBase):
     )
 
     class Meta:
+        """Configuracao de banco do StagingUsuarioTerceiro."""
+
         db_table = "staging_usuario_terceiro"
         ordering = ["-extracted_at"]
         verbose_name = "Staging Usuário Terceiro"
@@ -105,15 +124,13 @@ class StagingUsuarioTerceiro(StagingUsuarioBase):
             models.Index(fields=["execution_id"], name="idx_stg_terc_exec"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de staging de terceiro."""
         return f"[terc/{self.source}] {self.cpf or self.email} — {self.nome}"
 
 
-
 class StagingPerfil(models.Model):
-    """Dados de perfil/cargo extraídos para mapeamento de roles Keycloak.
-
-"""
+    """Dados de perfil/cargo extraídos para mapeamento de roles Keycloak."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -144,18 +161,20 @@ class StagingPerfil(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Configuracao de banco do StagingPerfil."""
+
         db_table = "staging_perfil"
         verbose_name = "Staging Perfil"
         verbose_name_plural = "Staging Perfis"
         unique_together = [("cargo_codigo", "funcao_codigo")]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de perfil."""
         return f"{self.cargo_codigo} → {self.keycloak_role}"
 
 
 class StagingLotacao(models.Model):
-    """Dados de lotação para mapeamento de grupos (hierarquia DRE/UE).
-    """
+    """Dados de lotação para mapeamento de grupos (hierarquia DRE/UE)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -184,6 +203,8 @@ class StagingLotacao(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Configuracao de banco do StagingLotacao."""
+
         db_table = "staging_lotacao"
         verbose_name = "Staging Lotação"
         verbose_name_plural = "Staging Lotações"
@@ -192,13 +213,17 @@ class StagingLotacao(models.Model):
             models.Index(fields=["dre_codigo"], name="idx_stg_lotacao_dre"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de lotacao."""
         return f"[{self.tipo}] {self.codigo} — {self.nome}"
 
 
 class StagingSistema(models.Model):
+    """Registro de staging de um sistema CoreSSO (client Keycloak) a ser provisionado."""
 
     class Status(models.TextChoices):
+        """Status de processamento de um registro StagingSistema."""
+
         RAW = "raw", "Bruto (extraído)"
         READY = "ready", "Pronto p/ Keycloak"
         LOADED = "loaded", "Cliente criado no Keycloak"
@@ -243,6 +268,8 @@ class StagingSistema(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Configuracao de banco do StagingSistema."""
+
         db_table = "staging_sistema"
         verbose_name = "Staging Sistema"
         verbose_name_plural = "Staging Sistemas"
@@ -251,13 +278,17 @@ class StagingSistema(models.Model):
             models.Index(fields=["sigla"], name="idx_stg_sistema_sigla"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de sistema."""
         return f"[{self.coresso_sis_id}] {self.nome} → {self.kc_client_id or '-'}"
 
 
 class StagingPerfilCoreSSO(models.Model):
+    """Registro de staging de um grupo/perfil CoreSSO mapeado para uma client role do Keycloak."""
 
     class Status(models.TextChoices):
+        """Status de processamento de um registro StagingPerfilCoreSSO."""
+
         RAW = "raw", "Bruto"
         READY = "ready", "Pronto"
         LOADED = "loaded", "Role criada no Keycloak"
@@ -292,6 +323,8 @@ class StagingPerfilCoreSSO(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Configuracao de banco do StagingPerfilCoreSSO."""
+
         db_table = "staging_perfil_coresso"
         verbose_name = "Staging Perfil CoreSSO"
         verbose_name_plural = "Staging Perfis CoreSSO"
@@ -300,19 +333,25 @@ class StagingPerfilCoreSSO(models.Model):
             models.Index(fields=["status"], name="idx_stg_perfco_status"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de perfil CoreSSO."""
         return f"[{self.coresso_sis_id}/{self.coresso_gru_id[:8]}] {self.nome}"
 
 
 class RetroalimentacaoCoreSSO(models.Model):
+    """Registra eventos de retorno (retroalimentacao) enviados ao CoreSSO apos o provisionamento no Keycloak."""
 
     class Tipo(models.TextChoices):
+        """Tipo do evento de retroalimentacao."""
+
         USER_CREATED = "user_created", "Usuário criado"
         USER_UPDATED = "user_updated", "Usuário atualizado"
         ROLE_ASSIGNED = "role_assigned", "Role atribuída"
         ROLE_REVOKED = "role_revoked", "Role revogada"
 
     class Status(models.TextChoices):
+        """Status de entrega de um registro de retroalimentacao."""
+
         PENDING = "pending", "Pendente"
         DELIVERED = "delivered", "Entregue"
         FAILED = "failed", "Falha"
@@ -335,6 +374,8 @@ class RetroalimentacaoCoreSSO(models.Model):
     delivered_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
+        """Configuracao de banco do RetroalimentacaoCoreSSO."""
+
         db_table = "retroalim_coresso"
         verbose_name = "Retroalimentação CoreSSO"
         verbose_name_plural = "Retroalimentações CoreSSO"
@@ -343,19 +384,25 @@ class RetroalimentacaoCoreSSO(models.Model):
             models.Index(fields=["status", "tipo"], name="idx_retro_status_tipo"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste registro de retroalimentacao."""
         return f"[{self.tipo}] {self.rf or self.cpf} ({self.status})"
 
 
 class DedupResult(models.Model):
+    """Registra o resultado de um match de deduplicacao entre dois registros de staging."""
 
     class MatchType(models.TextChoices):
+        """Como os dois registros foram pareados."""
+
         CPF_EXACT = "cpf_exact", "CPF exato"
         RF_EXACT = "rf_exact", "RF exato"
         CPF_RF_CROSS = "cpf_rf_cross", "CPF↔RF cruzado (mesma pessoa, fontes diferentes)"
         MANUAL = "manual", "Resolução manual"
 
     class Decision(models.TextChoices):
+        """Acao de resolucao tomada para um par pareado."""
+
         MERGE = "merge", "Mesclar (enriquecer dados)"
         KEEP_WINNER = "keep_winner", "Manter registro vencedor"
         SKIP_DUPLICATE = "skip_duplicate", "Ignorar duplicata"
@@ -411,6 +458,8 @@ class DedupResult(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        """Configuracao de banco do DedupResult."""
+
         db_table = "identidade_dedup_result"
         ordering = ["-created_at"]
         verbose_name = "Resultado de Deduplicação"
@@ -420,5 +469,6 @@ class DedupResult(models.Model):
             models.Index(fields=["decision"], name="idx_dedup_decision"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Retorna uma representacao curta deste resultado de dedup."""
         return f"[{self.match_type}] {self.dedup_key} → {self.decision}"

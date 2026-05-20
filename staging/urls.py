@@ -1,3 +1,4 @@
+"""Roteamento de URLs para os endpoints da API de staging."""
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 

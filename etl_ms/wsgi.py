@@ -1,4 +1,4 @@
-"""WSGI config for ETL-MS."""
+"""Configuracao WSGI do ETL-MS."""
 import os
 
 from django.core.wsgi import get_wsgi_application
