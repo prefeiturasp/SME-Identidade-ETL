@@ -59,7 +59,7 @@ class TestDecideTargetTask:
             trigger_type=ETLExecution.TriggerType.MANUAL,
         )
 
-        # Create ready records
+        # Cria registros em status ready
         u = StagingUsuarioServidor.objects.create(
             cpf="52998224725",
             rf="12345",
@@ -88,7 +88,7 @@ class TestDecideTargetTask:
             trigger_type=ETLExecution.TriggerType.MANUAL,
         )
 
-        # Monkeypatch build_kc_payload to raise
+        # Monkeypatch em build_kc_payload para levantar excecao
         with patch("core.keycloak_client.build_kc_payload", side_effect=RuntimeError("test error")):
             from staging.models import StagingUsuarioServidor
             StagingUsuarioServidor.objects.create(

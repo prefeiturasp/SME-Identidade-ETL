@@ -44,6 +44,6 @@ SME_INTEGRACAO_TIMEOUT = 5
 
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 
-INSTALLED_APPS = [app for app in INSTALLED_APPS
+INSTALLED_APPS = [app for app in INSTALLED_APPS  # noqa: F405
                   if app not in ("django_celery_beat", "django_celery_results",
                                  "health_check.contrib.celery")]

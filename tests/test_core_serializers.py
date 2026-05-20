@@ -83,7 +83,7 @@ class TestETLExecutionListSerializer:
         assert "id" in data
         assert "status" in data
         assert "source" in data
-        # Should NOT include "steps" (list version is compact)
+        # NAO deve incluir "steps" (a versao de listagem e compacta)
         assert "steps" not in data
 
 

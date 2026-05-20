@@ -1,3 +1,4 @@
+"""Registros do Django admin para os modelos do core do ETL."""
 from django.contrib import admin
 
 from .models import ETLExecution, ETLStepLog, UpsertControl
@@ -5,6 +6,8 @@ from .models import ETLExecution, ETLStepLog, UpsertControl
 
 @admin.register(ETLExecution)
 class ETLExecutionAdmin(admin.ModelAdmin):
+    """Painel admin das execucoes do pipeline ETL."""
+
     list_display = [
         "id",
         "status",
@@ -23,6 +26,8 @@ class ETLExecutionAdmin(admin.ModelAdmin):
 
 @admin.register(ETLStepLog)
 class ETLStepLogAdmin(admin.ModelAdmin):
+    """Painel admin dos logs de etapas individuais do ETL."""
+
     list_display = [
         "id",
         "execution",
@@ -40,6 +45,8 @@ class ETLStepLogAdmin(admin.ModelAdmin):
 
 @admin.register(UpsertControl)
 class UpsertControlAdmin(admin.ModelAdmin):
+    """Painel admin dos registros de controle de upsert que rastreiam o estado de sincronizacao com o Keycloak."""
+
     list_display = [
         "id",
         "entity_type",

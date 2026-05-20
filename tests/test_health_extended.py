@@ -190,7 +190,7 @@ class TestCheckCoressoImportError:
             from core.health import _check_coresso_db
             result = _check_coresso_db()
 
-        # Should be 'error' or 'unhealthy' — either is fine; just must not raise
+        # Deve ser 'error' ou 'unhealthy' — qualquer um serve; apenas nao pode levantar excecao
         assert result["status"] in ("error", "unhealthy", "not_configured")
 
 

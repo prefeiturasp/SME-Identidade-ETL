@@ -1,8 +1,8 @@
+"""Tasks Celery para transformacao, deduplicacao e crossref dos dados de staging."""
 import logging
 from collections import defaultdict
 
 from celery import shared_task
-from django.db.models import Q
 from django.utils import timezone
 
 from .utils import build_dedup_key, normalize_cpf, normalize_rf, validate_cpf
@@ -22,8 +22,6 @@ MERGEABLE_FIELDS = [
 
 
 def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fields=None):
-    from core.models import ETLStepLog
-
     base_fields = ["cpf", "nome", "status", "transformed_at", "error_detail"]
     rf_field = extra_fields.get("rf_field", False) if extra_fields else False
     lotacao_field = extra_fields.get("lotacao_field", False) if extra_fields else False
@@ -94,6 +92,7 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
 
 @shared_task(bind=True, name="staging.tasks.transform_staging")
 def transform_staging(self, execution_id: str):
+    """Normalize and validate all RAW staging records, marking them TRANSFORMED or ERROR."""
     from core.models import ETLExecution, ETLStepLog
     from .models import StagingLotacao, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
@@ -151,6 +150,7 @@ def transform_staging(self, execution_id: str):
 
 @shared_task(bind=True, name="staging.tasks.crossref_dedup")
 def crossref_dedup(self, execution_id: str):
+    """Faz cross-reference dos usuarios de staging entre as fontes e deduplica por CPF/RF."""
     from core.models import ETLExecution, ETLStepLog
     from .models import (
         DedupResult, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro,
@@ -354,7 +354,6 @@ def crossref_dedup(self, execution_id: str):
                 logger.warning("[%s] Dedup error for cluster %s: %s", execution_id, cluster_root, e)
                 errors += 1
 
-
         BULK = 500
         winner_fields = ["status", "email", "data_nascimento", "cargo", "funcao",
                          "situacao", "lotacao", "lotacao_nome", "dre", "ue"]
@@ -370,7 +369,6 @@ def crossref_dedup(self, execution_id: str):
             )
         if dedup_results:
             DedupResult.objects.bulk_create(dedup_results, batch_size=500)
-
 
         total_ready = ready + n_alunos + n_terceiros
         step.records_in = total + n_alunos + n_terceiros
@@ -416,14 +414,12 @@ def _determine_match_type(winner, loser) -> str:
     l_rf = loser.rf
 
     if w_cpf and l_cpf and w_cpf == l_cpf:
-        if w_rf and l_rf and w_rf == l_rf:
-            return DedupResult.MatchType.CPF_EXACT  # ambos batem
-        return DedupResult.MatchType.CPF_EXACT
+        return str(DedupResult.MatchType.CPF_EXACT)  # cpf e rf batem
 
     if w_rf and l_rf and w_rf == l_rf:
-        return DedupResult.MatchType.RF_EXACT
+        return str(DedupResult.MatchType.RF_EXACT)
 
-    return DedupResult.MatchType.CPF_RF_CROSS
+    return str(DedupResult.MatchType.CPF_RF_CROSS)
 
 
 def _check_conflicts(winner, loser) -> bool:

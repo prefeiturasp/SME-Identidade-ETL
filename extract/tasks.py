@@ -1,3 +1,4 @@
+"""Tasks Celery para extrair dados do SE1426, EOL_DB e CoreSSO para as tabelas de staging."""
 import logging
 
 from celery import shared_task
@@ -33,13 +34,34 @@ def _extract_se1426_sql(execution_id: str) -> int:
             s.nm_pessoa              AS nome,
             s.cd_cpf_pessoa          AS cpf,
             s.situacao               AS situacao,
-            e.dc_dispositivo         AS email
+            e.dc_dispositivo         AS email,
+            RTRIM(LTRIM(ISNULL(c.dc_cargo, '')))                     AS cargo,
+            RTRIM(LTRIM(ISNULL(f.dc_funcao_atividade, '')))          AS funcao,
+            CAST(l.cd_unidade_educacao AS VARCHAR(20))               AS cod_unidade,
+            CAST(ue.cd_unidade_administrativa_referencia AS VARCHAR(20)) AS cod_dre
         FROM v_servidor_sme_serap s
         LEFT JOIN v_servidor_cotic sc
             ON sc.cd_registro_funcional = s.cd_registro_funcional
         LEFT JOIN v_servidor_email_cotic e
             ON e.cd_servidor = sc.cd_servidor
             AND e.dt_fim IS NULL
+        LEFT JOIN v_cargo_base_cotic cba
+            ON cba.cd_servidor = sc.cd_servidor
+            AND cba.dt_fim_nomeacao IS NULL
+            AND cba.dt_cancelamento IS NULL
+        LEFT JOIN cargo c
+            ON c.cd_cargo = cba.cd_cargo
+        LEFT JOIN v_funcao_atividade_cotic fa
+            ON fa.cd_servidor = sc.cd_servidor
+            AND fa.dt_fim IS NULL
+        LEFT JOIN funcao_atividade f
+            ON f.cd_funcao_atividade = fa.cd_funcao_atividade
+        LEFT JOIN lotacao_servidor l
+            ON l.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND l.dt_fim IS NULL
+            AND l.dt_cancelamento IS NULL
+        LEFT JOIN v_cadastro_unidade_educacao ue
+            ON ue.cd_unidade_educacao = l.cd_unidade_educacao
     """
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
@@ -64,6 +86,10 @@ def _extract_se1426_sql(execution_id: str) -> int:
                         cpf=item.get("cpf"),
                         email=item.get("email"),
                         situacao=item.get("situacao", "").lower() if item.get("situacao") else None,
+                        cargo=item.get("cargo") or None,
+                        funcao=item.get("funcao") or None,
+                        lotacao=item.get("cod_unidade") or None,
+                        dre=item.get("cod_dre") or None,
                         source=StagingUsuarioServidor.Source.SE1426,
                         execution_id=execution_id,
                         raw_data={k: str(v) if v is not None else None for k, v in item.items()},
@@ -184,7 +210,7 @@ def _extract_eol_db_sql(execution_id: str) -> int:
 
 @shared_task(bind=True, name="extract.tasks.extract_se1426", max_retries=3)
 def extract_se1426(self, execution_id: str):
-    
+    """Extrai dados de servidores do banco SE1426 (PRODAM) para staging."""
     from core.models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -310,6 +336,7 @@ def _extract_se1426_api(execution_id: str) -> int:
 
 @shared_task(bind=True, name="extract.tasks.extract_eol_db", max_retries=3)
 def extract_eol_db(self, execution_id: str):
+    """Extrai dados de servidores do EOL_DB (SQL Server) para staging."""
     from core.models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -370,8 +397,6 @@ def extract_eol_db(self, execution_id: str):
         if self.request.retries >= self.max_retries:
             execution.mark_finished("failed")
         raise self.retry(exc=e, countdown=120)
-
-
 
 
 def _extract_eol_alunos_sql(execution_id: str) -> int:
@@ -481,6 +506,7 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 
 @shared_task(bind=True, name="extract.tasks.extract_eol_alunos", max_retries=3)
 def extract_eol_alunos(self, execution_id: str):
+    """Extrai dados de alunos do EOL_DB para staging."""
     from core.models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -690,6 +716,7 @@ def _extract_coresso_api(execution_id: str) -> int:
 
 @shared_task(bind=True, name="extract.tasks.extract_coresso", max_retries=2)
 def extract_coresso(self, execution_id: str):
+    """Extrai dados de usuarios terceiros do CoreSSO para staging."""
     from core.models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -774,6 +801,7 @@ def _slugify_sigla(nome: str) -> str:
     bind=True, name="extract.tasks.extract_coresso_sistemas", max_retries=2
 )
 def extract_coresso_sistemas(self, execution_id: str | None = None):
+    """Extrai sistemas do CoreSSO (SYS_Sistema) para a tabela staging_sistema."""
     import pyodbc
 
     from staging.models import StagingSistema
@@ -836,6 +864,7 @@ def extract_coresso_sistemas(self, execution_id: str | None = None):
     bind=True, name="extract.tasks.extract_coresso_perfis", max_retries=2
 )
 def extract_coresso_perfis(self, execution_id: str | None = None):
+    """Extract CoreSSO profiles/groups (GRU_Grupo) into staging_perfil_coresso."""
     import pyodbc
 
     from staging.models import StagingPerfilCoreSSO, StagingSistema
@@ -894,6 +923,7 @@ def extract_coresso_perfis(self, execution_id: str | None = None):
 
 
 def fetch_coresso_groups_for_login(login: str) -> list[dict]:
+    """Consulta o CoreSSO e retorna a lista de grupos atribuidos a um determinado login de usuario."""
     import pyodbc
 
     if not settings.CORESSO_DB_SERVER or not login:

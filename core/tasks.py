@@ -1,3 +1,4 @@
+"""Tasks Celery para orquestrar o pipeline completo do ETL, da extracao a carga no Keycloak."""
 import logging
 
 from celery import chain, chord, shared_task
@@ -8,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 @shared_task(name="core.tasks.trigger_scheduled_etl")
 def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
+    """Cria uma nova execucao de ETL agendada e a despacha para o Celery."""
     from .models import ETLExecution
 
     execution = ETLExecution.objects.create(
@@ -23,12 +25,16 @@ def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
 
 @shared_task(bind=True, name="core.tasks.run_etl_pipeline")
 def run_etl_pipeline(self, execution_id: str):
+    """Orquestra o pipeline completo do ETL para uma dada execucao via chord/chain do Celery."""
     from .models import ETLExecution
 
     execution = ETLExecution.objects.get(id=execution_id)
     execution.mark_running()
 
-    logger.info("ETL Pipeline [%s] started — source=%s, realm=%s", execution_id, execution.source, execution.target_realm)
+    logger.info(
+        "ETL Pipeline [%s] started — source=%s, realm=%s",
+        execution_id, execution.source, execution.target_realm,
+    )
 
     try:
         from extract.tasks import extract_coresso, extract_eol_alunos, extract_eol_db, extract_se1426
@@ -51,7 +57,7 @@ def run_etl_pipeline(self, execution_id: str):
             logger.error("No extract tasks for source=%s", source)
             return
 
-        pipeline = chord(extract_tasks)(
+        chord(extract_tasks)(
             chain(
                 transform_staging.si(execution_id),
                 crossref_dedup.si(execution_id),
@@ -72,6 +78,7 @@ def run_etl_pipeline(self, execution_id: str):
 
 @shared_task(bind=True, name="core.tasks.decide_target")
 def decide_target(self, execution_id: str):
+    """Decide se cada registro de staging em status READY deve ser criado ou atualizado no Keycloak."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
     from .keycloak_client import build_kc_payload, build_token_ms_payload
@@ -122,6 +129,7 @@ def decide_target(self, execution_id: str):
 
 @shared_task(bind=True, name="core.tasks.load_keycloak", max_retries=3)
 def load_keycloak(self, execution_id: str):
+    """Faz upsert em lote dos usuarios em READY para o Keycloak e registra os resultados em UpsertControl."""
     from django.conf import settings
 
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
@@ -137,7 +145,10 @@ def load_keycloak(self, execution_id: str):
     )
 
     if not settings.ETL_LOAD_KEYCLOAK_BULK_ENABLED:
-        logger.warning("[%s] Step 6: Load Keycloak desabilitado por política (ETL_LOAD_KEYCLOAK_BULK_ENABLED=false)", execution_id)
+        logger.warning(
+            "[%s] Step 6: Load Keycloak desabilitado por política"
+            " (ETL_LOAD_KEYCLOAK_BULK_ENABLED=false)", execution_id,
+        )
         step.status = ETLStepLog.StepStatus.SKIPPED
         step.finished_at = timezone.now()
         step.metadata = {"reason": "ETL_LOAD_KEYCLOAK_BULK_ENABLED=false"}
@@ -206,6 +217,7 @@ def load_keycloak(self, execution_id: str):
 
 @shared_task(bind=True, name="core.tasks.load_token_ms", max_retries=3)
 def load_token_ms(self, execution_id: str):
+    """Envia os usuarios de staging em READY para o microsservico token-ms em lotes configuraveis."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
     from .keycloak_client import build_token_ms_payload
@@ -241,7 +253,10 @@ def load_token_ms(self, execution_id: str):
         step.finished_at = timezone.now()
         step.save()
 
-        logger.info("[%s] Step 7 concluido: %d usuarios enviados em %d lotes", execution_id, metrics["sent"], metrics["batches"])
+        logger.info(
+            "[%s] Step 7 concluido: %d usuarios enviados em %d lotes",
+            execution_id, metrics["sent"], metrics["batches"],
+        )
 
     except Exception as e:
         logger.exception("[%s] Step 7 FAILED: %s", execution_id, e)
@@ -310,6 +325,7 @@ def audit_etl(self, execution_id: str):
 
 @shared_task(name="core.tasks.cleanup_old_staging")
 def cleanup_old_staging(keep_last: int = 2):
+    """Apaga registros de staging de todas as execucoes, exceto as N mais recentes, para liberar espaco no banco."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
     from .models import ETLExecution
