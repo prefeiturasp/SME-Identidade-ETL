@@ -1,0 +1,129 @@
+# =============================================================================
+# ETL-MS — ambiente de desenvolvimento local
+# Uso: docker compose -f docker-compose.local.yml up -d --build
+# Requer: rede sme-identidade criada + Keycloak rodando (docker-compose.local-infra.yml)
+# Credenciais externas: arquivo .env.local (copiar de .env.local.example)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — banco do ETL (staging, logs de execução, celery-results)
+  # ---------------------------------------------------------------------------
+  etl-postgres:
+    image: postgres:16-alpine
+    container_name: local-etl-postgres
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: etl_db
+      POSTGRES_USER: etl
+      POSTGRES_PASSWORD: etl
+    volumes:
+      - local_etl_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl -d etl_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # KeyDB — broker Celery do ETL (porta 6382 para não colidir com outros serviços)
+  # ---------------------------------------------------------------------------
+  etl-keydb:
+    image: eqalpha/keydb:alpine_x86_64_v6.3.4
+    container_name: local-etl-keydb
+    command: keydb-server --server-threads 2 --appendonly yes
+    ports:
+      - "6382:6379"
+    volumes:
+      - local_etl_keydb:/data
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # ETL-MS API (Django 5 + DRF + Gunicorn) — porta 8001
+  # Roda migrate antes de iniciar o gunicorn (ver Dockerfile CMD)
+  # ---------------------------------------------------------------------------
+  etl-api:
+    build: .
+    container_name: local-etl-api
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env.local
+    environment:
+      # Sobrescreve os valores de .env.local para apontar aos containers locais
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      CELERY_BROKER_URL: redis://etl-keydb:6379/0
+      CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
+      KEYCLOAK_SERVER_URL: http://keycloak:8080/
+      KEYCLOAK_VERIFY_SSL: "false"
+      TOKEN_MS_URL: http://token-ms-api:8003
+      TOKEN_MS_INTERNAL_TOKEN: dev-internal-token
+      DEBUG: "true"
+    depends_on:
+      etl-postgres:
+        condition: service_healthy
+      etl-keydb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/api/health/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker — processa filas de extract / transform / load
+  # ---------------------------------------------------------------------------
+  etl-worker:
+    build: .
+    container_name: local-etl-worker
+    command: celery -A etl_ms worker --loglevel=info --concurrency=4 -Q etl_extract,etl_transform,etl_load,celery
+    env_file:
+      - .env.local
+    environment:
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      CELERY_BROKER_URL: redis://etl-keydb:6379/0
+      CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
+      KEYCLOAK_SERVER_URL: http://keycloak:8080/
+      KEYCLOAK_VERIFY_SSL: "false"
+      TOKEN_MS_URL: http://token-ms-api:8003
+      TOKEN_MS_INTERNAL_TOKEN: dev-internal-token
+      DEBUG: "true"
+    depends_on:
+      etl-api:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat — agendamento de tarefas periódicas (usa banco como scheduler)
+  # ---------------------------------------------------------------------------
+  etl-beat:
+    build: .
+    container_name: local-etl-beat
+    command: celery -A etl_ms beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file:
+      - .env.local
+    environment:
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      CELERY_BROKER_URL: redis://etl-keydb:6379/0
+      CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
+      KEYCLOAK_SERVER_URL: http://keycloak:8080/
+      KEYCLOAK_VERIFY_SSL: "false"
+      DEBUG: "true"
+    depends_on:
+      etl-api:
+        condition: service_healthy
+
+networks:
+  default:
+    name: sme-identidade
+    external: true
+
+volumes:
+  local_etl_pg:
+  local_etl_keydb:
