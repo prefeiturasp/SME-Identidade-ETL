@@ -27,6 +27,7 @@ build/
 .coverage
 htmlcov/
 
+*.rst
 # Env files
 .env
 .env.*
