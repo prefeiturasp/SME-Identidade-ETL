@@ -1,5 +1,6 @@
 import os
 
+import structlog
 from celery.schedules import crontab
 from pathlib import Path
 
@@ -244,10 +245,10 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "json": {
-            "()": "structlog.stdlib.ProcessorFormatter",
-            "processor": "structlog.dev.ConsoleRenderer"
+            "()": structlog.stdlib.ProcessorFormatter,
+            "processor": structlog.dev.ConsoleRenderer()
             if DEBUG
-            else "structlog.processors.JSONRenderer",
+            else structlog.processors.JSONRenderer(),
         },
     },
     "handlers": {
