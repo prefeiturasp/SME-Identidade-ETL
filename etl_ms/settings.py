@@ -74,10 +74,11 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "etl_ms.wsgi.application"
 
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 DATABASES = {
     "default": dj_database_url.config(
-        default="postgres://etl:etl@localhost:5434/etl_db",
+        default=DATABASE_URL,
         conn_max_age=600,
         conn_health_checks=True,
     ),
