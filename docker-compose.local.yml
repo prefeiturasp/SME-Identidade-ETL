@@ -96,8 +96,12 @@ services:
       TOKEN_MS_INTERNAL_TOKEN: dev-internal-token
       DEBUG: "true"
     depends_on:
-      etl-api:
+      etl-postgres:
         condition: service_healthy
+      etl-keydb:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
   # ---------------------------------------------------------------------------
   # Celery Beat — agendamento de tarefas periódicas (usa banco como scheduler)
@@ -116,8 +120,12 @@ services:
       KEYCLOAK_VERIFY_SSL: "false"
       DEBUG: "true"
     depends_on:
-      etl-api:
+      etl-postgres:
         condition: service_healthy
+      etl-keydb:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
 networks:
   default:
