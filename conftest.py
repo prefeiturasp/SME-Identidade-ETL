@@ -26,9 +26,9 @@ os.environ.setdefault("DEBUG", "True")
 os.environ.setdefault("ALLOWED_HOSTS", "*")
 
 # Serviços externos — endereços fictícios, nunca contactados nos testes unitários
-os.environ.setdefault("KEYCLOAK_SERVER_URL", "http://keycloak-test.invalid/")
+os.environ.setdefault("KEYCLOAK_SERVER_URL", "https://keycloak-test.invalid/")
 os.environ.setdefault("KEYCLOAK_ADMIN_USER", "ci-admin")
-os.environ.setdefault("KEYCLOAK_ADMIN_PASSWORD", "ci-admin-not-real")
+os.environ.setdefault("KEYCLOAK_ADMIN_PAWD", "ci-admin-not-real")
 os.environ.setdefault("KEYCLOAK_REALM", "sme-apps")
 os.environ.setdefault("KEYCLOAK_VERIFY_SSL", "false")
 
@@ -44,12 +44,12 @@ os.environ.setdefault("CORESSO_DB_USER", "ci-user")
 os.environ.setdefault("CORESSO_DB_PASSWORD", "ci-not-a-real-password")
 os.environ.setdefault("CORESSO_DB_TIMEOUT", "5")
 
-os.environ.setdefault("TOKEN_MS_URL", "http://token-ms-test.invalid")
+os.environ.setdefault("TOKEN_MS_URL", "https://token-ms-test.invalid")
 os.environ.setdefault("TOKEN_MS_INTERNAL_TOKEN", "ci-internal-token")
 os.environ.setdefault("TOKEN_MS_TIMEOUT", "5")
 os.environ.setdefault("TOKEN_MS_BATCH_SIZE", "100")
 
-os.environ.setdefault("SME_INTEGRACAO_BASE_URL", "http://sme-integracao-test.invalid")
+os.environ.setdefault("SME_INTEGRACAO_BASE_URL", "https://sme-integracao-test.invalid")
 os.environ.setdefault("SME_INTEGRACAO_TIMEOUT", "5")
 
 os.environ.setdefault("RABBITMQ_URL", "amqp://ci-user:ci-not-real@localhost.invalid:5672/")

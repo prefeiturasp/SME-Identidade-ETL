@@ -60,7 +60,7 @@ def get_admin_client(realm: str | None = None):
     return KeycloakAdmin(
         server_url=settings.KEYCLOAK_SERVER_URL,
         username=settings.KEYCLOAK_ADMIN_USER,
-        password=settings.KEYCLOAK_ADMIN_PASSWORD,
+        password=settings.KEYCLOAK_ADMIN_PAWD,
         realm_name=realm or settings.KEYCLOAK_REALM,
         user_realm_name="master",
         verify=settings.KEYCLOAK_VERIFY_SSL,

@@ -81,17 +81,88 @@ def _check_coresso_db() -> dict:
 
     return result
 
-
-def _check_sme_integracao() -> dict:
-    result = {
+def _build_base_result() -> dict:
+    return {
         "source": "SME Integração API",
         "base_url": settings.SME_INTEGRACAO_BASE_URL,
         "status": "unknown",
     }
 
+def _authenticate(client: httpx.Client, result: dict) -> tuple:
+    if not (
+        settings.SME_INTEGRACAO_LOGIN
+        and settings.SME_INTEGRACAO_PASSWORD
+    ):
+        return None, False, None
+
+    try:
+        response = client.post(
+            "/api/v1/autenticacao",
+            json={
+                "login": settings.SME_INTEGRACAO_LOGIN,
+                "senha": settings.SME_INTEGRACAO_PASSWORD,
+            },
+        )
+
+        auth_ok = response.status_code == 200
+
+        if not auth_ok:
+            return False, False, None
+
+        token = response.json().get("token", "")
+
+        return (
+            True,
+            bool(token),
+            len(token) if token else 0,
+        )
+
+    except Exception as exc:
+        result["auth_error"] = str(exc)
+        return False, False, None
+
+def _check_data_access(client: httpx.Client):
+    if not settings.SME_INTEGRACAO_API_KEY:
+        return None
+
+    try:
+        response = client.get(
+            "/api/cargos",
+            headers={
+                "x-api-eol-key": settings.SME_INTEGRACAO_API_KEY
+            },
+        )
+        return response.status_code == 200
+
+    except Exception:
+        return False
+
+def _authentication_status(auth_ok):
+    if auth_ok is True:
+        return "ok"
+
+    if auth_ok is False:
+        return "failed"
+
+    return "not_tested"
+
+def _data_access_status(data_ok):
+    if data_ok is True:
+        return "ok"
+
+    if data_ok is False:
+        return "failed"
+
+    return "not_tested"
+
+def _check_sme_integracao() -> dict:
+    result = _build_base_result()
+
     if not settings.SME_INTEGRACAO_BASE_URL:
         result["status"] = "not_configured"
-        result["detail"] = "SME_INTEGRACAO_BASE_URL não configurado"
+        result["detail"] = (
+            "SME_INTEGRACAO_BASE_URL não configurado"
+        )
         return result
 
     try:
@@ -102,67 +173,57 @@ def _check_sme_integracao() -> dict:
             timeout=settings.SME_INTEGRACAO_TIMEOUT,
             verify=True,
         ) as client:
-            resp_swagger = client.get("/swagger/v1/swagger.json")
-            swagger_ok = resp_swagger.status_code == 200
 
-            auth_ok = None
-            auth_token_present = False
-            auth_token_length = None
-            if settings.SME_INTEGRACAO_LOGIN and settings.SME_INTEGRACAO_PASSWORD:
-                try:
-                    resp_auth = client.post(
-                        "/api/v1/autenticacao",
-                        json={
-                            "login": settings.SME_INTEGRACAO_LOGIN,
-                            "senha": settings.SME_INTEGRACAO_PASSWORD,
-                        },
-                    )
-                    auth_ok = resp_auth.status_code == 200
-                    if auth_ok:
-                        auth_data = resp_auth.json()
-                        auth_token = auth_data.get("token", "")
-                        auth_token_present = bool(auth_token)
-                        auth_token_length = len(auth_token) if auth_token else 0
-                except Exception as auth_err:
-                    auth_ok = False
-                    result["auth_error"] = str(auth_err)
+            swagger_response = client.get(
+                "/swagger/v1/swagger.json"
+            )
 
-            data_ok = None
-            if settings.SME_INTEGRACAO_API_KEY:
-                try:
-                    resp_data = client.get(
-                        "/api/cargos",
-                        headers={"x-api-eol-key": settings.SME_INTEGRACAO_API_KEY},
-                    )
-                    data_ok = resp_data.status_code == 200
-                except Exception:
-                    data_ok = False
+            swagger_ok = (
+                swagger_response.status_code == 200
+            )
 
-        elapsed_ms = round((time.monotonic() - t0) * 1000)
+            (
+                auth_ok,
+                auth_token_present,
+                auth_token_length,
+            ) = _authenticate(client, result)
 
-        result["response_time_ms"] = elapsed_ms
-        result["swagger_available"] = swagger_ok
-        result["authentication"] = (
-            "ok" if auth_ok else ("failed" if auth_ok is False else "not_tested")
+            data_ok = _check_data_access(client)
+
+        elapsed_ms = round(
+            (time.monotonic() - t0) * 1000
         )
+
+        result.update({
+            "response_time_ms": elapsed_ms,
+            "swagger_available": swagger_ok,
+            "authentication": _authentication_status(auth_ok),
+            "data_access": _data_access_status(data_ok),
+            "status": (
+                "healthy"
+                if swagger_ok
+                else "unhealthy"
+            ),
+        })
+
         if auth_ok is True:
             result["auth_token_present"] = auth_token_present
             result["auth_token_length"] = auth_token_length
-        result["data_access"] = (
-            "ok" if data_ok else ("failed" if data_ok is False else "not_tested")
-        )
-        result["status"] = "healthy" if swagger_ok else "unhealthy"
 
-    except httpx.ConnectError as e:
+    except httpx.ConnectError as exc:
         result["status"] = "unhealthy"
-        result["detail"] = f"Conexão recusada: {e}"
-    except Exception as e:
+        result["detail"] = f"Conexão recusada: {exc}"
+
+    except Exception as exc:
         result["status"] = "unhealthy"
-        result["detail"] = str(e)
-        logger.warning("SME Integração health check failed: %s", e)
+        result["detail"] = str(exc)
+
+        logger.warning(
+            "SME Integração health check failed: %s",
+            exc,
+        )
 
     return result
-
 
 def _check_sme_integracao_auth_only() -> dict:
     result = {
@@ -246,7 +307,7 @@ def _check_sme_integracao_auth_only() -> dict:
                     "coresso_db": {
                         "source": "CoreSSO (SQL Server)",
                         "server": "10.49.19.159\\SQLSERVERHOMOLOG",
-                        "server_host": "10.49.19.159",
+                        "server_host": "xx.xx.xx.xxx",
                         "database": "CoreSSO",
                         "status": "healthy",
                         "response_time_ms": 180,

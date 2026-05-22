@@ -182,7 +182,7 @@ KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "sme-apps")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "api-middleware")
 KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET", "")
 KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "admin")
-KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
+KEYCLOAK_ADMIN_PAWD = os.environ.get("KEYCLOAK_ADMIN_PAWD", "admin")
 KEYCLOAK_CLIENT_SUFFIX = os.environ.get("KEYCLOAK_CLIENT_SUFFIX", "prod")
 KEYCLOAK_VERIFY_SSL = os.environ.get("KEYCLOAK_VERIFY_SSL", "true").lower() == "true"
 ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
