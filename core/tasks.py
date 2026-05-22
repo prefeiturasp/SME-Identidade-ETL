@@ -94,8 +94,8 @@ def decide_target(self, execution_id: str):
 
     try:
         total = 0
-        for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-            qs = ModelClass.objects.filter(execution_id=execution_id, status="ready")
+        for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+            qs = model_class.objects.filter(execution_id=execution_id, status="ready")
             to_update: list = []
             for u in qs.iterator(chunk_size=1000):
                 raw = u.raw_data or {}
@@ -107,10 +107,10 @@ def decide_target(self, execution_id: str):
                 to_update.append(u)
                 total += 1
                 if len(to_update) >= 500:
-                    ModelClass.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
+                    model_class.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
                     to_update = []
             if to_update:
-                ModelClass.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
+                model_class.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
 
         step.records_in = total
         step.records_out = total
@@ -165,8 +165,8 @@ def load_keycloak(self, execution_id: str):
         skipped = 0
         total = 0
 
-        for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-            usuarios = ModelClass.objects.filter(execution_id=execution_id, status="ready")
+        for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+            usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
             total += usuarios.count()
             for usuario in usuarios.iterator(chunk_size=200):
                 try:
@@ -234,8 +234,8 @@ def load_token_ms(self, execution_id: str):
 
     try:
         def _payloads():
-            for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-                qs = ModelClass.objects.filter(
+            for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+                qs = model_class.objects.filter(
                     execution_id=execution_id,
                     status__in=["ready", "loaded"],
                 )
@@ -340,8 +340,8 @@ def cleanup_old_staging(keep_last: int = 2):
         return
 
     total_deleted = 0
-    for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-        deleted, _ = ModelClass.objects.exclude(execution_id__in=keep_ids).delete()
+    for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+        deleted, _ = model_class.objects.exclude(execution_id__in=keep_ids).delete()
         total_deleted += deleted
     if total_deleted:
         logger.info("Cleanup: %d staging records removidos (kept %d executions)", total_deleted, len(keep_ids))

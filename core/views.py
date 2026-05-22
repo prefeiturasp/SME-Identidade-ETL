@@ -7,12 +7,10 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from .keycloak_client import (
-    build_kc_payload,
-    build_token_ms_payload,
-    get_admin_client,
-    upsert_user_to_keycloak,
+from core.service import (
+    KeycloakUpsertService,
 )
+
 from .models import ETLExecution, UpsertControl
 from .serializers import (
     ETLExecutionCreateSerializer,
@@ -154,139 +152,73 @@ def etl_stats(request):
 
 
 @api_view(["POST"])
-def test_kc_upsert(request, cpf: str | None = None):
-    """Endpoint apenas-teste: faz upsert de um unico usuario no Keycloak por CPF."""
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
-
+def test_kc_upsert(request, cpf=None):
     body = request.data or {}
+
     cpf = cpf or body.get("cpf")
     rf = body.get("rf")
-    realm = body.get("realm") or None
-    execution_id = body.get("execution_id")
 
     if not cpf and not rf:
         return Response(
-            {"detail": "Informe 'cpf' (path ou body) ou 'rf' no body."},
+            {
+                "detail": (
+                    "Informe 'cpf' "
+                    "(path ou body) "
+                    "ou 'rf' no body."
+                )
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if cpf:
-        cpf_clean = "".join(c for c in str(cpf) if c.isdigit())
-    else:
-        cpf_clean = None
+    try:
+        service = KeycloakUpsertService(
+            cpf=cpf,
+            rf=rf,
+            realm=body.get("realm"),
+            execution_id=body.get("execution_id"),
+            assign_roles=body.get(
+                "assign_roles",
+                True,
+            ),
+            push_token_ms=body.get(
+                "push_token_ms",
+                True,
+            ),
+        )
 
-    usuario = None
-    for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-        qs = ModelClass.objects.all()
-        if cpf_clean:
-            qs = qs.filter(cpf=cpf_clean)
-        if rf and ModelClass is StagingUsuarioServidor:
-            qs = qs.filter(rf=str(rf))
-        if execution_id:
-            qs = qs.filter(execution_id=execution_id)
-        usuario = qs.order_by("-extracted_at").first()
-        if usuario:
-            break
+        result = service.execute()
 
-    if not usuario:
         return Response(
-            {"detail": "Nenhum usuário encontrado para o CPF/RF informado.",
-             "cpf": cpf_clean, "rf": rf},
+            result,
+            status=status.HTTP_200_OK,
+        )
+
+    except ValueError as e:
+        return Response(
+            {
+                "detail": str(e),
+                "cpf": cpf,
+                "rf": rf,
+            },
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    execution = None
-    try:
-        execution = ETLExecution.objects.filter(id=usuario.execution_id).first()
-    except Exception:
-        execution = None
-
-    target_realm = realm or (execution.target_realm if execution else "sme-apps")
-
-    try:
-        admin = get_admin_client(realm=target_realm)
-        result = upsert_user_to_keycloak(
-            admin, usuario, realm=target_realm, execution=execution,
-        )
     except Exception as e:
-        logger.exception("test_kc_upsert FAILED for cpf=%s rf=%s: %s", cpf_clean, rf, e)
+        logger.exception(
+            "test_kc_upsert FAILED: %s",
+            e,
+        )
+
         return Response(
             {
-                "detail": "Falha ao upsertar no Keycloak",
+                "detail": (
+                    "Falha ao executar "
+                    "upsert no Keycloak"
+                ),
                 "error": str(e),
-                "usuario_id": str(usuario.id),
-                "cpf": cpf_clean,
-                "rf": rf,
             },
             status=status.HTTP_502_BAD_GATEWAY,
         )
-
-    usuario.status = "loaded" if result["action"] != "skipped" else "skipped"
-    usuario.save(update_fields=["status"])
-
-    roles_result: dict = {"skipped": True}
-    if body.get("assign_roles", True) and result.get("kc_user_id"):
-        try:
-            from core.keycloak_client import assign_user_client_roles
-
-            login = (usuario.rf or usuario.cpf or "").strip()
-            roles_result = assign_user_client_roles(
-                admin, result["kc_user_id"], login
-            )
-        except Exception as e:
-            logger.exception("test_kc_upsert: assign_user_client_roles falhou: %s", e)
-            roles_result = {"error": str(e)}
-
-    try:
-        from core.keycloak_client import emit_retroalim
-
-        emit_retroalim(
-            tipo=(
-                "user_created" if result["action"] == "created"
-                else "user_updated" if result["action"] == "updated"
-                else "role_assigned"
-            ),
-            usuario=usuario,
-            payload={
-                "kc_user_id": result.get("kc_user_id"),
-                "realm": target_realm,
-                "action": result["action"],
-                "roles": roles_result,
-            },
-        )
-    except Exception as e:
-        logger.warning("test_kc_upsert: retroalim falhou: %s", e)
-
-    token_ms_result: dict = {"skipped": True}
-    if body.get("push_token_ms", True):
-        try:
-            from core.token_ms_client import send_batch
-
-            token_ms_payload = build_token_ms_payload(usuario)
-            token_ms_result = send_batch(
-                [token_ms_payload],
-                execution_id=str(usuario.execution_id),
-            )
-        except Exception as e:
-            logger.exception("test_kc_upsert: token-ms push falhou: %s", e)
-            token_ms_result = {"error": str(e)}
-
-    return Response(
-        {
-            "action": result["action"],
-            "kc_user_id": result["kc_user_id"],
-            "content_hash": result["content_hash"],
-            "realm": target_realm,
-            "source": usuario.source,
-            "usuario_id": str(usuario.id),
-            "execution_id": str(usuario.execution_id),
-            "kc_payload": build_kc_payload(usuario),
-            "token_ms_payload": build_token_ms_payload(usuario),
-            "token_ms_result": token_ms_result,
-            "client_roles": roles_result,
-        },
-        status=status.HTTP_200_OK,
-    )
 
 
 @api_view(["POST"])
