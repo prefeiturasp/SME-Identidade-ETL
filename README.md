@@ -190,8 +190,11 @@ python -m pytest tests/ --cov=core --cov=staging --cov=extract -q
 280 testes · cobertura mínima configurada em 80% (`pytest.ini`).
 
 ```bash
-# Cobertura detalhada por módulo
+# Cobertura detalhada por módulo (terminal)
 python -m pytest tests/ --cov=core --cov=staging --cov=extract --cov-report=term-missing
+
+# Cobertura em HTML (abre no browser se xdg-utils disponível, senão sobe servidor em :9000)
+./scripts/coverage.sh
 ```
 
 ---
