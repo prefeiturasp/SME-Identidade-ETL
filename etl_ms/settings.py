@@ -74,11 +74,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "etl_ms.wsgi.application"
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-
 DATABASES = {
     "default": dj_database_url.config(
-        default=DATABASE_URL,
+        env="DATABASE_URL",
+        default="sqlite:///:memory:",
         conn_max_age=600,
         conn_health_checks=True,
     ),
