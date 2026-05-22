@@ -198,7 +198,7 @@ class TestGetAdminClient:
         settings.KEYCLOAK_SERVER_URL = "http://keycloak:8080"
         settings.KEYCLOAK_REALM = "sme-apps"
         settings.KEYCLOAK_ADMIN_USER = "admin"
-        settings.KEYCLOAK_ADMIN_PASSWORD = "admin"
+        settings.KEYCLOAK_ADMIN_PAWD = "admin"
         settings.KEYCLOAK_ADMIN_CLIENT_ID = "admin-cli"
 
         mock_admin = MagicMock()
