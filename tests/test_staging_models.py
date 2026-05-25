@@ -186,3 +186,119 @@ class TestStagingUsuarioTerceiroSerializer:
         )
         data = StagingUsuarioTerceiroSerializer(u).data
         assert data["tipo_acesso"] == "convidado"
+
+
+class TestStagingLotacao:
+    def test_str(self):
+        from staging.models import StagingLotacao
+
+        lotacao = StagingLotacao.objects.create(
+            codigo="123",
+            nome="EMEF TESTE",
+            tipo="ue",
+        )
+
+        s = str(lotacao)
+
+        assert s == "[ue] 123 — EMEF TESTE"
+
+
+class TestStagingSistema:
+    def test_str_with_client_id(self):
+        from staging.models import StagingSistema
+
+        sistema = StagingSistema.objects.create(
+            coresso_sis_id=10,
+            nome="Sistema XPTO",
+            kc_client_id="client-xpto",
+        )
+
+        s = str(sistema)
+
+        assert s == "[10] Sistema XPTO → client-xpto"
+
+    def test_str_without_client_id(self):
+        from staging.models import StagingSistema
+
+        sistema = StagingSistema.objects.create(
+            coresso_sis_id=11,
+            nome="Sistema Sem Client",
+        )
+
+        s = str(sistema)
+
+        assert s == "[11] Sistema Sem Client → -"
+
+
+class TestStagingPerfilCoreSSO:
+    def test_str(self):
+        from staging.models import StagingPerfilCoreSSO
+
+        perfil = StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id="123456789abcdef",
+            coresso_sis_id=99,
+            nome="Perfil Teste",
+        )
+
+        s = str(perfil)
+
+        assert s == "[99/12345678] Perfil Teste"
+
+
+class TestRetroalimentacaoCoreSSO:
+    def test_str_with_rf(self):
+        from staging.models import RetroalimentacaoCoreSSO
+
+        retro = RetroalimentacaoCoreSSO.objects.create(
+            tipo="user_created",
+            rf="12345",
+            status="pending",
+        )
+
+        s = str(retro)
+
+        assert s == "[user_created] 12345 (pending)"
+
+    def test_str_with_cpf(self):
+        from staging.models import RetroalimentacaoCoreSSO
+
+        retro = RetroalimentacaoCoreSSO.objects.create(
+            tipo="user_updated",
+            cpf="52998224725",
+            status="delivered",
+        )
+
+        s = str(retro)
+
+        assert s == "[user_updated] 52998224725 (delivered)"
+
+
+class TestDedupResult:
+    def test_str(self):
+        from staging.models import DedupResult
+
+        dedup = DedupResult.objects.create(
+            dedup_key="cpf:52998224725",
+            match_type="cpf_exact",
+            decision="merge",
+            execution_id=_exec_id(),
+        )
+
+        s = str(dedup)
+
+        assert s == "[cpf_exact] cpf:52998224725 → merge"
+
+
+class TestStagingPerfil:
+    def test_str(self):
+        from staging.models import StagingPerfil
+
+        perfil = StagingPerfil.objects.create(
+            cargo_codigo="CP001",
+            cargo_nome="Coordenador",
+            keycloak_role="ROLE_COORDENADOR",
+        )
+
+        s = str(perfil)
+
+        assert s == "CP001 → ROLE_COORDENADOR"

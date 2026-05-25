@@ -31,6 +31,9 @@ class TestNormalizeCpf:
 
     def test_only_letters_returns_none(self):
         assert normalize_cpf("abcdefghijk") is None
+    
+    def test_alpha_rf_returns_cleaned_value(self):
+        assert normalize_rf("  ABCDEF  ") == "ABCDEF"
 
 
 

@@ -496,3 +496,502 @@ class TestETLExecutionViewSetSerializer:
         serializer = viewset.get_serializer_class()
 
         assert serializer == ETLExecutionCreateSerializer
+
+
+class TestSyncSelective:
+    def _create_execution(self):
+        from core.models import ETLExecution
+
+        return ETLExecution.objects.create(
+            trigger_type=ETLExecution.TriggerType.MANUAL,
+            source="all",
+            target_realm="sme-apps",
+            status=ETLExecution.Status.SUCCESS,
+        )
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_cpf_success(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        mock_instance = MagicMock()
+        mock_instance.execute.return_value = {
+            "action": "created",
+            "kc_user_id": "kc-user-1",
+        }
+        mock_service.return_value = mock_instance
+
+        StagingUsuarioServidor.objects.create(
+            cpf="12345678900",
+            nome="Servidor Teste",
+            source="coresso",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "cpfs": ["12345678900"],
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["success"] == 1
+
+        result = resp.data["results"][0]
+
+        assert result["status"] == "success"
+        assert result["exists_coresso"] is True
+
+    def test_sync_selective_cpf_not_found(
+        self,
+        api_client,
+    ):
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "cpfs": ["99999999999"],
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["not_found"] == 1
+        assert resp.data["results"][0]["status"] == "not_found"
+
+    def test_sync_selective_skip_load_keycloak(
+        self,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        StagingUsuarioServidor.objects.create(
+            cpf="12312312399",
+            nome="Usuario Skip",
+            source="se1426",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "cpfs": ["12312312399"],
+                "load_keycloak": False,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["skipped"] == 1
+        assert resp.data["results"][0]["status"] == "skipped"
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_service_exception(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        mock_instance = MagicMock()
+        mock_instance.execute.side_effect = Exception("kc failed")
+        mock_service.return_value = mock_instance
+
+        StagingUsuarioServidor.objects.create(
+            cpf="55544433322",
+            nome="Usuario Error",
+            source="se1426",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "cpfs": ["55544433322"],
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["error"] == 1
+        assert resp.data["results"][0]["status"] == "error"
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_rf_success(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        mock_instance = MagicMock()
+        mock_instance.execute.return_value = {
+            "action": "updated",
+            "kc_user_id": "rf-user",
+        }
+        mock_service.return_value = mock_instance
+
+        StagingUsuarioServidor.objects.create(
+            rf="RF123",
+            cpf="11122233344",
+            nome="Servidor RF",
+            source="coresso",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "rfs": ["RF123"],
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+
+        result = resp.data["results"][0]
+
+        assert resp.data["summary"]["success"] == 1
+        assert result["identifier_type"] == "rf"
+
+    def test_sync_selective_limit_without_execution_returns_404(
+        self,
+        api_client,
+    ):
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "limit": 5,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 404
+
+    def test_sync_selective_limit_skipped(
+        self,
+        api_client,
+    ):
+        from core.models import ETLExecution
+        from staging.models import StagingUsuarioServidor
+
+        execution = ETLExecution.objects.create(
+            source="all",
+            status="success",
+        )
+
+        StagingUsuarioServidor.objects.create(
+            cpf="77788899900",
+            nome="Limit User",
+            source="se1426",
+            execution_id=execution.id,
+            status="ready",
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "limit": 1,
+                "load_keycloak": False,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["skipped"] == 1
+        assert resp.data["results"][0]["identifier"] == "77788899900"
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_limit_success(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from core.models import ETLExecution
+        from staging.models import StagingUsuarioServidor
+
+        execution = ETLExecution.objects.create(
+            source="all",
+            status="success",
+        )
+
+        StagingUsuarioServidor.objects.create(
+            cpf="11111111111",
+            nome="Limit Success",
+            source="coresso",
+            execution_id=execution.id,
+            status="ready",
+        )
+
+        mock_instance = MagicMock()
+        mock_instance.execute.return_value = {
+            "action": "created",
+            "kc_user_id": "limit-user",
+        }
+        mock_service.return_value = mock_instance
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "limit": 1,
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["success"] == 1
+
+    def test_sync_selective_exists_coresso_from_terceiro(
+        self,
+        api_client,
+    ):
+        from staging.models import (
+            StagingUsuarioServidor,
+            StagingUsuarioTerceiro,
+        )
+
+        execution = self._create_execution()
+
+        StagingUsuarioServidor.objects.create(
+            cpf="22233344455",
+            nome="Servidor",
+            source="legacy",
+            execution_id=execution.id,
+        )
+
+        StagingUsuarioTerceiro.objects.create(
+            cpf="22233344455",
+            nome="Terceiro",
+            source="coresso",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "cpfs": ["22233344455"],
+                "load_keycloak": False,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["results"][0]["exists_coresso"] is True
+
+    def test_sync_selective_rf_not_found(
+        self,
+        api_client,
+    ):
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "rfs": ["RF_NOT_FOUND"],
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["not_found"] == 1
+
+        result = resp.data["results"][0]
+
+        assert result["identifier"] == "RF_NOT_FOUND"
+        assert result["status"] == "not_found"
+
+    def test_sync_selective_rf_skipped_when_load_keycloak_false(
+        self,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        StagingUsuarioServidor.objects.create(
+            rf="RF_SKIP",
+            cpf="12345678911",
+            nome="RF Skip",
+            source="se1426",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "rfs": ["RF_SKIP"],
+                "load_keycloak": False,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["skipped"] == 1
+
+        result = resp.data["results"][0]
+
+        assert result["identifier_type"] == "rf"
+        assert result["status"] == "skipped"
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_rf_exception(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from staging.models import StagingUsuarioServidor
+
+        execution = self._create_execution()
+
+        mock_instance = MagicMock()
+        mock_instance.execute.side_effect = Exception("rf failure")
+
+        mock_service.return_value = mock_instance
+
+        StagingUsuarioServidor.objects.create(
+            rf="RF_ERROR",
+            cpf="99988877766",
+            nome="RF Error",
+            source="coresso",
+            execution_id=execution.id,
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "rfs": ["RF_ERROR"],
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["error"] == 1
+
+        result = resp.data["results"][0]
+
+        assert result["identifier"] == "RF_ERROR"
+        assert result["status"] == "error"
+
+    @patch("core.views.KeycloakUpsertService")
+    def test_sync_selective_limit_exception_branch(
+        self,
+        mock_service,
+        api_client,
+    ):
+        from core.models import ETLExecution
+        from staging.models import StagingUsuarioServidor
+
+        execution = ETLExecution.objects.create(
+            source="all",
+            status="success",
+        )
+
+        StagingUsuarioServidor.objects.create(
+            cpf="55566677788",
+            nome="Limit Error",
+            source="coresso",
+            execution_id=execution.id,
+            status="ready",
+        )
+
+        mock_instance = MagicMock()
+        mock_instance.execute.side_effect = Exception("limit failure")
+
+        mock_service.return_value = mock_instance
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "limit": 1,
+                "load_keycloak": True,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.data["summary"]["error"] == 1
+
+        result = resp.data["results"][0]
+
+        assert result["status"] == "error"
+        assert result["identifier"] == "55566677788"
+
+    def test_sync_selective_limit_record_without_identifier(
+        self,
+        api_client,
+    ):
+        from core.models import ETLExecution
+        from staging.models import StagingUsuarioAluno
+
+        execution = ETLExecution.objects.create(
+            source="all",
+            status="success",
+        )
+
+        StagingUsuarioAluno.objects.create(
+            cpf=None,
+            nome="Sem Documento",
+            source="legacy",
+            execution_id=execution.id,
+            status="ready",
+        )
+
+        url = reverse("sync-selective")
+
+        resp = api_client.post(
+            url,
+            {
+                "limit": 1,
+                "load_keycloak": False,
+            },
+            format="json",
+        )
+
+        assert resp.status_code == 200
+
+        summary = resp.data["summary"]
+
+        assert summary["total"] == 0
+        assert summary["skipped"] == 0
+        assert resp.data["results"] == []

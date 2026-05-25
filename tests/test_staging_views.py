@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from rest_framework.test import APIClient
+from unittest.mock import Mock, patch
 
 pytestmark = pytest.mark.django_db
 
@@ -176,7 +177,20 @@ class TestDedupResultViewSet:
         resp = api_client.get(f"/api/staging/dedup/conflicts/?execution_id={exec_id}")
         assert resp.status_code == 200
 
-    def test_conflicts_excludes_reviewed(self, api_client):
-        resp = api_client.get("/api/staging/dedup/conflicts/")
-        assert resp.status_code == 200
+    def test_conflicts_without_pagination(self, api_client):
+        self._make_dedup(decision="conflict", reviewed=False)
 
+        mocked_serializer = Mock()
+        mocked_serializer.data = [{"id": "1"}]
+
+        with patch(
+            "staging.views.DedupResultViewSet.paginate_queryset",
+            return_value=None,
+        ), patch(
+            "staging.views.DedupResultViewSet.get_serializer",
+            return_value=mocked_serializer,
+        ):
+            resp = api_client.get("/api/staging/dedup/conflicts/")
+
+        assert resp.status_code == 200
+        assert resp.data == [{"id": "1"}]
