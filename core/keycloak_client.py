@@ -137,30 +137,33 @@ _FUNCAO_RULES: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def _resolve_role(
+    value: str,
+    exact_map: dict[str, str],
+    pattern_rules: list[tuple[re.Pattern[str], str]],
+) -> str | None:
+    raw = value.strip()
+    role = exact_map.get(raw.upper())
+    if role:
+        return role
+    for pattern, r in pattern_rules:
+        if pattern.search(raw):
+            return r
+    return None
+
+
 def _derive_realm_roles(usuario) -> list[str]:
     roles: set[str] = set()
     cargo = getattr(usuario, "cargo", None)
     funcao = getattr(usuario, "funcao", None)
 
     if cargo:
-        raw = cargo.strip()
-        role = CARGO_ROLE_MAP.get(raw.upper())
-        if not role:
-            for pattern, r in _CARGO_RULES:
-                if pattern.search(raw):
-                    role = r
-                    break
+        role = _resolve_role(cargo, CARGO_ROLE_MAP, _CARGO_RULES)
         if role:
             roles.add(role)
 
     if funcao:
-        raw = funcao.strip()
-        role = FUNCAO_ROLE_MAP.get(raw.upper())
-        if not role:
-            for pattern, r in _FUNCAO_RULES:
-                if pattern.search(raw):
-                    role = r
-                    break
+        role = _resolve_role(funcao, FUNCAO_ROLE_MAP, _FUNCAO_RULES)
         if role:
             roles.add(role)
 
