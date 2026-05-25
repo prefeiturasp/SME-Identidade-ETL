@@ -418,3 +418,136 @@ class TestInferTipoUsuario:
         obj.matricula = None
         assert _infer_tipo_usuario(obj) == "outro"
 
+
+class TestBuildEmailAluno:
+    def test_returns_placeholder_when_email_empty_and_matricula_set(self):
+        from staging.models import StagingUsuarioAluno
+        from core.models import ETLExecution
+        from core.keycloak_client import _build_email
+
+        execution = ETLExecution.objects.create(source="eol_alunos")
+        aluno = StagingUsuarioAluno.objects.create(
+            execution_id=execution.id,
+            matricula="000123",
+            nome="Aluno Teste",
+            source="eol_alunos",
+            status="ready",
+            email="",
+        )
+        result = _build_email(aluno)
+        assert result == "000123@aluno.sme.prefeitura.sp.gov.br"
+
+    def test_returns_empty_when_email_empty_and_matricula_empty(self):
+        from staging.models import StagingUsuarioAluno
+        from core.models import ETLExecution
+        from core.keycloak_client import _build_email
+
+        execution = ETLExecution.objects.create(source="eol_alunos")
+        aluno = StagingUsuarioAluno.objects.create(
+            execution_id=execution.id,
+            matricula="",
+            nome="Aluno Sem Email",
+            source="eol_alunos",
+            status="ready",
+            email="",
+        )
+        result = _build_email(aluno)
+        assert result == ""
+
+    def test_returns_actual_email_when_present(self):
+        from staging.models import StagingUsuarioAluno
+        from core.models import ETLExecution
+        from core.keycloak_client import _build_email
+
+        execution = ETLExecution.objects.create(source="eol_alunos")
+        aluno = StagingUsuarioAluno.objects.create(
+            execution_id=execution.id,
+            matricula="000123",
+            nome="Aluno Email",
+            source="eol_alunos",
+            status="ready",
+            email="aluno@email.com",
+        )
+        result = _build_email(aluno)
+        assert result == "aluno@email.com"
+
+
+class TestBuildKcPayloadAluno:
+    def test_cod_escola_and_dre_present_in_attributes(self):
+        from staging.models import StagingUsuarioAluno
+        from core.models import ETLExecution
+        from core.keycloak_client import build_kc_payload
+
+        execution = ETLExecution.objects.create(source="eol_alunos")
+        aluno = StagingUsuarioAluno.objects.create(
+            execution_id=execution.id,
+            matricula="000123",
+            nome="Aluno Escola",
+            source="eol_alunos",
+            status="ready",
+            email="",
+            cod_escola="12345",
+            dre="DRE-BT",
+        )
+        payload = build_kc_payload(aluno)
+        assert "cod_escola" in payload["attributes"]
+        assert "cod_dre" in payload["attributes"]
+        assert payload["attributes"]["cod_escola"] == ["12345"]
+        assert payload["attributes"]["cod_dre"] == ["DRE-BT"]
+
+    def test_cod_escola_absent_when_empty(self):
+        from staging.models import StagingUsuarioAluno
+        from core.models import ETLExecution
+        from core.keycloak_client import build_kc_payload
+
+        execution = ETLExecution.objects.create(source="eol_alunos")
+        aluno = StagingUsuarioAluno.objects.create(
+            execution_id=execution.id,
+            matricula="000123",
+            nome="Aluno Sem Escola",
+            source="eol_alunos",
+            status="ready",
+            email="",
+            cod_escola="",
+            dre="",
+        )
+        payload = build_kc_payload(aluno)
+        assert "cod_escola" not in payload["attributes"]
+        assert "cod_dre" not in payload["attributes"]
+
+
+class TestHandleNewUpsertExistingUser:
+    def test_updates_existing_kc_user_when_found(self):
+        from core.keycloak_client import _handle_new_upsert
+
+        usuario = _make_usuario(rf="99999")
+        payload = {"username": "99999", "email": "j@sme.sp"}
+
+        upsert = MagicMock()
+        admin = _make_admin_mock()
+        # Simula user existente no KC
+        with patch("core.keycloak_client._find_existing_kc_user", return_value="existing-kc-id"):
+            kc_id, action = _handle_new_upsert(admin, upsert, usuario, payload)
+
+        assert action == "updated"
+        assert kc_id == "existing-kc-id"
+        assert upsert.target_id == "existing-kc-id"
+        admin.update_user.assert_called_once()
+
+    def test_logs_warning_when_set_password_fails(self):
+        from core.keycloak_client import _handle_new_upsert
+
+        usuario = _make_usuario(rf="88888")
+        payload = {"username": "88888", "email": "j@sme.sp"}
+
+        upsert = MagicMock()
+        admin = _make_admin_mock(kc_user_id="new-kc-id")
+        admin.set_user_password.side_effect = RuntimeError("password error")
+
+        with patch("core.keycloak_client._find_existing_kc_user", return_value=None):
+            # Não deve lançar exceção
+            kc_id, action = _handle_new_upsert(admin, upsert, usuario, payload)
+
+        assert action == "created"
+        assert kc_id == "new-kc-id"
+

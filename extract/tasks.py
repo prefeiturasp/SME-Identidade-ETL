@@ -40,7 +40,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
             s.situacao               AS situacao,
             e.dc_dispositivo         AS email,
             RTRIM(LTRIM(ISNULL(c.dc_cargo, '')))                     AS cargo,
-            RTRIM(LTRIM(ISNULL(f.dc_funcao_atividade, '')))          AS funcao,
+            RTRIM(LTRIM(ISNULL(tf.dc_tipo_funcao, '')))              AS funcao,
             CAST(l.cd_unidade_educacao AS VARCHAR(20))               AS cod_unidade,
             CAST(ue.cd_unidade_administrativa_referencia AS VARCHAR(20)) AS cod_dre
         FROM v_servidor_sme_serap s
@@ -55,11 +55,11 @@ def _extract_se1426_sql(execution_id: str) -> int:
             AND cba.dt_cancelamento IS NULL
         LEFT JOIN cargo c
             ON c.cd_cargo = cba.cd_cargo
-        LEFT JOIN v_funcao_atividade_cotic fa
-            ON fa.cd_servidor = sc.cd_servidor
-            AND fa.dt_fim IS NULL
-        LEFT JOIN funcao_atividade f
-            ON f.cd_funcao_atividade = fa.cd_funcao_atividade
+        LEFT JOIN funcao_atividade_cargo_servidor fa
+            ON fa.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND fa.dt_fim_funcao_atividade IS NULL
+        LEFT JOIN tipo_funcao_atividade tf
+            ON tf.cd_tipo_funcao = fa.cd_tipo_funcao
         LEFT JOIN lotacao_servidor l
             ON l.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
             AND l.dt_fim IS NULL

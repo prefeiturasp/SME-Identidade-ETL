@@ -81,7 +81,7 @@ def get_admin_client(realm: str | None = None):
     )
 
 
-# Mapa cargo → role Keycloak
+# Mapa cargo → role Keycloak (match exato — mantido para retrocompatibilidade com testes)
 CARGO_ROLE_MAP = {
     "PROFESSOR DE EDUCACAO INFANTIL E ENSINO FUNDAMENTAL I": "Professor",
     "PROFESSOR DE ENSINO FUNDAMENTAL II E MEDIO": "Professor",
@@ -104,19 +104,66 @@ FUNCAO_ROLE_MAP = {
     "POSL": "POSL",
 }
 
+# Regras de padrão para cargo → Realm Role.
+# Usadas como fallback quando o match exato (CARGO_ROLE_MAP) não encontra resultado.
+# Cobrem formas abreviadas do eol_db (ex: "PROF.ED.INF.E ENS.FUND.I") e nomes
+# completos do SE1426. Ordem importa: regras mais específicas devem vir primeiro.
+_CARGO_RULES: list[tuple[re.Pattern[str], str]] = [
+    # AssistenteDiretor antes de Diretor para evitar colisão
+    (re.compile(r"\bASSISTENTE\s+DE\s+DIRETOR\b|\bASSIST\.?\s*DIR\b", re.IGNORECASE), "AssistenteDiretor"),
+    (re.compile(r"\bDIRETOR\b", re.IGNORECASE), "Diretor"),
+    (re.compile(r"\bCOORDENADOR\s+PEDAGOGICO\b", re.IGNORECASE), "CoordenadorPedagogico"),
+    # Professores: PROF., PROF.ED.INF., PROF.ENS.FUND.II E MED.-, PROFESSOR ...
+    (re.compile(r"\bPROF(ESSOR)?\b", re.IGNORECASE), "Professor"),
+    (re.compile(r"\bAUXILIAR\s+TECNICO\s+DE\s+EDUCACAO\b", re.IGNORECASE), "AuxiliarTecnico"),
+    (re.compile(r"\bSECRETARIO\s+DE\s+ESCOLA\b", re.IGNORECASE), "SecretarioEscola"),
+    (re.compile(r"\bSUPERVISOR\s+ESCOLAR\b", re.IGNORECASE), "Supervisor"),
+    (re.compile(r"\bAGENTE\s+ESCOLAR\b", re.IGNORECASE), "AgenteEscolar"),
+]
+
+# Regras de padrão para funcao → Realm Role.
+# Cobre dc_funcao_atividade (nomes completos) e dc_tipo_funcao (abreviações como
+# "PROF OR SALA DE LEITURA POSL", "AUX. DIRECAO", "PROF DE APOIO ACOMP INCL PAAI").
+_FUNCAO_RULES: list[tuple[re.Pattern[str], str]] = [
+    # AssistenteDiretor antes de Diretor
+    (re.compile(r"\bASSISTENTE\s+DE\s+DIRECAO\b|\bAUX\.?\s+DIRECAO\b", re.IGNORECASE), "AssistenteDiretor"),
+    (re.compile(r"\bDIRETOR\s+DE\s+ESCOLA\b", re.IGNORECASE), "Diretor"),
+    (re.compile(r"\bCOORDENADOR\s+PEDAGOGICO\b", re.IGNORECASE), "CoordenadorPedagogico"),
+    # Siglas especiais que aparecem como sufixo em dc_tipo_funcao
+    (re.compile(r"\bPAAI\b", re.IGNORECASE), "PAAI"),
+    (re.compile(r"\bPOEI\b", re.IGNORECASE), "POEI"),
+    (re.compile(r"\bPOSL\b", re.IGNORECASE), "POSL"),
+    (re.compile(r"\bPOA\b", re.IGNORECASE), "POA"),
+]
+
 
 def _derive_realm_roles(usuario) -> list[str]:
     roles: set[str] = set()
     cargo = getattr(usuario, "cargo", None)
     funcao = getattr(usuario, "funcao", None)
+
     if cargo:
-        key = cargo.strip().upper()
-        if key in CARGO_ROLE_MAP:
-            roles.add(CARGO_ROLE_MAP[key])
+        raw = cargo.strip()
+        role = CARGO_ROLE_MAP.get(raw.upper())
+        if not role:
+            for pattern, r in _CARGO_RULES:
+                if pattern.search(raw):
+                    role = r
+                    break
+        if role:
+            roles.add(role)
+
     if funcao:
-        key = funcao.strip().upper()
-        if key in FUNCAO_ROLE_MAP:
-            roles.add(FUNCAO_ROLE_MAP[key])
+        raw = funcao.strip()
+        role = FUNCAO_ROLE_MAP.get(raw.upper())
+        if not role:
+            for pattern, r in _FUNCAO_RULES:
+                if pattern.search(raw):
+                    role = r
+                    break
+        if role:
+            roles.add(role)
+
     return sorted(roles)
 
 
