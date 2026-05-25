@@ -8,6 +8,7 @@
 #   ./scripts/trigger-pipeline.sh --realm sme-devops # outro realm
 #   ./scripts/trigger-pipeline.sh --load-keycloak    # habilita carga no Keycloak
 #   ./scripts/trigger-pipeline.sh --watch            # aguarda conclusão e exibe status
+#   ./scripts/trigger-pipeline.sh --no-logs          # não abre os logs após disparar
 # =============================================================================
 set -euo pipefail
 
@@ -20,6 +21,7 @@ REALM="sme-apps"
 LOAD_KEYCLOAK="false"
 LOAD_TOKEN_MS="true"
 WATCH=false
+FOLLOW_LOGS=true
 NOTE="Trigger manual via trigger-pipeline.sh"
 
 # ---------------------------------------------------------------------------
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --load-keycloak) LOAD_KEYCLOAK="true"; shift ;;
     --no-token-ms)  LOAD_TOKEN_MS="false"; shift ;;
     --watch)        WATCH=true;         shift ;;
+    --no-logs)      FOLLOW_LOGS=false;  shift ;;
     --note)         NOTE="$2";          shift 2 ;;
     -h|--help)
       sed -n '2,9p' "$0" | sed 's/^# //'
@@ -64,6 +67,7 @@ JQ_CMD="${JQ_CMD:-jq .}"
 # ---------------------------------------------------------------------------
 # Verifica se a API está respondendo
 # ---------------------------------------------------------------------------
+TRIGGER_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 info "Verificando API em $API_BASE ..."
 if ! curl -sf "${API_BASE}/api/health/" -o /dev/null; then
   error "API não está respondendo em ${API_BASE}/api/health/ — suba o container primeiro."
@@ -83,7 +87,7 @@ detail "Load Token-MS:  $LOAD_TOKEN_MS"
 echo ""
 
 RESPONSE=$(curl -sf -X POST \
-  "${API_BASE}/api/v1/etl/executions/" \
+  "${API_BASE}/api/etl/executions/" \
   -H "Content-Type: application/json" \
   -H "X-Forwarded-User: trigger-pipeline.sh" \
   -d "$PAYLOAD") || error "Falha ao chamar a API. Verifique se o container está rodando."
@@ -105,14 +109,14 @@ echo "  Acompanhe o log do worker:"
 echo "    docker logs -f local-etl-worker"
 echo ""
 echo "  Ou consulte via API:"
-echo "    curl -s ${API_BASE}/api/v1/etl/executions/${EXECUTION_ID}/ | jq ."
+echo "    curl -s ${API_BASE}/api/etl/executions/${EXECUTION_ID}/ | jq ."
 echo ""
 
 # ---------------------------------------------------------------------------
-# --watch: polling de status até conclusão
+# Abre logs do worker (padrão) ou polling via API (--watch)
 # ---------------------------------------------------------------------------
 if [[ "$WATCH" == true ]]; then
-  info "Aguardando conclusão (Ctrl+C para cancelar)..."
+  info "Aguardando conclusão via API (Ctrl+C para cancelar)..."
   POLL_INTERVAL=5
   TIMEOUT_SECS=600
   ELAPSED=0
@@ -121,7 +125,7 @@ if [[ "$WATCH" == true ]]; then
     sleep "$POLL_INTERVAL"
     ELAPSED=$(( ELAPSED + POLL_INTERVAL ))
 
-    CURRENT=$(curl -sf "${API_BASE}/api/v1/etl/executions/${EXECUTION_ID}/" 2>/dev/null || echo '{}')
+    CURRENT=$(curl -sf "${API_BASE}/api/etl/executions/${EXECUTION_ID}/" 2>/dev/null || echo '{}')
     CURRENT_STATUS=$(echo "$CURRENT" | jq -r '.status // "unknown"')
 
     printf "\r    [%3ds] status: %-12s" "$ELAPSED" "$CURRENT_STATUS"
@@ -148,4 +152,13 @@ if [[ "$WATCH" == true ]]; then
       exit 2
     fi
   done
+elif [[ "$FOLLOW_LOGS" == true ]]; then
+  WORKER_CONTAINER="local-etl-worker"
+  if docker ps --format '{{.Names}}' | grep -q "^${WORKER_CONTAINER}$"; then
+    info "Abrindo logs do worker (Ctrl+C para sair)..."
+    echo ""
+    exec docker logs -f --since "$TRIGGER_TS" "$WORKER_CONTAINER"
+  else
+    warn "Container '$WORKER_CONTAINER' não está rodando — logs não disponíveis."
+  fi
 fi

@@ -57,7 +57,7 @@ services:
       - .env.local
     environment:
       # Sobrescreve os valores de .env.local para apontar aos containers locais
-      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -90,7 +90,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -119,7 +119,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
+      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
