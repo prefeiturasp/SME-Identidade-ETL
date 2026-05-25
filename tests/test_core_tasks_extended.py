@@ -310,3 +310,206 @@ class TestRunEtlPipelineError:
         execution.refresh_from_db()
         assert execution.status == "failed"
 
+
+class TestGetOrCreateStepReset:
+    def test_reset_existing_step_to_running(self):
+        from core.tasks import _get_or_create_step
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = ETLExecution.objects.create(source="all")
+        # Cria o step manualmente com status "failed"
+        ETLStepLog.objects.create(
+            execution=execution,
+            step_name="extract_se1426",
+            step_order=1,
+            status="failed",
+            error_detail="erro anterior",
+        )
+
+        # Segunda chamada deve resetar o step para "running"
+        step = _get_or_create_step(execution, "extract_se1426", 1)
+
+        assert step.status == ETLStepLog.StepStatus.RUNNING
+        assert step.error_detail is None
+        assert step.finished_at is None
+
+
+class TestDecideTargetIdempotency:
+    def test_skips_when_already_done(self):
+        from core.tasks import decide_target
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = _make_execution()
+        _make_servidor_ready(execution.id)
+        decide_target(str(execution.id))
+
+        # Chama novamente — deve pular (idempotência)
+        step_before = ETLStepLog.objects.get(execution=execution, step_name="decision")
+        finished_at_before = step_before.finished_at
+
+        decide_target(str(execution.id))
+
+        step_after = ETLStepLog.objects.get(execution=execution, step_name="decision")
+        assert step_after.finished_at == finished_at_before
+
+
+class TestLoadKeycloakIdempotency:
+    def test_skips_when_already_done(self):
+        from core.tasks import load_keycloak
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = _make_execution()
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
+
+        # Cria o step com status "success" manualmente para simular execução anterior
+        ETLStepLog.objects.create(
+            execution=execution,
+            step_name="load_keycloak",
+            step_order=6,
+            status="success",
+        )
+
+        with patch("core.keycloak_client.upsert_user_to_keycloak") as mock_upsert:
+            load_keycloak(str(execution.id))
+
+        mock_upsert.assert_not_called()
+
+
+class TestLoadTokenMsDisabled:
+    def test_skips_when_load_token_ms_false(self):
+        from core.tasks import load_token_ms
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = _make_execution()
+        execution.load_token_ms = False
+        execution.save(update_fields=["load_token_ms"])
+
+        load_token_ms(str(execution.id))
+
+        step = ETLStepLog.objects.get(execution=execution, step_name="load_token_ms")
+        assert step.status == "skipped"
+        assert step.metadata == {"reason": "load_token_ms=False"}
+
+
+class TestLoadTokenMsIdempotency:
+    @patch("core.token_ms_client.send_all")
+    def test_skips_when_already_done(self, mock_send_all):
+        from core.tasks import load_token_ms
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = _make_execution()
+
+        # Cria o step com status "success" para simular execução anterior
+        ETLStepLog.objects.create(
+            execution=execution,
+            step_name="load_token_ms",
+            step_order=7,
+            status="success",
+        )
+
+        load_token_ms(str(execution.id))
+
+        mock_send_all.assert_not_called()
+
+
+class TestAuditEtlIdempotency:
+    def test_skips_when_already_done(self):
+        from core.tasks import audit_etl
+        from core.models import ETLExecution, ETLStepLog
+
+        execution = _make_execution()
+
+        # Cria o step audit com status "success" para simular execução anterior
+        ETLStepLog.objects.create(
+            execution=execution,
+            step_name="audit",
+            step_order=8,
+            status="success",
+        )
+
+        # Roda o pipeline completo — deve pular o step audit
+        audit_etl(str(execution.id))
+
+        # Deve haver apenas 1 step audit (o criado manualmente)
+        count = ETLStepLog.objects.filter(execution=execution, step_name="audit").count()
+        assert count == 1
+
+
+class TestSyncCoressoCatalogo:
+    def test_skips_when_no_coresso_server(self, settings):
+        from core.tasks import _sync_coresso_catalogo
+        from core.models import ETLExecution, ETLStepLog
+
+        settings.CORESSO_DB_SERVER = ""
+
+        execution = ETLExecution.objects.create(source="all")
+        _sync_coresso_catalogo(str(execution.id), realm="sme-apps")
+
+        step = ETLStepLog.objects.get(execution=execution, step_name="sync_catalogo")
+        assert step.status == "skipped"
+
+    @patch("core.keycloak_client.upsert_kc_client_role")
+    @patch("core.keycloak_client.upsert_kc_client")
+    @patch("core.keycloak_client.get_admin_client")
+    @patch("extract.tasks.extract_coresso_perfis", return_value=3)
+    @patch("extract.tasks.extract_coresso_sistemas", return_value=2)
+    def test_success_path(
+        self,
+        mock_sistemas_fn,
+        mock_perfis_fn,
+        mock_admin,
+        mock_upsert_client,
+        mock_upsert_role,
+        settings,
+    ):
+        from core.tasks import _sync_coresso_catalogo
+        from core.models import ETLExecution, ETLStepLog
+        from staging.models import StagingSistema, StagingPerfilCoreSSO
+
+        settings.CORESSO_DB_SERVER = "coresso-host"
+
+        # Cria sistema e perfil reais para os loops
+        StagingSistema.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema Teste",
+            sigla="SIG01",
+            situacao=1,
+            status=StagingSistema.Status.READY,
+        )
+        from staging.models import StagingPerfilCoreSSO
+        StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id="GRU001",
+            nome="Grupo Teste",
+            kc_role_name="grupo-teste",
+            coresso_sis_id=1,
+            status=StagingPerfilCoreSSO.Status.READY,
+        )
+
+        execution = ETLExecution.objects.create(source="all")
+        _sync_coresso_catalogo(str(execution.id), realm="sme-apps")
+
+        step = ETLStepLog.objects.get(execution=execution, step_name="sync_catalogo")
+        assert step.status == "success"
+        assert step.records_in == 5  # 2 sistemas + 3 perfis
+        mock_upsert_client.assert_called_once()
+        mock_upsert_role.assert_called_once()
+
+    @patch("extract.tasks.extract_coresso_sistemas", side_effect=RuntimeError("db error"))
+    @patch("core.keycloak_client.get_admin_client")
+    def test_exception_marks_step_failed_but_does_not_abort(
+        self, mock_admin, mock_sistemas, settings
+    ):
+        from core.tasks import _sync_coresso_catalogo
+        from core.models import ETLExecution, ETLStepLog
+
+        settings.CORESSO_DB_SERVER = "coresso-host"
+
+        execution = ETLExecution.objects.create(source="all")
+        # Não deve lançar exceção — pipeline continua
+        _sync_coresso_catalogo(str(execution.id), realm="sme-apps")
+
+        step = ETLStepLog.objects.get(execution=execution, step_name="sync_catalogo")
+        assert step.status == "failed"
+        assert "db error" in step.error_detail
+

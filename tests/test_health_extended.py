@@ -353,3 +353,163 @@ class TestHealthSmeIntegrazioneAuth:
         response = client.get("/api/etl/health/sources/sme-integracao/auth/")
         assert response.status_code == 503
 
+
+class TestAuthenticate:
+    def test_returns_none_when_credentials_missing(self, settings):
+        settings.SME_INTEGRACAO_LOGIN = ""
+        settings.SME_INTEGRACAO_PASSWORD = ""
+        import httpx
+        from core.health import _authenticate
+
+        mock_client = MagicMock()
+        result = {}
+        auth_ok, token_present, token_len = _authenticate(mock_client, result)
+
+        assert auth_ok is None
+        assert token_present is False
+        assert token_len is None
+
+    def test_returns_false_when_status_not_200(self, settings):
+        settings.SME_INTEGRACAO_LOGIN = "user"
+        settings.SME_INTEGRACAO_PASSWORD = "pass"
+
+        from core.health import _authenticate
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        result = {}
+
+        auth_ok, token_present, token_len = _authenticate(mock_client, result)
+
+        assert auth_ok is False
+        assert token_present is False
+        assert token_len is None
+
+    def test_returns_token_when_status_200(self, settings):
+        settings.SME_INTEGRACAO_LOGIN = "user"
+        settings.SME_INTEGRACAO_PASSWORD = "pass"
+
+        from core.health import _authenticate
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"token": "abc123"}
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        result = {}
+
+        auth_ok, token_present, token_len = _authenticate(mock_client, result)
+
+        assert auth_ok is True
+        assert token_present is True
+        assert token_len == 6
+
+    def test_returns_false_on_exception(self, settings):
+        settings.SME_INTEGRACAO_LOGIN = "user"
+        settings.SME_INTEGRACAO_PASSWORD = "pass"
+
+        from core.health import _authenticate
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = ConnectionError("timeout")
+        result = {}
+
+        auth_ok, token_present, token_len = _authenticate(mock_client, result)
+
+        assert auth_ok is False
+        assert "auth_error" in result
+        assert "timeout" in result["auth_error"]
+
+
+class TestCheckDataAccess:
+    def test_returns_none_when_no_api_key(self, settings):
+        settings.SME_INTEGRACAO_API_KEY = ""
+        from core.health import _check_data_access
+
+        result = _check_data_access(MagicMock())
+        assert result is None
+
+    def test_returns_true_when_status_200(self, settings):
+        settings.SME_INTEGRACAO_API_KEY = "my-api-key"
+        from core.health import _check_data_access
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+
+        result = _check_data_access(mock_client)
+        assert result is True
+
+    def test_returns_false_on_exception(self, settings):
+        settings.SME_INTEGRACAO_API_KEY = "my-api-key"
+        from core.health import _check_data_access
+
+        mock_client = MagicMock()
+        mock_client.get.side_effect = ConnectionError("network error")
+
+        result = _check_data_access(mock_client)
+        assert result is False
+
+
+class TestAuthenticationStatus:
+    def test_ok_when_true(self):
+        from core.health import _authentication_status
+        assert _authentication_status(True) == "ok"
+
+    def test_failed_when_false(self):
+        from core.health import _authentication_status
+        assert _authentication_status(False) == "failed"
+
+    def test_not_tested_when_none(self):
+        from core.health import _authentication_status
+        assert _authentication_status(None) == "not_tested"
+
+
+class TestDataAccessStatus:
+    def test_ok_when_true(self):
+        from core.health import _data_access_status
+        assert _data_access_status(True) == "ok"
+
+    def test_failed_when_false(self):
+        from core.health import _data_access_status
+        assert _data_access_status(False) == "failed"
+
+    def test_not_tested_when_none(self):
+        from core.health import _data_access_status
+        assert _data_access_status(None) == "not_tested"
+
+
+class TestCheckSmeIntegrazioneAuthTokenFields:
+    """Quando _authenticate retorna auth_ok=True, os campos de token devem ser preenchidos."""
+
+    @patch("core.health._check_data_access", return_value=True)
+    @patch("core.health._authenticate", return_value=(True, True, 12))
+    @patch("core.health.httpx")
+    def test_sets_auth_token_fields_when_auth_ok(self, mock_httpx, mock_auth, mock_data, settings):
+        settings.SME_INTEGRACAO_BASE_URL = "http://sme-api"
+        settings.SME_INTEGRACAO_LOGIN = "user"
+        settings.SME_INTEGRACAO_PASSWORD = "pass"
+        settings.SME_INTEGRACAO_TIMEOUT = 5
+
+        mock_swagger_resp = MagicMock()
+        mock_swagger_resp.status_code = 200
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = MagicMock(return_value=False)
+        mock_client_instance.get.return_value = mock_swagger_resp
+
+        mock_httpx.Client.return_value = mock_client_instance
+        mock_httpx.ConnectError = ConnectionError
+
+        from core.health import _check_sme_integracao
+        result = _check_sme_integracao()
+
+        assert result.get("auth_token_present") is True
+        assert result.get("auth_token_length") == 12
+

@@ -236,12 +236,54 @@ def decide_target(self, execution_id: str):
         raise
 
 
+def _try_assign_roles(admin, kc_user_id: str, usuario) -> None:
+    """Tenta atribuir client roles ao usuario no Keycloak; loga aviso em caso de falha."""
+    from .keycloak_client import assign_user_client_roles
+    login = (
+        (getattr(usuario, "rf", None) or "").strip()
+        or "".join(c for c in (usuario.cpf or "") if c.isdigit())
+    )
+    try:
+        assign_user_client_roles(admin, kc_user_id, login)
+    except Exception as role_exc:
+        logger.warning(
+            "assign_user_client_roles falhou para %s (%s): %s",
+            login, kc_user_id, role_exc,
+        )
+
+
+def _upsert_single_usuario(admin, usuario, realm: str, execution) -> tuple[int, int, int]:
+    """Faz upsert de um único usuario no Keycloak e atualiza seu status.
+
+    Retorna (loaded, skipped, errors).
+    """
+    from .keycloak_client import upsert_user_to_keycloak
+    try:
+        result = upsert_user_to_keycloak(admin, usuario, realm=realm, execution=execution)
+        if result["action"] == "skipped":
+            usuario.status = "skipped"
+            usuario.save(update_fields=["status"])
+            return 0, 1, 0
+        usuario.status = "loaded"
+        usuario.save(update_fields=["status"])
+        kc_user_id = result.get("kc_user_id")
+        if kc_user_id:
+            _try_assign_roles(admin, kc_user_id, usuario)
+        return 1, 0, 0
+    except Exception as e:
+        logger.warning("Load KC error for %s: %s", getattr(usuario, "rf", None) or usuario.cpf, e)
+        usuario.status = "error"
+        usuario.error_detail = str(e)[:1000]
+        usuario.save(update_fields=["status", "error_detail"])
+        return 0, 0, 1
+
+
 @shared_task(bind=True, name="core.tasks.load_keycloak", max_retries=3)
 def load_keycloak(self, execution_id: str):
     """Faz upsert em lote dos usuarios em READY para o Keycloak e registra os resultados em UpsertControl."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
-    from .keycloak_client import assign_user_client_roles, get_admin_client, upsert_user_to_keycloak
+    from .keycloak_client import get_admin_client
     from .models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -268,48 +310,16 @@ def load_keycloak(self, execution_id: str):
     try:
         admin = get_admin_client(realm=execution.target_realm)
 
-        loaded = 0
-        errors = 0
-        skipped = 0
-        total = 0
+        loaded = errors = skipped = total = 0
 
         for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
             usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
             total += usuarios.count()
             for usuario in usuarios.iterator(chunk_size=200):
-                try:
-                    result = upsert_user_to_keycloak(
-                        admin, usuario,
-                        realm=execution.target_realm,
-                        execution=execution,
-                    )
-                    kc_user_id = result.get("kc_user_id")
-                    if result["action"] == "skipped":
-                        usuario.status = "skipped"
-                        skipped += 1
-                    else:
-                        usuario.status = "loaded"
-                        loaded += 1
-                        # Atribui client roles (perfis CoreSSO por sistema) se o upsert criou/atualizou
-                        if kc_user_id:
-                            login = (
-                                (getattr(usuario, "rf", None) or "").strip()
-                                or "".join(c for c in (usuario.cpf or "") if c.isdigit())
-                            )
-                            try:
-                                assign_user_client_roles(admin, kc_user_id, login)
-                            except Exception as role_exc:
-                                logger.warning(
-                                    "assign_user_client_roles falhou para %s (%s): %s",
-                                    login, kc_user_id, role_exc,
-                                )
-                    usuario.save(update_fields=["status"])
-                except Exception as e:
-                    logger.warning("Load KC error for %s: %s", getattr(usuario, 'rf', None) or usuario.cpf, e)
-                    usuario.status = "error"
-                    usuario.error_detail = str(e)[:1000]
-                    usuario.save(update_fields=["status", "error_detail"])
-                    errors += 1
+                l, s, e = _upsert_single_usuario(admin, usuario, execution.target_realm, execution)
+                loaded += l
+                skipped += s
+                errors += e
 
         step.records_in = total
         step.records_out = loaded
