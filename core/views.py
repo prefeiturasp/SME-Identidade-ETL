@@ -1,23 +1,28 @@
 """ViewSets de API e views baseadas em funcao para gerenciamento das execucoes do ETL."""
 import logging
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from core.service import (
-    KeycloakUpsertService,
-)
+from core.keycloak_client import get_admin_client, upsert_kc_client, upsert_kc_client_role
+from core.service import KeycloakUpsertService
+from etl_ms.celery import app as celery_app
+from extract.tasks import extract_coresso_perfis, extract_coresso_sistemas
+from staging.models import RetroalimentacaoCoreSSO, StagingPerfilCoreSSO, StagingSistema
+from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
 from .models import ETLExecution, UpsertControl
 from .serializers import (
     ETLExecutionCreateSerializer,
     ETLExecutionListSerializer,
     ETLExecutionSerializer,
+    SyncSelectiveSerializer,
     UpsertControlSerializer,
 )
+from .tasks import run_etl_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +56,10 @@ class ETLExecutionViewSet(
             source=serializer.validated_data.get("source", "all"),
             target_realm=serializer.validated_data.get("target_realm", "sme-apps"),
             note=serializer.validated_data.get("note", ""),
+            load_keycloak=serializer.validated_data.get("load_keycloak", False),
+            load_token_ms=serializer.validated_data.get("load_token_ms", True),
             executed_by=request.META.get("HTTP_X_FORWARDED_USER", "api"),
         )
-
-        from .tasks import run_etl_pipeline
 
         task = run_etl_pipeline.delay(str(execution.id))
         execution.celery_task_id = task.id
@@ -80,8 +85,6 @@ class ETLExecutionViewSet(
             )
 
         if execution.celery_task_id:
-            from etl_ms.celery import app as celery_app
-
             celery_app.control.revoke(execution.celery_task_id, terminate=True)
 
         execution.status = ETLExecution.Status.CANCELLED
@@ -128,11 +131,9 @@ def etl_stats(request):
         executions.values_list("status").annotate(count=Count("id")).values_list("status", "count")
     )
 
-    from django.db import models as dj_models
-
     upsert_stats = UpsertControl.objects.aggregate(
         total_records=Count("id"),
-        active_records=Count("id", filter=dj_models.Q(is_active=True)),
+        active_records=Count("id", filter=Q(is_active=True)),
     )
 
     return Response(
@@ -224,8 +225,6 @@ def test_kc_upsert(request, cpf=None):
 @api_view(["POST"])
 def sistemas_extract(request):
     """Dispara extração síncrona de SYS_Sistema (CoreSSO) → staging_sistema."""
-    from extract.tasks import extract_coresso_sistemas
-
     try:
         total = extract_coresso_sistemas(execution_id=None)
     except Exception as e:
@@ -240,9 +239,6 @@ def sistemas_extract(request):
 @api_view(["POST"])
 def sistemas_load_keycloak(request):
     """Load staging sistemas into Keycloak as OIDC clients."""
-    from core.keycloak_client import get_admin_client, upsert_kc_client
-    from staging.models import StagingSistema
-
     body = request.data or {}
     realm = body.get("realm") or None
     only_sigla = body.get("sigla")
@@ -276,8 +272,6 @@ def sistemas_load_keycloak(request):
 @api_view(["GET"])
 def sistemas_list(request):
     """Retorna a lista de todos os staging sistemas com o respectivo mapeamento de client Keycloak."""
-    from staging.models import StagingSistema
-
     return Response([
         {
             "coresso_sis_id": s.coresso_sis_id,
@@ -296,8 +290,6 @@ def sistemas_list(request):
 @api_view(["POST"])
 def perfis_extract(request):
     """Dispara extracao sincrona dos perfis do CoreSSO para staging."""
-    from extract.tasks import extract_coresso_perfis
-
     try:
         total = extract_coresso_perfis(execution_id=None)
     except Exception as e:
@@ -309,9 +301,6 @@ def perfis_extract(request):
 @api_view(["POST"])
 def perfis_load_keycloak(request):
     """Carrega os perfis CoreSSO de staging como client roles no Keycloak."""
-    from core.keycloak_client import get_admin_client, upsert_kc_client_role
-    from staging.models import StagingPerfilCoreSSO
-
     body = request.data or {}
     realm = body.get("realm") or None
     sis_id = body.get("coresso_sis_id")
@@ -356,8 +345,6 @@ def perfis_load_keycloak(request):
 @api_view(["GET"])
 def perfis_list(request):
     """Retorna a lista de todos os perfis CoreSSO de staging com o mapeamento de roles do Keycloak."""
-    from staging.models import StagingPerfilCoreSSO
-
     sis_id = request.query_params.get("coresso_sis_id")
     qs = StagingPerfilCoreSSO.objects.select_related("sistema")
     if sis_id:
@@ -379,8 +366,6 @@ def perfis_list(request):
 @api_view(["GET"])
 def retroalim_list(request):
     """Retorna uma lista paginada de registros de retroalimentacao do CoreSSO."""
-    from staging.models import RetroalimentacaoCoreSSO
-
     qs = RetroalimentacaoCoreSSO.objects.all()
     st = request.query_params.get("status")
     if st:
@@ -398,3 +383,162 @@ def retroalim_list(request):
         }
         for e in qs.order_by("-created_at")[:200]
     ])
+
+
+@api_view(["POST"])
+def sync_selective(request):
+    """Sincroniza seletivamente usuarios por CPF, RF ou quantidade de registros READY.
+
+    Retorna status individual por registro: success, skipped, error, not_found.
+    Indica tambem se o usuario existe no CoreSSO (source=coresso no staging).
+    """
+    from .serializers import SyncSelectiveSerializer
+
+    serializer = SyncSelectiveSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+
+    cpfs = [c.replace(".", "").replace("-", "").strip() for c in data.get("cpfs", [])]
+    rfs = [r.strip() for r in data.get("rfs", [])]
+    limit = data.get("limit")
+    realm = data.get("realm", "sme-apps")
+    do_load_keycloak = data.get("load_keycloak", False)
+    do_push_token_ms = data.get("push_token_ms", True)
+
+    USER_MODELS = (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro)
+    results = []
+
+    def _find_in_staging(cpf=None, rf=None):
+        """Busca o registro mais recente no staging para o CPF ou RF informado."""
+        for model_class in USER_MODELS:
+            qs = model_class.objects.all()
+            if cpf:
+                qs = qs.filter(cpf=cpf)
+            elif rf and model_class == StagingUsuarioServidor:
+                qs = qs.filter(rf=rf)
+            else:
+                continue
+            record = qs.order_by("-extracted_at").first()
+            if record:
+                return record
+        return None
+
+    def _build_result(identifier, identifier_type, record, kc_result=None, error=None):
+        exists_coresso = False
+        if record:
+            exists_coresso = record.source == "coresso" or (
+                StagingUsuarioTerceiro.objects.filter(cpf=record.cpf).exists()
+                if record.cpf else False
+            )
+        return {
+            "identifier": identifier,
+            "identifier_type": identifier_type,
+            "nome": record.nome if record else None,
+            "source": record.source if record else None,
+            "found_in_staging": record is not None,
+            "exists_coresso": exists_coresso,
+            "kc_action": kc_result.get("action") if kc_result else None,
+            "kc_user_id": kc_result.get("kc_user_id") if kc_result else None,
+            "status": (
+                "error" if error
+                else ("success" if kc_result else ("not_found" if not record else "skipped"))
+            ),
+            "error": str(error) if error else None,
+        }
+
+    # -- Por CPFs informados --
+    for cpf in cpfs:
+        record = _find_in_staging(cpf=cpf)
+        if not record:
+            results.append(_build_result(cpf, "cpf", None))
+            continue
+        if not do_load_keycloak:
+            results.append(_build_result(cpf, "cpf", record))
+            continue
+        try:
+            svc = KeycloakUpsertService(
+                cpf=cpf, realm=realm,
+                assign_roles=True, push_token_ms=do_push_token_ms,
+            )
+            kc = svc.execute()
+            results.append(_build_result(cpf, "cpf", record, kc_result=kc))
+        except Exception as e:
+            logger.exception("sync_selective CPF=%s error: %s", cpf, e)
+            results.append(_build_result(cpf, "cpf", record, error=e))
+
+    # -- Por RFs informados --
+    for rf in rfs:
+        record = _find_in_staging(rf=rf)
+        if not record:
+            results.append(_build_result(rf, "rf", None))
+            continue
+        if not do_load_keycloak:
+            results.append(_build_result(rf, "rf", record))
+            continue
+        try:
+            svc = KeycloakUpsertService(
+                rf=rf, realm=realm,
+                assign_roles=True, push_token_ms=do_push_token_ms,
+            )
+            kc = svc.execute()
+            results.append(_build_result(rf, "rf", record, kc_result=kc))
+        except Exception as e:
+            logger.exception("sync_selective RF=%s error: %s", rf, e)
+            results.append(_build_result(rf, "rf", record, error=e))
+
+    # -- Por quantidade (limit): seleciona registros READY da última execução --
+    if limit and not cpfs and not rfs:
+        last_exec = (
+            ETLExecution.objects.filter(status__in=["success", "partial"])
+            .order_by("-finished_at")
+            .first()
+        )
+        if not last_exec:
+            return Response(
+                {"detail": "Nenhuma execução concluída encontrada para selecionar registros."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        for model_class in USER_MODELS:
+            if len(results) >= limit:
+                break
+            remaining = limit - len(results)
+            records = list(
+                model_class.objects.filter(
+                    execution_id=last_exec.id,
+                    status__in=["ready", "loaded"],
+                ).order_by("-extracted_at")[:remaining]
+            )
+            for record in records:
+                identifier = record.cpf or (getattr(record, "rf", None))
+                id_type = "cpf" if record.cpf else "rf"
+                if not identifier:
+                    continue
+                if not do_load_keycloak:
+                    results.append(_build_result(identifier, id_type, record))
+                    continue
+                try:
+                    svc = KeycloakUpsertService(
+                        cpf=record.cpf if record.cpf else None,
+                        rf=getattr(record, "rf", None) if not record.cpf else None,
+                        realm=realm,
+                        assign_roles=True,
+                        push_token_ms=do_push_token_ms,
+                    )
+                    kc = svc.execute()
+                    results.append(_build_result(identifier, id_type, record, kc_result=kc))
+                except Exception as e:
+                    logger.exception("sync_selective limit record=%s error: %s", identifier, e)
+                    results.append(_build_result(identifier, id_type, record, error=e))
+
+    summary = {
+        "total": len(results),
+        "success": sum(1 for r in results if r["status"] == "success"),
+        "skipped": sum(1 for r in results if r["status"] == "skipped"),
+        "not_found": sum(1 for r in results if r["status"] == "not_found"),
+        "error": sum(1 for r in results if r["status"] == "error"),
+        "load_keycloak": do_load_keycloak,
+        "realm": realm,
+    }
+
+    return Response({"summary": summary, "results": results})

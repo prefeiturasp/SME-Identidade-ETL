@@ -55,20 +55,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3.5 Garantir rede identidade-net e PgBouncer (main compose)
+# ---------------------------------------------------------------------------
+info "[3.5/5] Verificando rede identidade-net e PgBouncer..."
+MAIN_COMPOSE="$REPO_ROOT/docker-compose.yml"
+
+# Se a rede api_identidade-net existir sem labels do Compose (criada manualmente), remover
+NET_LABEL=$(docker network inspect api_identidade-net \
+  --format "{{index .Labels \"com.docker.compose.network\"}}" 2>/dev/null || echo "absent")
+if docker network ls --format "{{.Name}}" | grep -q "^api_identidade-net$" && [ -z "$NET_LABEL" ]; then
+  echo "      Rede api_identidade-net sem labels — removendo para o Compose recriar corretamente..."
+  docker network rm api_identidade-net 2>/dev/null || true
+fi
+
+# Garante PgBouncer + postgres-etl via main compose (cria api_identidade-net com labels corretas)
+if ! docker inspect identidade-pgbouncer > /dev/null 2>&1; then
+  echo "      PgBouncer não está rodando — iniciando via main compose..."
+  docker compose -f "$MAIN_COMPOSE" up -d postgres-etl pgbouncer \
+    || error "Falha ao iniciar PgBouncer. Verifique: $MAIN_COMPOSE"
+  echo "      PgBouncer e postgres-etl iniciados."
+else
+  echo "      PgBouncer já está rodando."
+fi
+echo "      Rede api_identidade-net ok."
+
+# ---------------------------------------------------------------------------
 # 4. Subir ETL-MS (api + worker + beat)
 # ---------------------------------------------------------------------------
 info "[4/5] Buildando e subindo ETL-MS (api + worker + beat)..."
 docker compose -f "$ETL_COMPOSE" up -d --build 2>&1
-# Aguarda a API ficar healthy (worker/beat não têm healthcheck — só verificamos a API)
-echo "      Aguardando API ficar healthy..."
-for i in $(seq 1 20); do
+
+# Aguarda apenas etl-api ficar healthy (worker/beat têm healthcheck desabilitado)
+# start_period=60s + até 5 checks × 15s = máx ~135s
+echo "      Aguardando API ficar healthy (pode levar até 2min)..."
+READY=false
+for i in $(seq 1 30); do
   STATUS=$(docker inspect --format='{{.State.Health.Status}}' local-etl-api 2>/dev/null || echo "missing")
-  if [ "$STATUS" = "healthy" ]; then
-    echo "      API healthy após $((i*5))s"
-    break
-  fi
+  case "$STATUS" in
+    healthy)
+      echo "      API healthy após $((i*5))s"
+      READY=true
+      break
+      ;;
+    exited|dead)
+      error "Container local-etl-api encerrou inesperadamente. Verifique: docker logs local-etl-api"
+      ;;
+  esac
+  echo "      Aguardando... ($((i*5))s) status=$STATUS"
   sleep 5
 done
+[ "$READY" = false ] && warn "API ainda não está healthy após 150s — verifique: docker logs local-etl-api"
 
 # ---------------------------------------------------------------------------
 # 5. Smoke tests
@@ -89,9 +125,9 @@ smoke() {
   fi
 }
 
-smoke "ETL health"   "http://localhost:8001/api/health/"  "200"
-smoke "ETL docs"     "http://localhost:8001/api/docs/"    "200"
-smoke "Keycloak UI"  "http://localhost:8080/"             "200"
+smoke "ETL health"      "http://localhost:8001/api/health/"        "200"
+smoke "ETL docs"        "http://localhost:8001/api/docs/"          "200"
+smoke "Keycloak health" "http://localhost:8080/health/ready"       "200"
 
 echo ""
 echo "      Resultado: ${PASS} OK / ${FAIL} falha(s)"

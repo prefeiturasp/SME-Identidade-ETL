@@ -222,7 +222,6 @@ class TestExtractSe1426Sql:
 
 class TestExtractSe1426Api:
     def test_extracts_from_api(self, settings):
-        import sys
         settings.SE1426_API_URL = "http://se1426-api"
         settings.SE1426_API_TOKEN = "tok123"
         settings.SE1426_API_TIMEOUT = 5
@@ -247,7 +246,7 @@ class TestExtractSe1426Api:
         mock_httpx.HTTPError = Exception  # permite checagens isinstance de excecao
 
         exec_id = uuid.uuid4()
-        with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("extract.tasks.httpx", mock_httpx):
             from extract.tasks import _extract_se1426_api
             total = _extract_se1426_api(str(exec_id))
         assert total == 1
@@ -256,7 +255,6 @@ class TestExtractSe1426Api:
         assert StagingUsuarioServidor.objects.filter(execution_id=exec_id).exists()
 
     def test_stops_on_empty_results(self, settings):
-        import sys
         settings.SE1426_API_URL = "http://se1426-api"
         settings.SE1426_API_TOKEN = "tok123"
         settings.SE1426_API_TIMEOUT = 5
@@ -274,7 +272,7 @@ class TestExtractSe1426Api:
         mock_httpx.Client.return_value = mock_client
         mock_httpx.HTTPError = Exception
 
-        with patch.dict(sys.modules, {"httpx": mock_httpx}):
+        with patch("extract.tasks.httpx", mock_httpx):
             from extract.tasks import _extract_se1426_api
             total = _extract_se1426_api(str(uuid.uuid4()))
         assert total == 0

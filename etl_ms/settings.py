@@ -164,14 +164,19 @@ CELERY_TASK_ROUTES = {
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
+# Agendamento automático desabilitado por padrão — ativar via ETL_BEAT_SCHEDULE_ENABLED=true
+# Toda carga deve ser iniciada manualmente via POST /api/etl/executions/
+_BEAT_ENABLED = os.environ.get("ETL_BEAT_SCHEDULE_ENABLED", "false").lower() == "true"
+_BEAT_REALM = os.environ.get("KEYCLOAK_REALM", "sme-apps")
+
 CELERY_BEAT_SCHEDULE = {
     "etl-daily-all-sources": {
         "task": "core.tasks.trigger_scheduled_etl",
         "schedule": crontab(hour=2, minute=0),
-        "kwargs": {"source": "all", "realm": "sme-apps"},
+        "kwargs": {"source": "all", "realm": _BEAT_REALM},
         "options": {"queue": "celery"},
     },
-}
+} if _BEAT_ENABLED else {}
 
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://identidade:identidade@localhost:5672/sme")
