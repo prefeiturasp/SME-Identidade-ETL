@@ -246,6 +246,8 @@ class TestLoadKeycloakBulk:
         settings.KEYCLOAK_REALM = "sme-apps"
 
         execution = _make_execution()
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
         _make_servidor_ready(execution.id)
 
         with patch("core.keycloak_client.get_admin_client", return_value=MagicMock()), \
@@ -264,6 +266,8 @@ class TestLoadKeycloakBulk:
         settings.ETL_LOAD_KEYCLOAK_BULK_ENABLED = True
 
         execution = _make_execution()
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
         _make_servidor_ready(execution.id)
 
         with patch("core.keycloak_client.get_admin_client", return_value=MagicMock()), \
@@ -280,6 +284,8 @@ class TestLoadKeycloakBulk:
         settings.ETL_LOAD_KEYCLOAK_BULK_ENABLED = True
 
         execution = _make_execution()
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
         _make_servidor_ready(execution.id)
 
         with patch("core.keycloak_client.get_admin_client", return_value=MagicMock()), \

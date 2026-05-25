@@ -237,6 +237,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
 
         user = StagingUsuarioServidor.objects.create(
@@ -275,6 +276,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
 
         user = StagingUsuarioServidor.objects.create(
@@ -309,6 +311,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
 
         with patch.object(
@@ -609,7 +612,7 @@ class TestAuditEtlExceptionCoverage:
 
         with patch(
             "django.db.models.query.QuerySet.exists",
-            side_effect=Exception("audit failure"),
+            side_effect=[False, Exception("audit failure")],
         ):
             audit_etl(str(execution.id))
 
