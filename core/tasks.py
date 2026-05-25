@@ -161,8 +161,18 @@ def run_etl_pipeline(self, execution_id: str):
             logger.error("No extract tasks for source=%s", source)
             return
 
+        # Garante que o realm-alvo existe antes de qualquer operação KC
+        from .keycloak_client import ensure_realm_exists
+        realm = execution.target_realm
+        created = ensure_realm_exists(realm)
+        if created:
+            logger.info(
+                "[%s] Realm '%s' criado automaticamente — pipeline continua.",
+                execution_id, realm,
+            )
+
         # Step 0: sincroniza catálogo de sistemas e perfis antes de extrair usuários
-        _sync_coresso_catalogo(execution_id=execution_id, realm=execution.target_realm)
+        _sync_coresso_catalogo(execution_id=execution_id, realm=realm)
 
         chord(extract_tasks)(
             chain(

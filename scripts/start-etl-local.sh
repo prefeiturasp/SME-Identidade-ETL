@@ -54,6 +54,18 @@ else
   echo "      Keycloak pronto → http://localhost:8080 (admin / admin)"
 fi
 
+# Verificação: exibe usuários presentes no Keycloak para confirmar estado do banco
+echo "      Verificando usuários no Keycloak (esperado: apenas seeds de dev)..."
+KC_USERS=$(docker exec local-postgres-kc psql -U keycloak -d keycloak -tAc \
+  "SELECT username FROM user_entity ORDER BY username;" 2>/dev/null || echo "")
+if [ -n "$KC_USERS" ]; then
+  KC_COUNT=$(echo "$KC_USERS" | wc -l | tr -d ' ')
+  echo "      $KC_COUNT usuário(s) encontrado(s):"
+  echo "$KC_USERS" | sed 's/^/        • /'
+else
+  warn "Não foi possível consultar usuários do Keycloak (container pode ainda não estar pronto)."
+fi
+
 # ---------------------------------------------------------------------------
 # 3.5 Garantir rede identidade-net e PgBouncer (main compose)
 # ---------------------------------------------------------------------------

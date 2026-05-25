@@ -57,7 +57,7 @@ services:
       - .env.local
     environment:
       # Sobrescreve os valores de .env.local para apontar aos containers locais
-      DATABASE_URL:
+      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -70,6 +70,9 @@ services:
         condition: service_healthy
       etl-keydb:
         condition: service_healthy
+    networks:
+      - default
+      - identidade-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/api/health/"]
       interval: 15s
@@ -87,7 +90,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL:
+      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -100,6 +103,9 @@ services:
         condition: service_healthy
       etl-keydb:
         condition: service_healthy
+    networks:
+      - default
+      - identidade-net
     healthcheck:
       disable: true
 
@@ -113,7 +119,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL:
+      DATABASE_URL: postgres://etl:etl@pgbouncer:6432/etl_db
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -124,12 +130,18 @@ services:
         condition: service_healthy
       etl-keydb:
         condition: service_healthy
+    networks:
+      - default
+      - identidade-net
     healthcheck:
       disable: true
 
 networks:
   default:
     name: sme-identidade
+    external: true
+  identidade-net:
+    name: api_identidade-net
     external: true
 
 volumes:
