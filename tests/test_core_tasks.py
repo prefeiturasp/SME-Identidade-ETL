@@ -237,6 +237,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
         execution.load_keycloak = True
         execution.save(update_fields=["load_keycloak"])
@@ -277,6 +278,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
         execution.load_keycloak = True
         execution.save(update_fields=["load_keycloak"])
@@ -313,6 +315,7 @@ class TestLoadKeycloakTask:
         execution = ETLExecution.objects.create(
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
+            load_keycloak=True,
         )
         execution.load_keycloak = True
         execution.save(update_fields=["load_keycloak"])
@@ -615,7 +618,7 @@ class TestAuditEtlExceptionCoverage:
 
         with patch(
             "django.db.models.query.QuerySet.exists",
-            side_effect=Exception("audit failure"),
+            side_effect=[False, Exception("audit failure")],
         ):
             audit_etl(str(execution.id))
 
