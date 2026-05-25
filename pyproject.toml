@@ -1,0 +1,14 @@
+[project]
+name = "SME-Identidade-ETL"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = []
+
+# ==== Coverage ====
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "*/migrations/*",
+    "*/tests/*",
+    "*/templates/*"
+]
