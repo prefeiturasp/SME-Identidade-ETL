@@ -162,6 +162,27 @@ CELERY_TASK_ROUTES = {
     "core.tasks.audit_etl": {"queue": "celery"},
 }
 
+# Limites de memória por worker para evitar SIGKILL por OOM killer
+# max_memory_per_child: recicla o processo quando ultrapassar 400 MB (em KB)
+# max_tasks_per_child: recicla após 50 tarefas, liberando memória acumulada (leak gradual)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = int(
+    os.environ.get("CELERY_WORKER_MAX_MEMORY_PER_CHILD", "409600")  # 400 MB em KB
+)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(
+    os.environ.get("CELERY_WORKER_MAX_TASKS_PER_CHILD", "50")
+)
+
+# Controle de reentrega em caso de SIGKILL (OOM killer / crash do worker)
+# acks_late: a mensagem só é confirmada no broker APÓS a task concluir com sucesso.
+#            Se o worker morrer (SIGKILL), o broker recoloca a mensagem na fila.
+# reject_on_worker_lost: quando o processo filho morre sem ACK, a task é rejeitada
+#                        (nack) e reentregue — garante que nenhum estágio ETL se perca.
+# prefetch_multiplier=1: cada worker segura no máximo 1 mensagem por vez; sem isso,
+#                        múltiplas tasks em prefetch seriam perdidas num único SIGKILL.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # Agendamento automático desabilitado por padrão — ativar via ETL_BEAT_SCHEDULE_ENABLED=true
