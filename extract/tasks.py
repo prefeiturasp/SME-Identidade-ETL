@@ -25,6 +25,27 @@ def _build_se1426_conn_str() -> str:
     )
 
 
+def _row_to_servidor_se1426(item: dict, execution_id: str):
+    """Converte um row do SE1426 em StagingUsuarioServidor."""
+    from staging.models import StagingUsuarioServidor
+
+    situacao_raw = item.get("situacao", "")
+    return StagingUsuarioServidor(
+        rf=item.get("rf"),
+        nome=item.get("nome"),
+        cpf=item.get("cpf"),
+        email=item.get("email"),
+        situacao=situacao_raw.lower() if situacao_raw else None,
+        cargo=item.get("cargo") or None,
+        funcao=item.get("funcao") or None,
+        lotacao=item.get("cod_unidade") or None,
+        dre=item.get("cod_dre") or None,
+        source=StagingUsuarioServidor.Source.SE1426,
+        execution_id=execution_id,
+        raw_data={k: str(v) if v is not None else None for k, v in item.items()},
+    )
+
+
 def _extract_se1426_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
@@ -86,25 +107,10 @@ def _extract_se1426_sql(execution_id: str, max_records: int | None = None) -> in
                 break
 
             cols = [d[0] for d in cursor.description]
-            staging_records = []
-            for row in rows:
-                item = dict(zip(cols, row))
-                staging_records.append(
-                    StagingUsuarioServidor(
-                        rf=item.get("rf"),
-                        nome=item.get("nome"),
-                        cpf=item.get("cpf"),
-                        email=item.get("email"),
-                        situacao=item.get("situacao", "").lower() if item.get("situacao") else None,
-                        cargo=item.get("cargo") or None,
-                        funcao=item.get("funcao") or None,
-                        lotacao=item.get("cod_unidade") or None,
-                        dre=item.get("cod_dre") or None,
-                        source=StagingUsuarioServidor.Source.SE1426,
-                        execution_id=execution_id,
-                        raw_data={k: str(v) if v is not None else None for k, v in item.items()},
-                    )
-                )
+            staging_records = [
+                _row_to_servidor_se1426(dict(zip(cols, row)), execution_id)
+                for row in rows
+            ]
 
             StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
@@ -121,8 +127,49 @@ def _extract_se1426_sql(execution_id: str, max_records: int | None = None) -> in
     return total_extracted
 
 
+def _accumulate_eol_db_row(row, servidores: dict) -> None:
+    """Acumula dados de um row EOL_DB no dict servidores (rf → dados)."""
+    rf, cpf, nome, situacao, desc_cargo, cod_cargo, cod_unidade, cod_dre = row
+    if rf not in servidores:
+        servidores[rf] = {
+            "rf": rf, "cpf": cpf, "nome": nome, "situacao": situacao,
+            "desc_cargo": desc_cargo or None, "cod_cargo": cod_cargo or None,
+            "unidades": [], "dres": [],
+        }
+    if cod_unidade:
+        servidores[rf]["unidades"].append(cod_unidade)
+    if cod_dre and cod_dre not in servidores[rf]["dres"]:
+        servidores[rf]["dres"].append(cod_dre)
+
+
+def _srv_dict_to_staging(srv: dict, execution_id: str):
+    """Converte um dict de servidor EOL_DB em StagingUsuarioServidor."""
+    from staging.models import StagingUsuarioServidor
+
+    unidades = srv["unidades"]
+    dres = srv["dres"]
+    return StagingUsuarioServidor(
+        rf=srv["rf"],
+        cpf=srv["cpf"],
+        nome=srv["nome"],
+        situacao=srv["situacao"].lower() if srv["situacao"] else None,
+        cargo=srv["desc_cargo"],
+        lotacao=str(unidades[0]) if unidades else None,
+        dre=str(dres[0]) if dres else None,
+        source=StagingUsuarioServidor.Source.EOL_DB,
+        execution_id=execution_id,
+        raw_data={
+            "rf": srv["rf"], "cpf": srv["cpf"],
+            "cod_cargo": srv["cod_cargo"], "desc_cargo": srv["desc_cargo"],
+            "unidades": unidades, "dres": dres, "fonte": "eol_db_sql",
+        },
+    )
+
+
 def _extract_eol_db_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
+
+    from staging.models import StagingUsuarioServidor
 
     BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
@@ -174,54 +221,14 @@ def _extract_eol_db_sql(execution_id: str, max_records: int | None = None) -> in
             if not rows:
                 break
             for row in rows:
-                rf, cpf, nome, situacao, desc_cargo, cod_cargo, cod_unidade, cod_dre = row
-                if rf not in servidores:
-                    servidores[rf] = {
-                        "rf": rf,
-                        "cpf": cpf,
-                        "nome": nome,
-                        "situacao": situacao,
-                        "desc_cargo": desc_cargo or None,
-                        "cod_cargo": cod_cargo or None,
-                        "unidades": [],
-                        "dres": [],
-                    }
-                if cod_unidade:
-                    servidores[rf]["unidades"].append(cod_unidade)
-                if cod_dre and cod_dre not in servidores[rf]["dres"]:
-                    servidores[rf]["dres"].append(cod_dre)
+                _accumulate_eol_db_row(row, servidores)
 
     finally:
         conn.close()
 
-    from staging.models import StagingUsuarioServidor
-
     staging_records = []
     for srv in servidores.values():
-        unidades = srv["unidades"]
-        dres = srv["dres"]
-        staging_records.append(
-            StagingUsuarioServidor(
-                rf=srv["rf"],
-                cpf=srv["cpf"],
-                nome=srv["nome"],
-                situacao=srv["situacao"].lower() if srv["situacao"] else None,
-                cargo=srv["desc_cargo"],
-                lotacao=str(unidades[0]) if unidades else None,
-                dre=str(dres[0]) if dres else None,
-                source=StagingUsuarioServidor.Source.EOL_DB,
-                execution_id=execution_id,
-                raw_data={
-                    "rf": srv["rf"],
-                    "cpf": srv["cpf"],
-                    "cod_cargo": srv["cod_cargo"],
-                    "desc_cargo": srv["desc_cargo"],
-                    "unidades": unidades,
-                    "dres": dres,
-                    "fonte": "eol_db_sql",
-                },
-            )
-        )
+        staging_records.append(_srv_dict_to_staging(srv, execution_id))
         if len(staging_records) >= BATCH_SIZE:
             StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             staging_records = []
@@ -452,6 +459,45 @@ def extract_eol_db(self, execution_id: str):
         raise self.retry(exc=e, countdown=120)
 
 
+def _parse_date_str(date_str: str | None) -> date | None:
+    """Converte string YYYY-MM-DD em date, retorna None se inválida."""
+    if not date_str:
+        return None
+    try:
+        parts = date_str.split("-")
+        return date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except Exception:
+        return None
+
+
+def _row_to_aluno_sql(row, execution_id: str):
+    """Converte um row EOL alunos em StagingUsuarioAluno."""
+    from staging.models import StagingUsuarioAluno
+
+    matricula = str(row.matricula).strip() if row.matricula else None
+    nome = str(row.nome).strip() if row.nome else None
+    data_nasc_str = str(row.data_nascimento).strip() if row.data_nascimento else None
+    cod_escola = str(row.cod_escola).strip() if row.cod_escola else None
+    turma = str(row.turma).strip() if row.turma else None
+    cod_dre = str(row.cod_dre).strip() if row.cod_dre else None
+    return StagingUsuarioAluno(
+        matricula=matricula,
+        nome=nome,
+        data_nascimento=_parse_date_str(data_nasc_str),
+        cod_escola=cod_escola,
+        turma=turma,
+        dre=cod_dre,
+        ue=cod_escola,
+        situacao="ativo",
+        source=StagingUsuarioAluno.Source.EOL_DB,
+        execution_id=execution_id,
+        raw_data={
+            "matricula": matricula, "cod_escola": cod_escola, "turma": turma,
+            "cod_dre": cod_dre, "data_nascimento": data_nasc_str, "fonte": "eol_db_alunos",
+        },
+    )
+
+
 def _extract_eol_alunos_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
@@ -518,47 +564,9 @@ def _extract_eol_alunos_sql(execution_id: str, max_records: int | None = None) -
             if not rows:
                 break
 
-            staging_records = []
-            for row in rows:
-                matricula = str(row.matricula).strip() if row.matricula else None
-                nome = str(row.nome).strip() if row.nome else None
-                data_nasc_str = str(row.data_nascimento).strip() if row.data_nascimento else None
-                cod_escola = str(row.cod_escola).strip() if row.cod_escola else None
-                turma = str(row.turma).strip() if row.turma else None
-                cod_dre = str(row.cod_dre).strip() if row.cod_dre else None
-
-                # Converte string YYYY-MM-DD para date
-                data_nasc_date = None
-                if data_nasc_str:
-                    try:
-                        parts = data_nasc_str.split("-")
-                        data_nasc_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
-                    except Exception:
-                        pass
-
-                raw = {
-                    "matricula": matricula,
-                    "cod_escola": cod_escola,
-                    "turma": turma,
-                    "cod_dre": cod_dre,
-                    "data_nascimento": data_nasc_str,
-                    "fonte": "eol_db_alunos",
-                }
-                staging_records.append(
-                    StagingUsuarioAluno(
-                        matricula=matricula,
-                        nome=nome,
-                        data_nascimento=data_nasc_date,
-                        cod_escola=cod_escola,
-                        turma=turma,
-                        dre=cod_dre,
-                        ue=cod_escola,
-                        situacao="ativo",
-                        source=StagingUsuarioAluno.Source.EOL_DB,
-                        execution_id=execution_id,
-                        raw_data=raw,
-                    )
-                )
+            staging_records = [
+                _row_to_aluno_sql(row, execution_id) for row in rows
+            ]
 
             StagingUsuarioAluno.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
@@ -671,6 +679,42 @@ def _build_coresso_conn_str() -> str:
     )
 
 
+def _row_to_coresso_record(row, execution_id: str):
+    """Converte um row CoreSSO em StagingUsuarioServidor ou StagingUsuarioTerceiro."""
+    rf = str(row.rf).strip() if row.rf else None
+    cpf = str(row.cpf).strip() if row.cpf else None
+    nome = str(row.nome).strip() if row.nome else None
+    email = str(row.email).strip() if row.email else None
+    situacao = "ativo" if row.situacao == 1 else "inativo"
+    raw = {
+        "rf": rf, "cpf": cpf, "nome": nome, "email": email,
+        "situacao": row.situacao,
+        "data_alteracao": str(row.data_alteracao) if row.data_alteracao else None,
+        "fonte": "coresso_sql",
+    }
+    base_kwargs = dict(
+        cpf=cpf, nome=nome, email=email, situacao=situacao,
+        source="coresso", execution_id=execution_id, raw_data=raw,
+    )
+    if rf:
+        from staging.models import StagingUsuarioServidor
+        return StagingUsuarioServidor(rf=rf, **base_kwargs)
+    from staging.models import StagingUsuarioTerceiro
+    return StagingUsuarioTerceiro(tipo_acesso="legado-coresso", **base_kwargs)
+
+
+def _persist_coresso_batch(staging_records: list, batch_size: int) -> None:
+    """Persiste um lote CoreSSO separando servidores de terceiros."""
+    from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
+
+    srvs = [r for r in staging_records if isinstance(r, StagingUsuarioServidor)]
+    tercs = [r for r in staging_records if isinstance(r, StagingUsuarioTerceiro)]
+    if srvs:
+        StagingUsuarioServidor.objects.bulk_create(srvs, batch_size=batch_size)
+    if tercs:
+        StagingUsuarioTerceiro.objects.bulk_create(tercs, batch_size=batch_size)
+
+
 def _extract_coresso_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
@@ -762,48 +806,8 @@ def _extract_coresso_sql(execution_id: str, max_records: int | None = None) -> i
             if not rows:
                 break
 
-            staging_records = []
-            for row in rows:
-                rf = str(row.rf).strip() if row.rf else None
-                cpf = str(row.cpf).strip() if row.cpf else None
-                nome = str(row.nome).strip() if row.nome else None
-                email = str(row.email).strip() if row.email else None
-                situacao = "ativo" if row.situacao == 1 else "inativo"
-
-                raw = {
-                    "rf": rf,
-                    "cpf": cpf,
-                    "nome": nome,
-                    "email": email,
-                    "situacao": row.situacao,
-                    "data_alteracao": (
-                        str(row.data_alteracao) if row.data_alteracao else None
-                    ),
-                    "fonte": "coresso_sql",
-                }
-                base_kwargs = dict(
-                    cpf=cpf,
-                    nome=nome,
-                    email=email,
-                    situacao=situacao,
-                    source="coresso",
-                    execution_id=execution_id,
-                    raw_data=raw,
-                )
-                if rf:
-                    from staging.models import StagingUsuarioServidor
-                    staging_records.append(StagingUsuarioServidor(rf=rf, **base_kwargs))
-                else:
-                    from staging.models import StagingUsuarioTerceiro
-                    staging_records.append(StagingUsuarioTerceiro(tipo_acesso="legado-coresso", **base_kwargs))
-
-            from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
-            srvs = [r for r in staging_records if isinstance(r, StagingUsuarioServidor)]
-            tercs = [r for r in staging_records if isinstance(r, StagingUsuarioTerceiro)]
-            if srvs:
-                StagingUsuarioServidor.objects.bulk_create(srvs, batch_size=BATCH_SIZE)
-            if tercs:
-                StagingUsuarioTerceiro.objects.bulk_create(tercs, batch_size=BATCH_SIZE)
+            staging_records = [_row_to_coresso_record(row, execution_id) for row in rows]
+            _persist_coresso_batch(staging_records, BATCH_SIZE)
             total_extracted += len(staging_records)
             logger.info(
                 "[%s] CORESSO SQL: %d registros extraídos (lote de %d)",

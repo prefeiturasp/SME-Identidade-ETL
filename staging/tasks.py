@@ -22,7 +22,43 @@ MERGEABLE_FIELDS = [
 ]
 
 
-def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fields=None):
+def _normalize_cpf_field(record) -> None:
+    """Normaliza e valida o CPF do record em-place."""
+    if not record.cpf:
+        return
+    cpf_clean = normalize_cpf(record.cpf)
+    if cpf_clean and validate_cpf(cpf_clean):
+        record.cpf = cpf_clean
+    else:
+        record.error_detail = f"CPF inválido: {record.cpf}"
+        record.cpf = cpf_clean
+
+
+def _apply_lotacao_to_record(record, lotacao_map) -> None:
+    """Preenche dre/ue a partir do mapa de lotação, se disponível."""
+    if not (hasattr(record, "lotacao") and record.lotacao and not record.dre):
+        return
+    lot = lotacao_map.get(record.lotacao)
+    if lot:
+        record.dre = lot["dre_codigo"]
+        record.ue = lot["codigo"] if lot["tipo"] == "ue" else None
+
+
+def _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, bulk_size):
+    """Persiste e limpa os buffers de transformação, retornando (ok_count, err_count)."""
+    ok_count = err_count = 0
+    if buf_ok:
+        model_class.objects.bulk_update(buf_ok, update_fields, batch_size=bulk_size)
+        ok_count = len(buf_ok)
+        buf_ok.clear()
+    if buf_err:
+        model_class.objects.bulk_update(buf_err, ["status", "error_detail"], batch_size=bulk_size)
+        err_count = len(buf_err)
+        buf_err.clear()
+    return ok_count, err_count
+
+
+def _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra_fields=None):
     base_fields = ["cpf", "nome", "status", "transformed_at", "error_detail"]
     rf_field = extra_fields.get("rf_field", False) if extra_fields else False
     lotacao_field = extra_fields.get("lotacao_field", False) if extra_fields else False
@@ -40,33 +76,16 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
     buf_err: list = []
     processed = 0
 
-    def _flush():
-        nonlocal transformed, errors
-        if buf_ok:
-            ModelClass.objects.bulk_update(buf_ok, update_fields, batch_size=BULK_SIZE)
-            transformed += len(buf_ok)
-            buf_ok.clear()
-        if buf_err:
-            ModelClass.objects.bulk_update(buf_err, ["status", "error_detail"], batch_size=BULK_SIZE)
-            errors += len(buf_err)
-            buf_err.clear()
-
     # raw_data (JSONField) não é usado na transformação — defer evita carregar
     # centenas de KB por registro em memória, reduzindo drasticamente o consumo.
     for record in (
-        ModelClass.objects
-        .filter(execution_id=execution_id, status=ModelClass.Status.RAW)
+        model_class.objects
+        .filter(execution_id=execution_id, status=model_class.Status.RAW)
         .defer("raw_data")
         .iterator(chunk_size=BULK_SIZE)
     ):
         try:
-            if record.cpf:
-                cpf_clean = normalize_cpf(record.cpf)
-                if cpf_clean and validate_cpf(cpf_clean):
-                    record.cpf = cpf_clean
-                else:
-                    record.error_detail = f"CPF inválido: {record.cpf}"
-                    record.cpf = cpf_clean
+            _normalize_cpf_field(record)
 
             if hasattr(record, "rf") and record.rf:
                 record.rf = normalize_rf(record.rf)
@@ -74,33 +93,33 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
             if record.nome:
                 record.nome = " ".join(record.nome.split()).title()
 
-            if hasattr(record, "lotacao") and record.lotacao and not record.dre:
-                lot = lotacao_map.get(record.lotacao)
-                if lot:
-                    record.dre = lot["dre_codigo"]
-                    record.ue = lot["codigo"] if lot["tipo"] == "ue" else None
+            _apply_lotacao_to_record(record, lotacao_map)
 
-            record.status = ModelClass.Status.TRANSFORMED
+            record.status = model_class.Status.TRANSFORMED
             record.transformed_at = now
             buf_ok.append(record)
 
         except Exception as e:
-            record.status = ModelClass.Status.ERROR
+            record.status = model_class.Status.ERROR
             record.error_detail = f"Transform error: {e}"
             buf_err.append(record)
 
         if len(buf_ok) + len(buf_err) >= BULK_SIZE:
-            _flush()
+            ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, BULK_SIZE)
+            transformed += ok
+            errors += err
 
         processed += 1
         if processed % 50_000 == 0:
             gc.collect()
             logger.info(
                 "[transform] %s: %d processados, %d ok / %d erros",
-                ModelClass.__name__, processed, transformed, errors,
+                model_class.__name__, processed, transformed, errors,
             )
 
-    _flush()
+    ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, BULK_SIZE)
+    transformed += ok
+    errors += err
     gc.collect()
     return transformed, errors
 
@@ -160,8 +179,8 @@ def transform_staging(self, execution_id: str):
         if include_all or "terceiro" in type_parts:
             models_to_transform.append((StagingUsuarioTerceiro, {"rf_field": False, "lotacao_field": False}))
 
-        for ModelClass, extra in models_to_transform:
-            t, e = _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra)
+        for model_class, extra in models_to_transform:
+            t, e = _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra)
             total_transformed += t
             total_errors += e
 
@@ -195,6 +214,144 @@ def transform_staging(self, execution_id: str):
         step.finished_at = timezone.now()
         step.save()
         raise
+
+
+def _union_find(x, parent: dict):
+    """Path-compressed find para union-find."""
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def _union_merge(a, b, parent: dict) -> None:
+    """Union para union-find."""
+    ra, rb = _union_find(a, parent), _union_find(b, parent)
+    if ra != rb:
+        parent[ra] = rb
+
+
+def _build_cpf_rf_indexes(transformed, total: int, total_chunks: int, chunk_size: int, execution_id: str):
+    """Carrega registros em batches e constrói índices CPF/RF para union-find."""
+    cpf_index = defaultdict(list)
+    rf_index = defaultdict(list)
+    records_by_id = {}
+    processed_records = 0
+
+    for chunk_num in range(total_chunks):
+        offset = chunk_num * chunk_size
+        chunk = transformed.only(
+            "id", "rf", "cpf", "source", "extracted_at",
+            "email", "data_nascimento", "cargo", "funcao", "situacao",
+            "lotacao", "lotacao_nome", "dre", "ue", "nome",
+        )[offset:offset + chunk_size]
+
+        chunk_count = 0
+        for record in chunk:
+            records_by_id[record.id] = record
+            if record.cpf and validate_cpf(record.cpf):
+                cpf_index[record.cpf].append(record.id)
+            if record.rf:
+                rf_index[record.rf].append(record.id)
+            chunk_count += 1
+
+        processed_records += chunk_count
+        logger.info(
+            "[%s] Batch %d/%d — processados %d/%d registros (%.1f%%) — CPFs: %d | RFs: %d",
+            execution_id, chunk_num + 1, total_chunks,
+            processed_records, total, (processed_records / total * 100),
+            len(cpf_index), len(rf_index),
+        )
+        gc.collect()
+
+    return cpf_index, rf_index, records_by_id
+
+
+def _build_clusters_by_union_find(cpf_index, rf_index, records_by_id, execution_id):
+    """Aplica union-find nos índices CPF/RF e retorna dict de clusters."""
+    parent = {rid: rid for rid in records_by_id}
+
+    cpf_unions = 0
+    for cpf, ids in cpf_index.items():
+        for i in range(1, len(ids)):
+            _union_merge(ids[0], ids[i], parent)
+            cpf_unions += 1
+
+    rf_unions = 0
+    for rf, ids in rf_index.items():
+        for i in range(1, len(ids)):
+            _union_merge(ids[0], ids[i], parent)
+            rf_unions += 1
+
+    cross_unions = 0
+    for rec in records_by_id.values():
+        cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
+        rf = rec.rf
+        if cpf and rf:
+            cpf_ids = cpf_index.get(cpf, [])
+            rf_ids = rf_index.get(rf, [])
+            if cpf_ids and rf_ids:
+                for rid in rf_ids:
+                    _union_merge(cpf_ids[0], rid, parent)
+                    cross_unions += 1
+
+    clusters = defaultdict(list)
+    for rid in records_by_id:
+        clusters[_union_find(rid, parent)].append(rid)
+
+    logger.info(
+        "[%s] Índices: CPF_unions=%d RF_unions=%d cross_unions=%d → %d clusters",
+        execution_id, cpf_unions, rf_unions, cross_unions, len(clusters),
+    )
+    return clusters
+
+
+def _flush_dedup_buffers(winners_ready, losers_skipped, errors_no_key, staging_class, bulk_size) -> None:
+    """Persiste buffers de dedup no banco e limpa memória."""
+    if winners_ready:
+        staging_class.objects.bulk_update(winners_ready, ["status"], batch_size=bulk_size)
+        winners_ready.clear()
+    if losers_skipped:
+        staging_class.objects.bulk_update(
+            losers_skipped, ["status", "error_detail"], batch_size=bulk_size,
+        )
+        losers_skipped.clear()
+    if errors_no_key:
+        staging_class.objects.bulk_update(
+            errors_no_key, ["status", "error_detail"], batch_size=bulk_size,
+        )
+        errors_no_key.clear()
+    gc.collect()
+
+
+def _process_dedup_cluster(member_ids, records_by_id, staging_class):
+    """Processa um cluster de dedup, retornando (winner, losers, error_record).
+
+    Retorna (winner, losers, None) em caso normal, ou (None, [], error_record)
+    se o winner não tiver chave de dedup válida.
+    """
+    members = [records_by_id[mid] for mid in member_ids]
+    members.sort(
+        key=lambda r: (
+            SOURCE_PRIORITY.get(r.source, 99),
+            r.extracted_at or timezone.now(),
+        )
+    )
+    winner = members[0]
+    dedup_key = build_dedup_key(winner.cpf, winner.rf)
+    if not dedup_key:
+        winner.status = staging_class.Status.ERROR
+        winner.error_detail = "Sem CPF válido nem RF para dedup"
+        return None, [], winner
+
+    losers = []
+    for loser in members[1:]:
+        loser.status = staging_class.Status.SKIPPED
+        loser.error_detail = f"Dedup simplificado: skipped (winner={str(winner.id)[:8]})"
+        losers.append(loser)
+
+    winner.status = staging_class.Status.READY
+    return winner, losers, None
 
 
 @shared_task(bind=True, name="staging.tasks.crossref_dedup")
@@ -252,238 +409,57 @@ def crossref_dedup(self, execution_id: str):
             step.save()
             return
 
-        # ====================================================================
-        # PROCESSAMENTO EM BATCHES — evita OOM ao carregar 3.5M registros em RAM
-        # ====================================================================
-        CHUNK_SIZE = 50_000  # Processa 50k registros por vez
+        CHUNK_SIZE = 50_000
         total_chunks = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
-
         logger.info(
             "[%s] Iniciando crossref/dedup de %d servidores em %d batches de até %d registros",
             execution_id, total, total_chunks, CHUNK_SIZE,
         )
 
-        cpf_index = defaultdict(list)
-        rf_index = defaultdict(list)
-        records_by_id = {}
-        processed_records = 0
-
-        # Carrega todos os registros em batches para construir índices CPF/RF
-        for chunk_num in range(total_chunks):
-            offset = chunk_num * CHUNK_SIZE
-            chunk = transformed.only(
-                "id", "rf", "cpf", "source", "extracted_at",
-                "email", "data_nascimento", "cargo", "funcao", "situacao",
-                "lotacao", "lotacao_nome", "dre", "ue", "nome",
-            )[offset:offset + CHUNK_SIZE]
-
-            chunk_count = 0
-            for record in chunk:
-                records_by_id[record.id] = record
-                cpf = record.cpf
-                rf = record.rf
-                if cpf and validate_cpf(cpf):
-                    cpf_index[cpf].append(record.id)
-                if rf:
-                    rf_index[rf].append(record.id)
-                chunk_count += 1
-
-            processed_records += chunk_count
-            logger.info(
-                "[%s] Batch %d/%d — processados %d/%d registros (%.1f%%) — CPFs: %d | RFs: %d",
-                execution_id, chunk_num + 1, total_chunks,
-                processed_records, total, (processed_records / total * 100),
-                len(cpf_index), len(rf_index),
-            )
-
-            # Libera memória após cada batch
-            gc.collect()
-
-            # Libera memória após cada batch
-            gc.collect()
-
-        logger.info(
-            "[%s] Índices construídos — CPFs únicos: %d | RFs únicos: %d | Iniciando Union-Find...",
-            execution_id, len(cpf_index), len(rf_index),
+        cpf_index, rf_index, records_by_id = _build_cpf_rf_indexes(
+            transformed, total, total_chunks, CHUNK_SIZE, execution_id,
         )
+        clusters = _build_clusters_by_union_find(cpf_index, rf_index, records_by_id, execution_id)
 
-        # ====================================================================
-        # UNION-FIND — agrupa registros duplicados por CPF/RF
-        # ====================================================================
-        parent = {rid: rid for rid in records_by_id}
+        FLUSH_INTERVAL = 2_000
+        BULK_SIZE = 500
+        LOG_INTERVAL = max(10000, len(clusters) // 10)
 
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        # Agrupa por CPF
-        cpf_unions = 0
-        for cpf, ids in cpf_index.items():
-            for i in range(1, len(ids)):
-                union(ids[0], ids[i])
-                cpf_unions += 1
-
-        logger.info("[%s] Union-Find por CPF: %d agrupamentos", execution_id, cpf_unions)
-
-        # Agrupa por RF
-        rf_unions = 0
-        for rf, ids in rf_index.items():
-            for i in range(1, len(ids)):
-                union(ids[0], ids[i])
-                rf_unions += 1
-
-        logger.info("[%s] Union-Find por RF: %d agrupamentos", execution_id, rf_unions)
-
-        # Cross-reference CPF ↔ RF
-        cpf_to_rf = {}
-        rf_to_cpf = {}
-        for rid, rec in records_by_id.items():
-            cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
-            rf = rec.rf
-            if cpf and rf:
-                cpf_to_rf[cpf] = rf
-                rf_to_cpf[rf] = cpf
-
-        cross_unions = 0
-        for cpf, rf in cpf_to_rf.items():
-            cpf_ids = cpf_index.get(cpf, [])
-            rf_ids = rf_index.get(rf, [])
-            if cpf_ids and rf_ids:
-                for rid in rf_ids:
-                    union(cpf_ids[0], rid)
-                    cross_unions += 1
-
-        logger.info("[%s] Cross-reference CPF↔RF: %d agrupamentos adicionais", execution_id, cross_unions)
-
-        # Constrói clusters finais
-        clusters = defaultdict(list)
-        for rid in records_by_id:
-            clusters[find(rid)].append(rid)
-
-        logger.info(
-            "[%s] Clusters finais: %d grupos | Iniciando deduplicação...",
-            execution_id, len(clusters),
-        )
-
-        logger.info(
-            "[%s] Clusters finais: %d grupos | Iniciando deduplicação...",
-            execution_id, len(clusters),
-        )
-
-        # ====================================================================
-        # DEDUPLICAÇÃO SIMPLIFICADA — processa cada cluster e decide winner/losers
-        # SEM MERGE de campos - apenas escolhe 1 winner (fonte prioritária) por cluster
-        # SEM DedupResult - economiza memória (pode recriar depois se necessário)
-        # ====================================================================
-        ready = 0
-        skipped = 0
-        errors = 0
+        ready = skipped = errors = 0
         winners_ready: list = []
         losers_skipped: list = []
         errors_no_key: list = []
-
-        total_clusters = len(clusters)
         processed_clusters = 0
-        LOG_INTERVAL = max(10000, total_clusters // 10)  # Log ainda menos frequente
-        FLUSH_INTERVAL = 2_000   # ULTRA AGRESSIVO: flush a cada 2k (evitar OOM)
-        BULK_SIZE = 500          # Bulk menor = menos memória por operação
-
-        # SEM MERGE - apenas atualiza status
-        winner_fields = ["status"]
-        loser_fields = ["status", "error_detail"]
-
-        def _flush_buffers():
-            """Persiste buffers acumulados no banco e limpa memória."""
-            nonlocal winners_ready, losers_skipped, errors_no_key
-
-            if winners_ready:
-                StagingUsuarioServidor.objects.bulk_update(winners_ready, winner_fields, batch_size=BULK_SIZE)
-                winners_ready.clear()
-
-            if losers_skipped:
-                StagingUsuarioServidor.objects.bulk_update(
-                    losers_skipped, loser_fields, batch_size=BULK_SIZE,
-                )
-                losers_skipped.clear()
-
-            if errors_no_key:
-                StagingUsuarioServidor.objects.bulk_update(
-                    errors_no_key, loser_fields, batch_size=BULK_SIZE,
-                )
-                errors_no_key.clear()
-
-            # SEM DedupResult - economiza memória significativa
-            # Libera memória
-            gc.collect()
+        total_clusters = len(clusters)
 
         for cluster_root, member_ids in clusters.items():
             try:
-                members = [records_by_id[mid] for mid in member_ids]
-                members.sort(
-                    key=lambda r: (
-                        SOURCE_PRIORITY.get(r.source, 99),
-                        r.extracted_at or timezone.now(),
-                    )
+                winner, losers, error_rec = _process_dedup_cluster(
+                    member_ids, records_by_id, StagingUsuarioServidor,
                 )
-                winner = members[0]
-
-                dedup_key = build_dedup_key(winner.cpf, winner.rf)
-                if not dedup_key:
-                    winner.status = StagingUsuarioServidor.Status.ERROR
-                    winner.error_detail = "Sem CPF válido nem RF para dedup"
-                    errors_no_key.append(winner)
+                if error_rec:
+                    errors_no_key.append(error_rec)
                     errors += 1
-                    processed_clusters += 1
-                    continue
-
-                # DEDUPLICAÇÃO SIMPLIFICADA: apenas 1 winner por cluster, sem merge
-                # Escolhe o mais recente da fonte prioritária
-                if len(members) == 1:
-                    winner.status = StagingUsuarioServidor.Status.READY
+                else:
                     winners_ready.append(winner)
+                    losers_skipped.extend(losers)
                     ready += 1
-                    processed_clusters += 1
-                    continue
-
-                # Marca winner como READY (sem merge de campos)
-                losers = members[1:]
-                
-                # Marca TODOS os losers como SKIPPED (sem análise de merge)
-                # SEM criar DedupResult - economiza memória (pode recriar depois)
-                for loser in losers:
-                    loser.status = StagingUsuarioServidor.Status.SKIPPED
-                    loser.error_detail = f"Dedup simplificado: skipped (winner={str(winner.id)[:8]})"
-                    losers_skipped.append(loser)
-                    skipped += 1
-
-                # Marca winner como READY (sem merge - usa dados da fonte prioritária)
-                # Marca winner como READY (sem merge - usa dados da fonte prioritária)
-                winner.status = StagingUsuarioServidor.Status.READY
-                winners_ready.append(winner)
-                ready += 1
-                # merged = 0 sempre (não há merge nesta versão simplificada)
+                    skipped += len(losers)
 
                 processed_clusters += 1
 
-                # Flush periódico para evitar OOM (persiste a cada 10k clusters)
                 if processed_clusters % FLUSH_INTERVAL == 0:
                     logger.info(
                         "[%s] Flush intermediário aos %d clusters — salvando buffers no banco...",
                         execution_id, processed_clusters,
                     )
-                    _flush_buffers()
+                    _flush_dedup_buffers(
+                        winners_ready, losers_skipped, errors_no_key, StagingUsuarioServidor, BULK_SIZE,
+                    )
 
-                # Log de progresso a cada intervalo
                 if processed_clusters % LOG_INTERVAL == 0:
                     logger.info(
-                        "[%s] Dedup progresso: %d/%d clusters (%.1f%%) — ready=%d skip=%d err=%d (SEM merge)",
+                        "[%s] Dedup progresso: %d/%d clusters (%.1f%%) — ready=%d skip=%d err=%d",
                         execution_id, processed_clusters, total_clusters,
                         (processed_clusters / total_clusters * 100),
                         ready, skipped, errors,
@@ -494,18 +470,15 @@ def crossref_dedup(self, execution_id: str):
                 errors += 1
                 processed_clusters += 1
 
-        # Flush final (salva registros restantes)
-        logger.info("[%s] Deduplicação concluída — flush final dos buffers...", execution_id)
-        _flush_buffers()
-
+        logger.info("[%s] Dedup — flush final dos buffers...", execution_id)
+        _flush_dedup_buffers(
+            winners_ready, losers_skipped, errors_no_key, StagingUsuarioServidor, BULK_SIZE,
+        )
         logger.info(
-            "[%s] Deduplicação SIMPLIFICADA persistida — %d clusters | ready=%d skip=%d err=%d (SEM merge)",
+            "[%s] Dedup SIMPLIFICADA persistida — %d clusters | ready=%d skip=%d err=%d (SEM merge)",
             execution_id, processed_clusters, ready, skipped, errors,
         )
 
-        # ====================================================================
-        # FINALIZAÇÃO — atualiza metadados da execução
-        # ====================================================================
         total_ready = ready + n_alunos + n_terceiros
         step.records_in = total + n_alunos + n_terceiros
         step.records_out = total_ready

@@ -102,3 +102,100 @@ class TestUpsertControlSerializer:
         data = s.data
         assert data["source_id"] == "cpf:52998224725"
         assert data["entity_type"] == "user"
+
+
+class TestETLExecutionSerializerValidation:
+    """Testes dos métodos validate_* de ETLExecutionSerializer (model serializer)."""
+
+    def test_validate_user_types_empty_raises(self):
+        from core.serializers import ETLExecutionSerializer
+        from rest_framework import serializers as drf_serializers
+        s = ETLExecutionSerializer()
+        with pytest.raises(drf_serializers.ValidationError):
+            s.validate_user_types("   ")
+
+    def test_validate_user_types_invalid_part_raises(self):
+        from core.serializers import ETLExecutionSerializer
+        from rest_framework import serializers as drf_serializers
+        s = ETLExecutionSerializer()
+        with pytest.raises(drf_serializers.ValidationError):
+            s.validate_user_types("servidor,invalido")
+
+    def test_validate_user_types_valid(self):
+        from core.serializers import ETLExecutionSerializer
+        s = ETLExecutionSerializer()
+        assert s.validate_user_types("all") == "all"
+        assert s.validate_user_types("servidor,aluno") == "servidor,aluno"
+
+    def test_validate_skip_steps_not_list_raises(self):
+        from core.serializers import ETLExecutionSerializer
+        from rest_framework import serializers as drf_serializers
+        s = ETLExecutionSerializer()
+        with pytest.raises(drf_serializers.ValidationError):
+            s.validate_skip_steps("staging")
+
+    def test_validate_skip_steps_invalid_step_raises(self):
+        from core.serializers import ETLExecutionSerializer
+        from rest_framework import serializers as drf_serializers
+        s = ETLExecutionSerializer()
+        with pytest.raises(drf_serializers.ValidationError):
+            s.validate_skip_steps(["staging", "invalid_step"])
+
+    def test_validate_skip_steps_valid(self):
+        from core.serializers import ETLExecutionSerializer
+        s = ETLExecutionSerializer()
+        value = ["staging", "audit"]
+        assert s.validate_skip_steps(value) == value
+
+
+class TestETLExecutionCreateSerializerValidation:
+    """Testes dos caminhos de erro de validate_* em ETLExecutionCreateSerializer."""
+
+    def test_validate_user_types_empty_raises(self):
+        from core.serializers import ETLExecutionCreateSerializer
+        s = ETLExecutionCreateSerializer(data={"user_types": "  ,  "})
+        assert not s.is_valid()
+        assert "user_types" in s.errors
+
+    def test_validate_user_types_invalid_part_raises(self):
+        from core.serializers import ETLExecutionCreateSerializer
+        s = ETLExecutionCreateSerializer(data={"user_types": "servidor,invalido"})
+        assert not s.is_valid()
+        assert "user_types" in s.errors
+
+    def test_validate_skip_steps_not_list_raises(self):
+        from core.serializers import ETLExecutionCreateSerializer
+        from rest_framework import serializers as drf_serializers
+        s = ETLExecutionCreateSerializer()
+        with pytest.raises(drf_serializers.ValidationError):
+            s.validate_skip_steps("staging")
+
+    def test_validate_skip_steps_invalid_step_raises(self):
+        from core.serializers import ETLExecutionCreateSerializer
+        s = ETLExecutionCreateSerializer(data={"skip_steps": ["invalid_step"]})
+        assert not s.is_valid()
+        assert "skip_steps" in s.errors
+
+
+class TestSyncSelectiveSerializer:
+    """Testes de SyncSelectiveSerializer, incluindo o validate() cross-field."""
+
+    def test_validate_requires_at_least_one_field(self):
+        from core.serializers import SyncSelectiveSerializer
+        s = SyncSelectiveSerializer(data={})
+        assert not s.is_valid()
+
+    def test_validate_with_cpfs(self):
+        from core.serializers import SyncSelectiveSerializer
+        s = SyncSelectiveSerializer(data={"cpfs": ["12345678901"]})
+        assert s.is_valid(), s.errors
+
+    def test_validate_with_rfs(self):
+        from core.serializers import SyncSelectiveSerializer
+        s = SyncSelectiveSerializer(data={"rfs": ["123456"]})
+        assert s.is_valid(), s.errors
+
+    def test_validate_with_limit(self):
+        from core.serializers import SyncSelectiveSerializer
+        s = SyncSelectiveSerializer(data={"limit": 10})
+        assert s.is_valid(), s.errors

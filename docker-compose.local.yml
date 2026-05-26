@@ -1,8 +1,9 @@
 # =============================================================================
 # ETL-MS — ambiente de desenvolvimento local
-# Uso: docker compose -f docker-compose.local.yml up -d --build
+# Uso: docker compose --env-file .env.local -f docker-compose.local.yml up -d --build
 # Requer: rede sme-identidade criada + Keycloak rodando (docker-compose.local-infra.yml)
-# Credenciais externas: arquivo .env.local (copiar de .env.local.example)
+# Credenciais: arquivo .env.local (copiar de .env.local.example e ajustar)
+#   Variáveis obrigatórias: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 # =============================================================================
 
 services:
@@ -16,13 +17,13 @@ services:
     ports:
       - "5437:5432"
     environment:
-      POSTGRES_DB: etl_db
-      POSTGRES_USER: etl
-      POSTGRES_PASSWORD: etl
+      POSTGRES_DB: ${POSTGRES_DB:-etl_db}
+      POSTGRES_USER: ${POSTGRES_USER:-etl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD nao definida — copie .env.local.example para .env.local}
     volumes:
       - local_etl_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U etl -d etl_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-etl} -d ${POSTGRES_DB:-etl_db}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -57,7 +58,7 @@ services:
       - .env.local
     environment:
       # Sobrescreve os valores de .env.local para apontar aos containers locais
-      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      DATABASE_URL: postgres://${POSTGRES_USER:-etl}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD nao definida}@etl-postgres:5432/${POSTGRES_DB:-etl_db}
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -94,7 +95,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      DATABASE_URL: postgres://${POSTGRES_USER:-etl}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD nao definida}@etl-postgres:5432/${POSTGRES_DB:-etl_db}
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
@@ -123,7 +124,7 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL: postgres://etl:etl@etl-postgres:5432/etl_db
+      DATABASE_URL: postgres://${POSTGRES_USER:-etl}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD nao definida}@etl-postgres:5432/${POSTGRES_DB:-etl_db}
       CELERY_BROKER_URL: redis://etl-keydb:6379/0
       CELERY_RESULT_BACKEND: redis://etl-keydb:6379/1
       KEYCLOAK_SERVER_URL: http://keycloak:8080/
