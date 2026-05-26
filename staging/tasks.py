@@ -58,10 +58,11 @@ def _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, bulk_s
     return ok_count, err_count
 
 
-def _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra_fields=None):
+def _transform_model(model_class, execution_id, lotacao_map, bulk_size, extra_fields=None):
     base_fields = ["cpf", "nome", "status", "transformed_at", "error_detail"]
-    rf_field = extra_fields.get("rf_field", False) if extra_fields else False
-    lotacao_field = extra_fields.get("lotacao_field", False) if extra_fields else False
+    _extra = extra_fields or {}
+    rf_field = _extra.get("rf_field", False)
+    lotacao_field = _extra.get("lotacao_field", False)
     extra_update = []
     if rf_field:
         extra_update.append("rf")
@@ -82,7 +83,7 @@ def _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra_fi
         model_class.objects
         .filter(execution_id=execution_id, status=model_class.Status.RAW)
         .defer("raw_data")
-        .iterator(chunk_size=BULK_SIZE)
+        .iterator(chunk_size=bulk_size)
     ):
         try:
             _normalize_cpf_field(record)
@@ -104,8 +105,8 @@ def _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra_fi
             record.error_detail = f"Transform error: {e}"
             buf_err.append(record)
 
-        if len(buf_ok) + len(buf_err) >= BULK_SIZE:
-            ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, BULK_SIZE)
+        if len(buf_ok) + len(buf_err) >= bulk_size:
+            ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, bulk_size)
             transformed += ok
             errors += err
 
@@ -117,7 +118,7 @@ def _transform_model(model_class, execution_id, lotacao_map, BULK_SIZE, extra_fi
                 model_class.__name__, processed, transformed, errors,
             )
 
-    ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, BULK_SIZE)
+    ok, err = _flush_transform_buffers(model_class, buf_ok, buf_err, update_fields, bulk_size)
     transformed += ok
     errors += err
     gc.collect()
@@ -267,6 +268,22 @@ def _build_cpf_rf_indexes(transformed, total: int, total_chunks: int, chunk_size
     return cpf_index, rf_index, records_by_id
 
 
+def _apply_cross_unions(records_by_id, cpf_index, rf_index, parent):
+    """Aplica union entre registros que compartilham CPF e RF, retorna contagem."""
+    cross_unions = 0
+    for rec in records_by_id.values():
+        cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
+        rf = rec.rf
+        if cpf and rf:
+            cpf_ids = cpf_index.get(cpf, [])
+            rf_ids = rf_index.get(rf, [])
+            if cpf_ids and rf_ids:
+                for rid in rf_ids:
+                    _union_merge(cpf_ids[0], rid, parent)
+                    cross_unions += 1
+    return cross_unions
+
+
 def _build_clusters_by_union_find(cpf_index, rf_index, records_by_id, execution_id):
     """Aplica union-find nos índices CPF/RF e retorna dict de clusters."""
     parent = {rid: rid for rid in records_by_id}
@@ -283,17 +300,7 @@ def _build_clusters_by_union_find(cpf_index, rf_index, records_by_id, execution_
             _union_merge(ids[0], ids[i], parent)
             rf_unions += 1
 
-    cross_unions = 0
-    for rec in records_by_id.values():
-        cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
-        rf = rec.rf
-        if cpf and rf:
-            cpf_ids = cpf_index.get(cpf, [])
-            rf_ids = rf_index.get(rf, [])
-            if cpf_ids and rf_ids:
-                for rid in rf_ids:
-                    _union_merge(cpf_ids[0], rid, parent)
-                    cross_unions += 1
+    cross_unions = _apply_cross_unions(records_by_id, cpf_index, rf_index, parent)
 
     clusters = defaultdict(list)
     for rid in records_by_id:
@@ -483,7 +490,7 @@ def crossref_dedup(self, execution_id: str):
         step.records_in = total + n_alunos + n_terceiros
         step.records_out = total_ready
         step.records_error = errors
-        step.status = "success" if errors == 0 else ("failed" if ready == 0 else "success")
+        step.status = "failed" if (errors > 0 and ready == 0) else "success"
         step.finished_at = timezone.now()
         step.metadata = {
             "servidores_clusters": len(clusters),
