@@ -1,0 +1,6 @@
+# Adicionado para que o Rafa seja o revisador de todos os PRs
+* @RafaelRisso
+
+# Regra específica para a branch homolog - QAs
+[homolog]
+* @RafaelRisso @willssan06 @leandroscastro
