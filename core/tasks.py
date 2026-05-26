@@ -8,6 +8,21 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+class ExecutionCancelledError(Exception):
+    """Levantada quando a execução ETL foi cancelada manualmente."""
+
+
+def _check_cancelled(execution_id: str) -> None:
+    """Lança ExecutionCancelledError se a execução estiver com status CANCELLED.
+
+    Deve ser chamado no início de cada step e em pontos de checagem internos.
+    """
+    from .models import ETLExecution
+    status = ETLExecution.objects.filter(id=execution_id).values_list("status", flat=True).first()
+    if status == ETLExecution.Status.CANCELLED:
+        raise ExecutionCancelledError(f"Execução {execution_id} foi cancelada.")
+
+
 def _step_done(execution_id: str, step_name: str) -> bool:
     """Retorna True se o step já foi concluído com sucesso para esta execução."""
     from .models import ETLStepLog
@@ -32,6 +47,26 @@ def _get_or_create_step(execution, step_name: str, step_order: int):
         step.error_detail = None
         step.save(update_fields=["status", "finished_at", "error_detail"])
     return step
+
+
+def _resolve_user_type_models(user_types: str):
+    """Retorna a lista de (ModelClass, extra_fields) baseado em user_types.
+
+    user_types pode ser 'all', 'servidor', 'aluno', 'terceiro' ou combinações por vírgula.
+    """
+    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+
+    parts = {p.strip() for p in user_types.split(",") if p.strip()}
+    include_all = "all" in parts
+
+    models_cfg = []
+    if include_all or "servidor" in parts:
+        models_cfg.append((StagingUsuarioServidor, {"rf_field": True, "lotacao_field": True}))
+    if include_all or "aluno" in parts:
+        models_cfg.append((StagingUsuarioAluno, {"rf_field": False, "lotacao_field": True}))
+    if include_all or "terceiro" in parts:
+        models_cfg.append((StagingUsuarioTerceiro, {"rf_field": False, "lotacao_field": False}))
+    return models_cfg
 
 
 @shared_task(name="core.tasks.trigger_scheduled_etl")
@@ -134,11 +169,20 @@ def run_etl_pipeline(self, execution_id: str):
     from .models import ETLExecution
 
     execution = ETLExecution.objects.get(id=execution_id)
+
+    # Verifica cancelamento antes de iniciar
+    if execution.status == ETLExecution.Status.CANCELLED:
+        logger.info("ETL Pipeline [%s] cancelado antes de iniciar.", execution_id)
+        return
+
     execution.mark_running()
 
+    skip_steps = set(execution.skip_steps or [])
+    user_types = execution.user_types or "all"
+
     logger.info(
-        "ETL Pipeline [%s] started — source=%s, realm=%s",
-        execution_id, execution.source, execution.target_realm,
+        "ETL Pipeline [%s] started — source=%s, realm=%s, user_types=%s, skip_steps=%s",
+        execution_id, execution.source, execution.target_realm, user_types, sorted(skip_steps),
     )
 
     try:
@@ -147,19 +191,25 @@ def run_etl_pipeline(self, execution_id: str):
 
         extract_tasks = []
         source = execution.source
+        user_type_set = {p.strip() for p in user_types.split(",") if p.strip()}
+        include_all = "all" in user_type_set
 
-        if source in ("all", "se1426"):
+        # Filtra extrações por source e por user_types
+        needs_servidor = include_all or "servidor" in user_type_set
+        needs_aluno = include_all or "aluno" in user_type_set
+
+        if source in ("all", "se1426") and needs_servidor and "extract_se1426" not in skip_steps:
             extract_tasks.append(extract_se1426.si(execution_id))
-        if source in ("all", "eol_db"):
+        if source in ("all", "eol_db") and needs_servidor and "extract_eol_db" not in skip_steps:
             extract_tasks.append(extract_eol_db.si(execution_id))
-        if source in ("all", "eol_alunos", "eol_db"):
+        if source in ("all", "eol_alunos", "eol_db") and needs_aluno and "extract_eol_db" not in skip_steps:
             extract_tasks.append(extract_eol_alunos.si(execution_id))
-        if source in ("all", "coresso"):
+        if source in ("all", "coresso") and "extract_coresso" not in skip_steps:
             extract_tasks.append(extract_coresso.si(execution_id))
 
         if not extract_tasks:
             execution.mark_finished("failed")
-            logger.error("No extract tasks for source=%s", source)
+            logger.error("No extract tasks for source=%s / user_types=%s", source, user_types)
             return
 
         # Garante que o realm-alvo existe antes de qualquer operação KC
@@ -172,21 +222,34 @@ def run_etl_pipeline(self, execution_id: str):
                 execution_id, realm,
             )
 
-        # Step 0: sincroniza catálogo de sistemas e perfis antes de extrair usuários
-        _sync_coresso_catalogo(execution_id=execution_id, realm=realm)
+        # Step 0: sincroniza catálogo de sistemas e perfis (pode ser pulado)
+        if "sync_catalogo" not in skip_steps:
+            _sync_coresso_catalogo(execution_id=execution_id, realm=realm)
+        else:
+            logger.info("[%s] Step 0 (sync_catalogo) pulado por skip_steps.", execution_id)
 
-        # Extração sequencial (um por vez) para evitar estouro de memória
-        chain(
-            *extract_tasks,
-            transform_staging.si(execution_id),
-            crossref_dedup.si(execution_id),
-            decide_target.si(execution_id),
-            load_keycloak.si(execution_id),
-            load_token_ms.si(execution_id),
-            audit_etl.si(execution_id),
-        ).delay()
+        # Monta a chain dinâmica respeitando skip_steps
+        pipeline_tasks = list(extract_tasks)
 
-        logger.info("ETL Pipeline [%s] dispatched to Celery", execution_id)
+        if "staging" not in skip_steps:
+            pipeline_tasks.append(transform_staging.si(execution_id))
+        if "crossref_dedup" not in skip_steps:
+            pipeline_tasks.append(crossref_dedup.si(execution_id))
+        if "decision" not in skip_steps:
+            pipeline_tasks.append(decide_target.si(execution_id))
+        if "load_keycloak" not in skip_steps:
+            pipeline_tasks.append(load_keycloak.si(execution_id))
+        if "load_token_ms" not in skip_steps:
+            pipeline_tasks.append(load_token_ms.si(execution_id))
+        if "audit" not in skip_steps:
+            pipeline_tasks.append(audit_etl.si(execution_id))
+
+        chain(*pipeline_tasks).delay()
+
+        logger.info(
+            "ETL Pipeline [%s] dispatched — %d tasks na chain (skip=%s)",
+            execution_id, len(pipeline_tasks), sorted(skip_steps),
+        )
 
     except Exception as e:
         logger.exception("ETL Pipeline [%s] error: %s", execution_id, e)
@@ -201,6 +264,8 @@ def decide_target(self, execution_id: str):
 
     from .keycloak_client import build_kc_payload, build_token_ms_payload
     from .models import ETLExecution, ETLStepLog
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
 
@@ -303,6 +368,8 @@ def load_keycloak(self, execution_id: str):
     from .keycloak_client import get_admin_client
     from .models import ETLExecution, ETLStepLog
 
+    _check_cancelled(execution_id)
+
     execution = ETLExecution.objects.get(id=execution_id)
 
     # Idempotência: pula se já concluiu com sucesso
@@ -326,14 +393,27 @@ def load_keycloak(self, execution_id: str):
 
     try:
         from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
-        total_ready = (
-            StagingUsuarioServidor.objects.filter(execution_id=execution_id, status="ready").count()
-            + StagingUsuarioAluno.objects.filter(execution_id=execution_id, status="ready").count()
-            + StagingUsuarioTerceiro.objects.filter(execution_id=execution_id, status="ready").count()
+
+        user_types = execution.user_types or "all"
+        type_parts = {p.strip() for p in user_types.split(",") if p.strip()}
+        include_all = "all" in type_parts
+
+        # Filtra modelos por user_types
+        models_to_load = []
+        if include_all or "servidor" in type_parts:
+            models_to_load.append(StagingUsuarioServidor)
+        if include_all or "aluno" in type_parts:
+            models_to_load.append(StagingUsuarioAluno)
+        if include_all or "terceiro" in type_parts:
+            models_to_load.append(StagingUsuarioTerceiro)
+
+        total_ready = sum(
+            m.objects.filter(execution_id=execution_id, status="ready").count()
+            for m in models_to_load
         )
         logger.info(
-            "[%s] Step 6: %d registros prontos para carga no Keycloak",
-            execution_id, total_ready,
+            "[%s] Step 6: %d registros prontos para carga no Keycloak (user_types=%s)",
+            execution_id, total_ready, user_types,
         )
         admin = get_admin_client(realm=execution.target_realm)
 
@@ -344,7 +424,10 @@ def load_keycloak(self, execution_id: str):
         if max_records:
             logger.info("[%s] Step 6: modo teste — limitado a %d registros", execution_id, max_records)
 
-        for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+        CHECK_INTERVAL = 500  # verifica cancelamento a cada N registros
+        processed_since_check = 0
+
+        for model_class in models_to_load:
             if remaining is not None and remaining <= 0:
                 break
             usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
@@ -352,6 +435,12 @@ def load_keycloak(self, execution_id: str):
             if remaining is not None:
                 usuarios = usuarios[:remaining]
             for usuario in usuarios.iterator(chunk_size=200):
+                # Verificação periódica de cancelamento
+                processed_since_check += 1
+                if processed_since_check >= CHECK_INTERVAL:
+                    _check_cancelled(execution_id)
+                    processed_since_check = 0
+
                 l, s, e = _upsert_single_usuario(admin, usuario, execution.target_realm, execution)
                 loaded += l
                 skipped += s
@@ -364,7 +453,7 @@ def load_keycloak(self, execution_id: str):
         step.records_in = total
         step.records_out = loaded
         step.records_error = errors
-        step.metadata = {"skipped": skipped}
+        step.metadata = {"skipped": skipped, "user_types": user_types}
         step.status = (
             ETLStepLog.StepStatus.SUCCESS if errors == 0
             else ETLStepLog.StepStatus.FAILED
@@ -385,6 +474,13 @@ def load_keycloak(self, execution_id: str):
         step.finished_at = timezone.now()
         step.save()
         raise self.retry(exc=SoftTimeLimitExceeded(), countdown=300)
+    except ExecutionCancelledError:
+        logger.info("[%s] Step 6: cancelado pelo usuário durante execução", execution_id)
+        step.status = ETLStepLog.StepStatus.FAILED
+        step.error_detail = "Cancelado manualmente"
+        step.finished_at = timezone.now()
+        step.save()
+        return  # Não faz retry
     except Exception as e:
         logger.exception("[%s] Step 6 FAILED: %s", execution_id, e)
         step.status = ETLStepLog.StepStatus.FAILED
@@ -409,6 +505,8 @@ def load_token_ms(self, execution_id: str):
     from .models import ETLExecution, ETLStepLog
     from .token_ms_client import send_all
 
+    _check_cancelled(execution_id)
+
     execution = ETLExecution.objects.get(id=execution_id)
 
     # Idempotência: pula se já concluiu com sucesso
@@ -429,8 +527,21 @@ def load_token_ms(self, execution_id: str):
     logger.info("[%s] Step 7: Load token-ms", execution_id)
 
     try:
+        user_types = execution.user_types or "all"
+        type_parts = {p.strip() for p in user_types.split(",") if p.strip()}
+        include_all = "all" in type_parts
+
+        from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+        models_to_send = []
+        if include_all or "servidor" in type_parts:
+            models_to_send.append(StagingUsuarioServidor)
+        if include_all or "aluno" in type_parts:
+            models_to_send.append(StagingUsuarioAluno)
+        if include_all or "terceiro" in type_parts:
+            models_to_send.append(StagingUsuarioTerceiro)
+
         def _payloads():
-            for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+            for model_class in models_to_send:
                 qs = model_class.objects.filter(
                     execution_id=execution_id,
                     status__in=["ready", "loaded"],
@@ -445,7 +556,7 @@ def load_token_ms(self, execution_id: str):
         step.records_in = metrics["sent"]
         step.records_out = metrics["sent"]
         step.status = ETLStepLog.StepStatus.SUCCESS
-        step.metadata = {"batches": metrics["batches"]}
+        step.metadata = {"batches": metrics["batches"], "user_types": user_types}
         step.finished_at = timezone.now()
         step.save()
 
@@ -454,6 +565,13 @@ def load_token_ms(self, execution_id: str):
             execution_id, metrics["sent"], metrics["batches"],
         )
 
+    except ExecutionCancelledError:
+        logger.info("[%s] Step 7: cancelado pelo usuário durante execução", execution_id)
+        step.status = ETLStepLog.StepStatus.FAILED
+        step.error_detail = "Cancelado manualmente"
+        step.finished_at = timezone.now()
+        step.save()
+        return
     except Exception as e:
         logger.exception("[%s] Step 7 FAILED: %s", execution_id, e)
         step.status = ETLStepLog.StepStatus.FAILED
@@ -467,6 +585,8 @@ def load_token_ms(self, execution_id: str):
 def audit_etl(self, execution_id: str):
     """Etapa 8 — Fecha a execução e agrega métricas finais."""
     from .models import ETLExecution, ETLStepLog
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
 

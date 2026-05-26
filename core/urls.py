@@ -28,7 +28,11 @@ urlpatterns = [
         name="health-sme-integracao-auth",
     ),
     path("sistemas/", views.sistemas_list, name="sistemas-list"),
+    path("sistemas/extract/", views.sistemas_extract, name="sistemas-extract"),
+    path("sistemas/load-keycloak/", views.sistemas_load_keycloak, name="sistemas-load-keycloak"),
     path("perfis/", views.perfis_list, name="perfis-list"),
+    path("perfis/extract/", views.perfis_extract, name="perfis-extract"),
+    path("perfis/load-keycloak/", views.perfis_load_keycloak, name="perfis-load-keycloak"),
     path("retroalim/", views.retroalim_list, name="retroalim-list"),
     path("sync-selective/", views.sync_selective, name="sync-selective"),
 ]

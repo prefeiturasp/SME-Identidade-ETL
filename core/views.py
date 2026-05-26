@@ -9,9 +9,11 @@ from rest_framework.response import Response
 
 from core.service import KeycloakUpsertService
 from etl_ms.celery import app as celery_app
+from extract.tasks import extract_coresso_perfis, extract_coresso_sistemas
 from staging.models import RetroalimentacaoCoreSSO, StagingPerfilCoreSSO, StagingSistema
 from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
+from .keycloak_client import get_admin_client, upsert_kc_client, upsert_kc_client_role
 from .models import ETLExecution, UpsertControl
 from .serializers import (
     ETLExecutionCreateSerializer,
@@ -60,6 +62,9 @@ class ETLExecutionViewSet(
             load_keycloak=serializer.validated_data.get("load_keycloak", False),
             load_token_ms=serializer.validated_data.get("load_token_ms", True),
             max_records=serializer.validated_data.get("max_records", None),
+            max_records_extract=serializer.validated_data.get("max_records_extract", None),
+            user_types=serializer.validated_data.get("user_types", "all"),
+            skip_steps=serializer.validated_data.get("skip_steps", []),
             executed_by=request.META.get("HTTP_X_FORWARDED_USER", "api"),
         )
 
@@ -617,6 +622,53 @@ def sistemas_list(request):
     ])
 
 
+@api_view(["POST"])
+def sistemas_extract(request):
+    """Extrai sistemas CoreSSO para staging_sistema."""
+    try:
+        total = extract_coresso_sistemas()
+        return Response({"total_extracted": total})
+    except Exception as e:
+        logger.exception("sistemas_extract FAILED: %s", e)
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+@api_view(["POST"])
+def sistemas_load_keycloak(request):
+    """Carrega sistemas staging como clients OIDC no Keycloak."""
+    from django.conf import settings
+
+    sigla = request.data.get("sigla")
+    realm = getattr(settings, "KEYCLOAK_REALM", "sme-apps")
+
+    qs = StagingSistema.objects.filter(situacao=1)
+    if sigla:
+        qs = qs.filter(sigla=sigla)
+
+    admin = get_admin_client(realm=realm)
+    created_items = []
+    updated_items = []
+    errors = []
+
+    for sistema in qs:
+        try:
+            result = upsert_kc_client(admin, sistema, realm=realm)
+            if result.get("action") == "created":
+                created_items.append(result)
+            else:
+                updated_items.append(result)
+        except Exception as e:
+            logger.warning("Falha upsert client %s: %s", sistema.sigla, e)
+            errors.append({"sigla": sistema.sigla, "error": str(e)})
+
+    return Response({
+        "total": len(created_items) + len(updated_items),
+        "created": created_items,
+        "updated": updated_items,
+        "errors": errors,
+    })
+
+
 @api_view(["GET"])
 def perfis_list(request):
     """Retorna a lista de todos os perfis CoreSSO de staging com o mapeamento de roles do Keycloak."""
@@ -636,6 +688,61 @@ def perfis_list(request):
         }
         for p in qs.order_by("coresso_sis_id", "nome")[:1000]
     ])
+
+
+@api_view(["POST"])
+def perfis_extract(request):
+    """Extrai perfis CoreSSO para staging_perfil_coresso."""
+    try:
+        total = extract_coresso_perfis()
+        return Response({"total_extracted": total})
+    except Exception as e:
+        logger.exception("perfis_extract FAILED: %s", e)
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+@api_view(["POST"])
+def perfis_load_keycloak(request):
+    """Carrega perfis staging como client roles no Keycloak."""
+    from django.conf import settings
+
+    coresso_sis_id = request.data.get("coresso_sis_id")
+    realm = getattr(settings, "KEYCLOAK_REALM", "sme-apps")
+
+    qs = StagingPerfilCoreSSO.objects.select_related("sistema")
+    if coresso_sis_id:
+        qs = qs.filter(coresso_sis_id=int(coresso_sis_id))
+
+    admin = get_admin_client(realm=realm)
+    created = updated = skipped = errors = 0
+    count = 0
+
+    for perfil in qs.iterator(chunk_size=200):
+        count += 1
+        if count % 50 == 0:
+            try:
+                admin = get_admin_client(realm=realm)
+            except Exception as e:
+                logger.warning("Falha ao renovar admin client: %s", e)
+        try:
+            result = upsert_kc_client_role(admin, perfil)
+            action = result.get("action", "created")
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning("Falha upsert client role %s: %s", getattr(perfil, "kc_role_name", str(perfil)), e)
+            errors += 1
+
+    return Response({
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    })
 
 
 @api_view(["GET"])

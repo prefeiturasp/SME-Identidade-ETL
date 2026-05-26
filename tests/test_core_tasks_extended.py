@@ -194,37 +194,48 @@ class TestCleanupOldStaging:
 
 
 class TestRunEtlPipelineSourceFiltering:
-    @patch("core.tasks.chord")
     @patch("core.tasks.chain")
-    def test_all_sources_adds_all_extract_tasks(self, mock_chain, mock_chord):
+    @patch("core.keycloak_client.ensure_realm_exists", return_value=False)
+    def test_all_sources_adds_all_extract_tasks(self, mock_ensure, mock_chain):
         from core.tasks import run_etl_pipeline
 
-        mock_callback = MagicMock()
-        mock_chord.return_value = MagicMock(return_value=mock_callback)
         mock_chain.return_value = MagicMock()
 
-        execution = _make_execution(source="all")
-        run_etl_pipeline(str(execution.id))
+        with (
+            patch("extract.tasks.extract_se1426.si") as mock_si_se1426,
+            patch("extract.tasks.extract_eol_db.si") as mock_si_eol_db,
+            patch("extract.tasks.extract_eol_alunos.si") as mock_si_alunos,
+            patch("extract.tasks.extract_coresso.si") as mock_si_coresso,
+        ):
+            execution = _make_execution(source="all")
+            run_etl_pipeline(str(execution.id))
 
-        # chord deve ter sido chamado com 4 tasks (se1426, eol_db, eol_alunos, coresso)
-        assert mock_chord.called
-        chord_args = mock_chord.call_args[0][0]
-        assert len(chord_args) == 4
+        # Todos os 4 sources devem ter sido incluídos na chain
+        assert mock_si_se1426.called
+        assert mock_si_eol_db.called
+        assert mock_si_alunos.called
+        assert mock_si_coresso.called
 
-    @patch("core.tasks.chord")
     @patch("core.tasks.chain")
-    def test_se1426_source_adds_only_se1426(self, mock_chain, mock_chord):
+    @patch("core.keycloak_client.ensure_realm_exists", return_value=False)
+    def test_se1426_source_adds_only_se1426(self, mock_ensure, mock_chain):
         from core.tasks import run_etl_pipeline
 
-        mock_callback = MagicMock()
-        mock_chord.return_value = MagicMock(return_value=mock_callback)
         mock_chain.return_value = MagicMock()
 
-        execution = _make_execution(source="se1426")
-        run_etl_pipeline(str(execution.id))
+        with (
+            patch("extract.tasks.extract_se1426.si") as mock_si_se1426,
+            patch("extract.tasks.extract_eol_db.si") as mock_si_eol_db,
+            patch("extract.tasks.extract_eol_alunos.si") as mock_si_alunos,
+            patch("extract.tasks.extract_coresso.si") as mock_si_coresso,
+        ):
+            execution = _make_execution(source="se1426")
+            run_etl_pipeline(str(execution.id))
 
-        chord_args = mock_chord.call_args[0][0]
-        assert len(chord_args) == 1
+        assert mock_si_se1426.called
+        assert not mock_si_eol_db.called
+        assert not mock_si_alunos.called
+        assert not mock_si_coresso.called
 
     def test_unknown_source_marks_failed(self):
         from core.tasks import run_etl_pipeline
@@ -303,9 +314,8 @@ class TestLoadKeycloakBulk:
 
 
 class TestRunEtlPipelineError:
-    @patch("core.tasks.chord", side_effect=RuntimeError("redis down"))
-    @patch("core.tasks.chain")
-    def test_exception_marks_failed(self, mock_chain, mock_chord):
+    @patch("core.tasks.chain", side_effect=RuntimeError("redis down"))
+    def test_exception_marks_failed(self, mock_chain):
         from core.tasks import run_etl_pipeline
         from core.models import ETLExecution
 

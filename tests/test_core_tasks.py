@@ -49,8 +49,7 @@ class TestTriggerScheduledEtl:
 
 
 class TestRunEtlPipeline:
-    @patch("core.tasks.chord")
-    def test_run_etl_pipeline_without_extract_tasks(self, mock_chord):
+    def test_run_etl_pipeline_without_extract_tasks(self):
         from core.models import ETLExecution
         from core.tasks import run_etl_pipeline
 
@@ -65,14 +64,10 @@ class TestRunEtlPipeline:
 
         assert execution.status == "failed"
 
-        mock_chord.assert_not_called()
-
-    @patch("core.tasks.chord")
     @patch("core.tasks.chain")
     def test_run_etl_pipeline_dispatches(
         self,
         mock_chain,
-        mock_chord,
     ):
         from core.models import ETLExecution
         from core.tasks import run_etl_pipeline
@@ -95,12 +90,10 @@ class TestRunEtlPipeline:
             patch("core.tasks.load_keycloak.si", return_value=fake_sig),
             patch("core.tasks.load_token_ms.si", return_value=fake_sig),
             patch("core.tasks.audit_etl.si", return_value=fake_sig),
+            patch("core.keycloak_client.ensure_realm_exists", return_value=False),
         ):
-            mock_chord.return_value = MagicMock()
-
             run_etl_pipeline(str(execution.id))
 
-        mock_chord.assert_called_once()
         mock_chain.assert_called_once()
 
     @patch(

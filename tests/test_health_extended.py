@@ -9,7 +9,9 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def client():
-    return APIClient()
+    c = APIClient()
+    c.credentials(HTTP_X_INTERNAL_TOKEN="dev-etl-token")
+    return c
 
 
 

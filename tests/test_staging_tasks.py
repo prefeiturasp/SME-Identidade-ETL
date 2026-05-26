@@ -153,8 +153,9 @@ class TestCrossrefDedup:
         _make_terceiro(execution.id, status="transformed")
         crossref_dedup(str(execution.id))
 
-        assert StagingUsuarioAluno.objects.get(execution_id=execution.id).status == "ready"
-        assert StagingUsuarioTerceiro.objects.get(execution_id=execution.id).status == "ready"
+        # Dedup simplificado: alunos/terceiros são ignorados (permanecem como transformed)
+        assert StagingUsuarioAluno.objects.get(execution_id=execution.id).status == "transformed"
+        assert StagingUsuarioTerceiro.objects.get(execution_id=execution.id).status == "transformed"
 
     def test_single_servidor_becomes_ready(self):
         from staging.tasks import crossref_dedup
@@ -169,7 +170,7 @@ class TestCrossrefDedup:
 
     def test_dedup_merges_same_cpf(self):
         from staging.tasks import crossref_dedup
-        from staging.models import StagingUsuarioServidor, DedupResult
+        from staging.models import StagingUsuarioServidor
 
         execution = _make_execution()
 
@@ -184,14 +185,12 @@ class TestCrossrefDedup:
 
         crossref_dedup(str(execution.id))
 
-
         se1426_srv.refresh_from_db()
         eoldb_srv.refresh_from_db()
+        # se1426 tem prioridade 1 (maior) — winner=ready, eol_db=skipped
         assert se1426_srv.status == StagingUsuarioServidor.Status.READY
         assert eoldb_srv.status == StagingUsuarioServidor.Status.SKIPPED
-
-
-        assert DedupResult.objects.filter(execution_id=execution.id).exists()
+        # DedupResult não é criado no modo simplificado (economiza memória)
 
     def test_no_servidores_succeeds(self):
         from staging.tasks import crossref_dedup
@@ -336,7 +335,8 @@ class TestTransformModelEdgeCases:
         _transform_model(
             StagingUsuarioServidor,
             execution.id,
-            {"0001": lotacao},
+            # lotacao_map espera dicts com chaves "codigo", "dre_codigo", "tipo"
+            {"0001": {"codigo": "0001", "dre_codigo": "DRE-TESTE", "tipo": "ue"}},
             BULK_SIZE=100,
             extra_fields={
                 "rf_field": True,
@@ -451,8 +451,13 @@ class TestCrossrefDedupExtraBranches:
         crossref_dedup(str(execution.id))
 
         winner.refresh_from_db()
+        loser.refresh_from_db()
 
-        assert winner.email == "merged@sme.sp.gov.br"
+        # Dedup simplificado: se1426 é winner (prioridade 1), eol_db é loser (prioridade 2)
+        # Não há merge de campos — winner mantém seus próprios dados
+        assert winner.status == "ready"
+        assert loser.status == "skipped"
+        assert winner.email is None  # email não é mergeado no modo simplificado
 
     def test_conflict_increments_conflict_counter(self):
         from staging.tasks import crossref_dedup
@@ -485,7 +490,8 @@ class TestCrossrefDedupExtraBranches:
             step_name="crossref_dedup",
         )
 
-        assert step.metadata["servidores_conflicts"] == 1
+        # Dedup simplificado: não rastreia conflicts — usa servidores_skipped
+        assert step.metadata["servidores_skipped"] == 1
 
     def test_coresso_member_overrides_situacao(self):
         from staging.tasks import crossref_dedup
@@ -517,8 +523,13 @@ class TestCrossrefDedupExtraBranches:
         crossref_dedup(str(execution.id))
 
         winner.refresh_from_db()
+        coresso.refresh_from_db()
 
-        assert winner.situacao == "afastado"
+        # Dedup simplificado: se1426 (prioridade 1) vence sobre coresso (prioridade 3)
+        # Não há override de campos — winner mantém seus próprios dados
+        assert winner.status == "ready"
+        assert coresso.status == "skipped"
+        assert winner.situacao == "ativo"  # não é sobrescrito pelo coresso no modo simplificado
 
     def test_cluster_exception_increments_errors(
         self,

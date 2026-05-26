@@ -25,7 +25,7 @@ def _build_se1426_conn_str() -> str:
     )
 
 
-def _extract_se1426_sql(execution_id: str) -> int:
+def _extract_se1426_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     from staging.models import StagingUsuarioServidor
@@ -108,6 +108,12 @@ def _extract_se1426_sql(execution_id: str) -> int:
 
             StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] SE1426: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     finally:
         conn.close()
@@ -115,7 +121,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
     return total_extracted
 
 
-def _extract_eol_db_sql(execution_id: str) -> int:
+def _extract_eol_db_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
@@ -219,6 +225,12 @@ def _extract_eol_db_sql(execution_id: str) -> int:
         if len(staging_records) >= BATCH_SIZE:
             StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             staging_records = []
+            if max_records and len(servidores) >= max_records:
+                logger.info(
+                    "[%s] EOL_DB: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     if staging_records:
         StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
@@ -230,6 +242,9 @@ def _extract_eol_db_sql(execution_id: str) -> int:
 def extract_se1426(self, execution_id: str):
     """Extrai dados de servidores do banco SE1426 (PRODAM) para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import ExecutionCancelledError, _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -263,7 +278,7 @@ def extract_se1426(self, execution_id: str):
                 "database": settings.SE1426_DB_NAME,
             }
             step.save(update_fields=["metadata"])
-            total_extracted = _extract_se1426_sql(execution_id)
+            total_extracted = _extract_se1426_sql(execution_id, max_records=execution.max_records_extract)
 
         elif settings.SE1426_API_TOKEN:
             logger.info("[%s] SE1426: modo API REST", execution_id)
@@ -364,6 +379,9 @@ def _extract_se1426_api(execution_id: str) -> int:
 def extract_eol_db(self, execution_id: str):
     """Extrai dados de servidores do EOL_DB (SQL Server) para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -406,7 +424,7 @@ def extract_eol_db(self, execution_id: str):
         }
         step.save(update_fields=["metadata"])
 
-        total_extracted = _extract_eol_db_sql(execution_id)
+        total_extracted = _extract_eol_db_sql(execution_id, max_records=execution.max_records_extract)
 
         step.records_out = total_extracted
         step.status = "success"
@@ -434,7 +452,7 @@ def extract_eol_db(self, execution_id: str):
         raise self.retry(exc=e, countdown=120)
 
 
-def _extract_eol_alunos_sql(execution_id: str) -> int:
+def _extract_eol_alunos_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     from staging.models import StagingUsuarioAluno
@@ -548,6 +566,12 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
                 "[%s] EOL alunos: %d extraídos (lote de %d)",
                 execution_id, total_extracted, len(staging_records),
             )
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] EOL alunos: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
     finally:
         conn.close()
 
@@ -558,6 +582,9 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 def extract_eol_alunos(self, execution_id: str):
     """Extrai dados de alunos do EOL_DB para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -599,7 +626,7 @@ def extract_eol_alunos(self, execution_id: str):
         }
         step.save(update_fields=["metadata"])
 
-        total_extracted = _extract_eol_alunos_sql(execution_id)
+        total_extracted = _extract_eol_alunos_sql(execution_id, max_records=execution.max_records_extract)
 
         step.records_out = total_extracted
         step.status = "success"
@@ -644,7 +671,7 @@ def _build_coresso_conn_str() -> str:
     )
 
 
-def _extract_coresso_sql(execution_id: str) -> int:
+def _extract_coresso_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
@@ -784,6 +811,12 @@ def _extract_coresso_sql(execution_id: str) -> int:
                 total_extracted,
                 len(staging_records),
             )
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] CORESSO: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     return total_extracted
 
@@ -830,6 +863,9 @@ def _extract_coresso_api(execution_id: str) -> int:
 def extract_coresso(self, execution_id: str):
     """Extrai dados de usuarios terceiros do CoreSSO para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -866,7 +902,7 @@ def extract_coresso(self, execution_id: str):
                 "database": settings.CORESSO_DB_NAME,
             }
             step.save(update_fields=["metadata"])
-            total_extracted = _extract_coresso_sql(execution_id)
+            total_extracted = _extract_coresso_sql(execution_id, max_records=execution.max_records_extract)
 
         elif settings.CORESSO_API_URL:
             logger.info("[%s] CORESSO: modo API REST (fallback)", execution_id)

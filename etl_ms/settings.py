@@ -184,14 +184,14 @@ CELERY_WORKER_MAX_TASKS_PER_CHILD = int(
 )
 
 # Controle de reentrega em caso de SIGKILL (OOM killer / crash do worker)
-# acks_late: a mensagem só é confirmada no broker APÓS a task concluir com sucesso.
-#            Se o worker morrer (SIGKILL), o broker recoloca a mensagem na fila.
-# reject_on_worker_lost: quando o processo filho morre sem ACK, a task é rejeitada
-#                        (nack) e reentregue — garante que nenhum estágio ETL se perca.
-# prefetch_multiplier=1: cada worker segura no máximo 1 mensagem por vez; sem isso,
-#                        múltiplas tasks em prefetch seriam perdidas num único SIGKILL.
+# acks_late: mantido True para não perder mensagens em crash do broker.
+# reject_on_worker_lost: DESABILITADO (False) — quando o worker é morto pelo OOM killer
+#   ou pelo kernel (SIGKILL), a task NÃO é recolocada na fila automaticamente.
+#   O operador deve reiniciar manualmente via POST /api/etl/executions/ com nova execução,
+#   garantindo que não haja reexecuções automáticas não supervisionadas.
+# prefetch_multiplier=1: cada worker segura no máximo 1 mensagem por vez.
 CELERY_TASK_ACKS_LATE = True
-CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = False
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"

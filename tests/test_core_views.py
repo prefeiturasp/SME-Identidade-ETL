@@ -13,7 +13,9 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def api_client():
-    return APIClient()
+    client = APIClient()
+    client.credentials(HTTP_X_INTERNAL_TOKEN="dev-etl-token")
+    return client
 
 
 @pytest.fixture
@@ -305,6 +307,7 @@ class TestSistemasLoadKeycloak:
             "/fake-url/",
             {"sigla": "SIGA"},
             format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
         )
 
         resp = sistemas_load_keycloak(request)
@@ -368,6 +371,7 @@ class TestPerfisLoadKeycloak:
             "/fake-url/",
             {"coresso_sis_id": 1},
             format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
         )
 
         resp = perfis_load_keycloak(request)
@@ -421,6 +425,7 @@ class TestPerfisLoadKeycloak:
             "/fake-url/",
             {},
             format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
         )
 
         resp = perfis_load_keycloak(request)
@@ -476,6 +481,7 @@ class TestPerfisLoadKeycloak:
             "/fake-url/",
             {},
             format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
         )
 
         resp = perfis_load_keycloak(request)
