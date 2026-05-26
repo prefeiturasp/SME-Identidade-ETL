@@ -58,6 +58,7 @@ class ETLExecutionViewSet(
             note=serializer.validated_data.get("note", ""),
             load_keycloak=serializer.validated_data.get("load_keycloak", False),
             load_token_ms=serializer.validated_data.get("load_token_ms", True),
+            max_records=serializer.validated_data.get("max_records", None),
             executed_by=request.META.get("HTTP_X_FORWARDED_USER", "api"),
         )
 

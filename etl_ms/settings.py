@@ -222,6 +222,11 @@ TOKEN_MS_INTERNAL_TOKEN = os.environ.get("TOKEN_MS_INTERNAL_TOKEN", "")
 TOKEN_MS_TIMEOUT = int(os.environ.get("TOKEN_MS_TIMEOUT", "60"))
 TOKEN_MS_BATCH_SIZE = int(os.environ.get("TOKEN_MS_BATCH_SIZE", "500"))
 
+# Tamanho do lote para extração e insert no staging.
+# Valores maiores reduzem roundtrips ao SQL Server e ao PostgreSQL.
+# Ajustar via ETL_EXTRACT_BATCH_SIZE se o worker sofrer pressão de memória.
+ETL_EXTRACT_BATCH_SIZE = int(os.environ.get("ETL_EXTRACT_BATCH_SIZE", "50000"))
+
 
 ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
     os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
@@ -254,6 +259,16 @@ CORESSO_DB_NAME = os.environ.get("CORESSO_DB_NAME", "CoreSSO")
 CORESSO_DB_USER = os.environ.get("CORESSO_DB_USER", "")
 CORESSO_DB_PASSWORD = os.environ.get("CORESSO_DB_PASSWORD", "")
 CORESSO_DB_TIMEOUT = int(os.environ.get("CORESSO_DB_TIMEOUT", "300"))
+
+# IDs de sistemas do CoreSSO a EXCLUIR da extração de usuários (SYS_Sistema.sis_id).
+# Usuários cujo ÚNICO acesso seja a estes sistemas não serão extraídos.
+# Exemplo: CORESSO_EXCLUDE_SISTEMA_IDS=174,200
+_coresso_exclude_raw = os.environ.get("CORESSO_EXCLUDE_SISTEMA_IDS", "")
+CORESSO_EXCLUDE_SISTEMA_IDS: list[int] = (
+    [int(x.strip()) for x in _coresso_exclude_raw.split(",") if x.strip().isdigit()]
+    if _coresso_exclude_raw.strip()
+    else []
+)
 
 
 SME_INTEGRACAO_BASE_URL = os.environ.get(

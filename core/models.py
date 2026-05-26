@@ -70,6 +70,11 @@ class ETLExecution(models.Model):
         default=True,
         help_text="Se True, o step 7 envia payload para o Token-MS",
     )
+    max_records = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Limita o número de usuários sincronizados no step 6 (KC). Nulo = sem limite.",
+    )
 
     note = models.TextField(blank=True, null=True, help_text="Observações da execução")
     executed_by = models.CharField(

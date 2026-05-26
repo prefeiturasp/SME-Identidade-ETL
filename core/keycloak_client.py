@@ -263,6 +263,12 @@ def build_kc_payload(usuario) -> dict[str, Any]:
     if cod_dre:
         attributes["cod_dre"] = [cod_dre]
 
+    # Atributos de perfil — enviados sempre (vazios até serem populados no staging)
+    attributes["cargo"] = [(getattr(usuario, "cargo", None) or "").strip()]
+    attributes["coordenadoria"] = [(getattr(usuario, "coordenadoria", None) or "").strip()]
+    attributes["ultimo_acesso"] = [(getattr(usuario, "ultimo_acesso", None) or "").strip()]
+    attributes["tempo_sessao"] = [(getattr(usuario, "tempo_sessao", None) or "").strip()]
+
     return {
         "username": _resolve_username(usuario),
         "email": _build_email(usuario),

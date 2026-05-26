@@ -1,4 +1,5 @@
 """Tasks Celery para transformacao, deduplicacao e crossref dos dados de staging."""
+import gc
 import logging
 from collections import defaultdict
 
@@ -37,6 +38,7 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
     errors = 0
     buf_ok: list = []
     buf_err: list = []
+    processed = 0
 
     def _flush():
         nonlocal transformed, errors
@@ -49,10 +51,14 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
             errors += len(buf_err)
             buf_err.clear()
 
-    for record in ModelClass.objects.filter(
-        execution_id=execution_id,
-        status=ModelClass.Status.RAW,
-    ).iterator(chunk_size=BULK_SIZE):
+    # raw_data (JSONField) não é usado na transformação — defer evita carregar
+    # centenas de KB por registro em memória, reduzindo drasticamente o consumo.
+    for record in (
+        ModelClass.objects
+        .filter(execution_id=execution_id, status=ModelClass.Status.RAW)
+        .defer("raw_data")
+        .iterator(chunk_size=BULK_SIZE)
+    ):
         try:
             if record.cpf:
                 cpf_clean = normalize_cpf(record.cpf)
@@ -71,8 +77,8 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
             if hasattr(record, "lotacao") and record.lotacao and not record.dre:
                 lot = lotacao_map.get(record.lotacao)
                 if lot:
-                    record.dre = lot.dre_codigo
-                    record.ue = lot.codigo if lot.tipo == "ue" else None
+                    record.dre = lot["dre_codigo"]
+                    record.ue = lot["codigo"] if lot["tipo"] == "ue" else None
 
             record.status = ModelClass.Status.TRANSFORMED
             record.transformed_at = now
@@ -86,13 +92,28 @@ def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fie
         if len(buf_ok) + len(buf_err) >= BULK_SIZE:
             _flush()
 
+        processed += 1
+        if processed % 50_000 == 0:
+            gc.collect()
+            logger.info(
+                "[transform] %s: %d processados, %d ok / %d erros",
+                ModelClass.__name__, processed, transformed, errors,
+            )
+
     _flush()
+    gc.collect()
     return transformed, errors
 
 
-@shared_task(bind=True, name="staging.tasks.transform_staging")
+@shared_task(
+    bind=True,
+    name="staging.tasks.transform_staging",
+    soft_time_limit=10800,  # 3h → SoftTimeLimitExceeded
+    time_limit=11100,       # 3h5m → SIGTERM forçado
+)
 def transform_staging(self, execution_id: str):
     """Normalize and validate all RAW staging records, marking them TRANSFORMED or ERROR."""
+    from celery.exceptions import SoftTimeLimitExceeded
     from core.models import ETLExecution, ETLStepLog
     from .models import StagingLotacao, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
@@ -103,12 +124,21 @@ def transform_staging(self, execution_id: str):
         step_order=3,
     )
 
+    total_raw = (
+        StagingUsuarioServidor.objects.filter(execution_id=execution_id, status="raw").count()
+        + StagingUsuarioAluno.objects.filter(execution_id=execution_id, status="raw").count()
+        + StagingUsuarioTerceiro.objects.filter(execution_id=execution_id, status="raw").count()
+    )
+    logger.info(
+        "[%s] Step 3: %d registros pendentes de transformação (servidores + alunos + terceiros)",
+        execution_id, total_raw,
+    )
     logger.info("[%s] Step 3: Transform staging (servidor/aluno/terceiro)", execution_id)
 
     try:
         lotacao_map = {
-            lot.codigo: lot
-            for lot in StagingLotacao.objects.only("codigo", "dre_codigo", "tipo")
+            lot["codigo"]: lot
+            for lot in StagingLotacao.objects.values("codigo", "dre_codigo", "tipo")
         }
 
         BULK_SIZE = 500
@@ -138,6 +168,14 @@ def transform_staging(self, execution_id: str):
             "[%s] Step 3 concluido: %d transformed, %d errors",
             execution_id, total_transformed, total_errors,
         )
+
+    except SoftTimeLimitExceeded:
+        logger.error("[%s] Step 3 TIMEOUT: transform excedeu tempo limite", execution_id)
+        step.status = "failed"
+        step.error_detail = "SoftTimeLimitExceeded — transform demorou mais de 3h"
+        step.finished_at = timezone.now()
+        step.save()
+        raise
 
     except Exception as e:
         logger.exception("[%s] Step 3 FAILED: %s", execution_id, e)

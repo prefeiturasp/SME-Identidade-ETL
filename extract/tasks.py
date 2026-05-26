@@ -30,7 +30,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
 
     from staging.models import StagingUsuarioServidor
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -70,6 +70,12 @@ def _extract_se1426_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute("SELECT COUNT(*) FROM v_servidor_sme_serap WITH (NOLOCK)")
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] SE1426: %d registros na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -100,7 +106,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
                     )
                 )
 
-            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
 
     finally:
@@ -112,7 +118,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
 def _extract_eol_db_sql(execution_id: str) -> int:
     import pyodbc
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -144,6 +150,14 @@ def _extract_eol_db_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute(
+            "SELECT COUNT(DISTINCT cd_registro_funcional) FROM v_servidor_sme_serap WITH (NOLOCK) WHERE situacao = 'Ativo'"
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] EOL_DB: %d servidores únicos na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -202,12 +216,12 @@ def _extract_eol_db_sql(execution_id: str) -> int:
                 },
             )
         )
-        if len(staging_records) >= 500:
-            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+        if len(staging_records) >= BATCH_SIZE:
+            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             staging_records = []
 
     if staging_records:
-        StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+        StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
 
     return len(servidores)
 
@@ -224,6 +238,14 @@ def extract_se1426(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor
+        deleted, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.SE1426
+        ).delete()
+        logger.warning(
+            "[%s] extract_se1426: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -350,6 +372,14 @@ def extract_eol_db(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor
+        deleted, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.EOL_DB
+        ).delete()
+        logger.warning(
+            "[%s] extract_eol_db: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -409,7 +439,7 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 
     from staging.models import StagingUsuarioAluno
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -445,6 +475,22 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute(
+            """
+            SELECT COUNT(DISTINCT matr.cd_aluno)
+            FROM v_matricula_cotic matr WITH (NOLOCK)
+            INNER JOIN matricula_turma_escola mte WITH (NOLOCK)
+                ON mte.cd_matricula = matr.cd_matricula
+            WHERE matr.st_matricula IN (1, 6, 10, 13)
+              AND mte.cd_situacao_aluno IN (1, 6, 10, 13)
+              AND matr.an_letivo = YEAR(GETDATE())
+            """
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] EOL alunos: %d alunos únicos na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -520,6 +566,14 @@ def extract_eol_alunos(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioAluno
+        deleted, _ = StagingUsuarioAluno.objects.filter(
+            execution_id=execution_id
+        ).delete()
+        logger.warning(
+            "[%s] extract_eol_alunos: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -593,31 +647,86 @@ def _build_coresso_conn_str() -> str:
 def _extract_coresso_sql(execution_id: str) -> int:
     import pyodbc
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
+    exclude_ids: list[int] = settings.CORESSO_EXCLUDE_SISTEMA_IDS
+
+    # Cláusula NOT EXISTS: exclui usuários cujo ÚNICO acesso seja a sistemas na lista.
+    # Ou seja, se o usuário tiver acesso a qualquer OUTRO sistema além dos excluídos,
+    # ele continua sendo extraído normalmente.
+    if exclude_ids:
+        ids_placeholder = ",".join(str(i) for i in exclude_ids)
+        exclude_filter = f"""
+        AND EXISTS (
+            SELECT 1
+            FROM SYS_UsuarioGrupo ug2 WITH (NOLOCK)
+            INNER JOIN SYS_Grupo g2 WITH (NOLOCK)
+                ON g2.gru_id = ug2.gru_id AND g2.gru_situacao = 1
+            INNER JOIN SYS_Sistema s2 WITH (NOLOCK)
+                ON s2.sis_id = g2.sis_id AND s2.sis_situacao = 1
+                AND s2.sis_id NOT IN ({ids_placeholder})
+            WHERE ug2.usu_id = u.usu_id AND ug2.usg_situacao = 1
+        )"""
+        logger.info(
+            "[%s] CORESSO: excluindo usuários exclusivos dos sistemas %s",
+            execution_id, ids_placeholder,
+        )
+    else:
+        exclude_filter = ""
 
     conn_str = _build_coresso_conn_str()
+    # Filtra apenas usuários com pelo menos um perfil ativo em um sistema ativo.
+    # Sem este filtro a query retorna TODOS os usuários de toda a prefeitura (~4M),
+    # mas o ETL SME só precisa de quem tem acesso a algum sistema SME cadastrado.
     query = f"""
-        SELECT
-            u.usu_login        AS rf,
-            u.usu_email        AS email,
-            p.pes_nome         AS nome,
-            doc.psd_numero     AS cpf,
-            u.usu_situacao     AS situacao,
+        SELECT DISTINCT
+            u.usu_login         AS rf,
+            u.usu_email         AS email,
+            p.pes_nome          AS nome,
+            doc.psd_numero      AS cpf,
+            u.usu_situacao      AS situacao,
             u.usu_dataAlteracao AS data_alteracao
-        FROM SYS_Usuario u
-        LEFT JOIN PES_Pessoa p
+        FROM SYS_Usuario u WITH (NOLOCK)
+        INNER JOIN SYS_UsuarioGrupo ug WITH (NOLOCK)
+            ON u.usu_id = ug.usu_id
+            AND ug.usg_situacao = 1
+        INNER JOIN SYS_Grupo g WITH (NOLOCK)
+            ON g.gru_id = ug.gru_id
+            AND g.gru_situacao = 1
+        INNER JOIN SYS_Sistema s WITH (NOLOCK)
+            ON s.sis_id = g.sis_id
+            AND s.sis_situacao = 1
+        LEFT JOIN PES_Pessoa p WITH (NOLOCK)
             ON u.pes_id = p.pes_id
-        LEFT JOIN PES_PessoaDocumento doc
+        LEFT JOIN PES_PessoaDocumento doc WITH (NOLOCK)
             ON p.pes_id = doc.pes_id
             AND doc.tdo_id = '{_CORESSO_CPF_TYPE_ID}'
         WHERE u.usu_situacao = 1
-        ORDER BY u.usu_id
+        {exclude_filter}
     """
 
     total_extracted = 0
 
     with pyodbc.connect(conn_str, timeout=settings.CORESSO_DB_TIMEOUT) as conn:
         conn.timeout = settings.CORESSO_DB_TIMEOUT
+        _cnt = conn.cursor()
+        _cnt.execute(
+            f"""
+            SELECT COUNT(DISTINCT u.usu_id)
+            FROM SYS_Usuario u WITH (NOLOCK)
+            INNER JOIN SYS_UsuarioGrupo ug WITH (NOLOCK)
+                ON u.usu_id = ug.usu_id AND ug.usg_situacao = 1
+            INNER JOIN SYS_Grupo g WITH (NOLOCK)
+                ON g.gru_id = ug.gru_id AND g.gru_situacao = 1
+            INNER JOIN SYS_Sistema s WITH (NOLOCK)
+                ON s.sis_id = g.sis_id AND s.sis_situacao = 1
+            WHERE u.usu_situacao = 1
+            {exclude_filter}
+            """
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] CORESSO: %d usuários ativos com perfil em sistema ativo (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -729,6 +838,17 @@ def extract_coresso(self, execution_id: str):
         defaults={"step_order": 2},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
+        del_srv, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.CORESSO
+        ).delete()
+        del_terc, _ = StagingUsuarioTerceiro.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioTerceiro.Source.CORESSO
+        ).delete()
+        logger.warning(
+            "[%s] extract_coresso: restart detectado — %d servidores e %d terceiros removidos antes de re-extrair",
+            execution_id, del_srv, del_terc,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None

@@ -86,7 +86,11 @@ services:
   etl-worker:
     build: .
     container_name: local-etl-worker
-    command: celery -A etl_ms worker --loglevel=info --concurrency=4 -Q etl_extract,etl_transform,etl_load,celery
+    # concurrency=2 para ambiente local — reduz pressão de memória e evita SIGKILL por OOM
+    # max-tasks-per-child recicla o processo após 50 tarefas, liberando memória acumulada
+    command: celery -A etl_ms worker --loglevel=info --concurrency=2 --max-tasks-per-child=50 -Q etl_extract,etl_transform,etl_load,celery
+    mem_limit: 4g
+    memswap_limit: 4g
     env_file:
       - .env.local
     environment:

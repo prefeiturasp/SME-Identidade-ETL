@@ -1,7 +1,8 @@
 """Tasks Celery para orquestrar o pipeline completo do ETL, da extracao a carga no Keycloak."""
 import logging
 
-from celery import chain, chord, shared_task
+from celery import chain, shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -148,13 +149,13 @@ def run_etl_pipeline(self, execution_id: str):
         source = execution.source
 
         if source in ("all", "se1426"):
-            extract_tasks.append(extract_se1426.s(execution_id))
+            extract_tasks.append(extract_se1426.si(execution_id))
         if source in ("all", "eol_db"):
-            extract_tasks.append(extract_eol_db.s(execution_id))
+            extract_tasks.append(extract_eol_db.si(execution_id))
         if source in ("all", "eol_alunos", "eol_db"):
-            extract_tasks.append(extract_eol_alunos.s(execution_id))
+            extract_tasks.append(extract_eol_alunos.si(execution_id))
         if source in ("all", "coresso"):
-            extract_tasks.append(extract_coresso.s(execution_id))
+            extract_tasks.append(extract_coresso.si(execution_id))
 
         if not extract_tasks:
             execution.mark_finished("failed")
@@ -174,16 +175,16 @@ def run_etl_pipeline(self, execution_id: str):
         # Step 0: sincroniza catálogo de sistemas e perfis antes de extrair usuários
         _sync_coresso_catalogo(execution_id=execution_id, realm=realm)
 
-        chord(extract_tasks)(
-            chain(
-                transform_staging.si(execution_id),
-                crossref_dedup.si(execution_id),
-                decide_target.si(execution_id),
-                load_keycloak.si(execution_id),
-                load_token_ms.si(execution_id),
-                audit_etl.si(execution_id),
-            )
-        )
+        # Extração sequencial (um por vez) para evitar estouro de memória
+        chain(
+            *extract_tasks,
+            transform_staging.si(execution_id),
+            crossref_dedup.si(execution_id),
+            decide_target.si(execution_id),
+            load_keycloak.si(execution_id),
+            load_token_ms.si(execution_id),
+            audit_etl.si(execution_id),
+        ).delay()
 
         logger.info("ETL Pipeline [%s] dispatched to Celery", execution_id)
 
@@ -288,7 +289,13 @@ def _upsert_single_usuario(admin, usuario, realm: str, execution) -> tuple[int, 
         return 0, 0, 1
 
 
-@shared_task(bind=True, name="core.tasks.load_keycloak", max_retries=3)
+@shared_task(
+    bind=True,
+    name="core.tasks.load_keycloak",
+    max_retries=3,
+    soft_time_limit=10800,  # 3 h — SIGTERM gracioso; salva progresso e re-agenda
+    time_limit=11100,       # 3 h 5 min — SIGKILL definitivo se ignorar o SIGTERM
+)
 def load_keycloak(self, execution_id: str):
     """Faz upsert em lote dos usuarios em READY para o Keycloak e registra os resultados em UpsertControl."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
@@ -318,18 +325,41 @@ def load_keycloak(self, execution_id: str):
     logger.info("[%s] Step 6: Load Keycloak — realm=%s", execution_id, execution.target_realm)
 
     try:
+        from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+        total_ready = (
+            StagingUsuarioServidor.objects.filter(execution_id=execution_id, status="ready").count()
+            + StagingUsuarioAluno.objects.filter(execution_id=execution_id, status="ready").count()
+            + StagingUsuarioTerceiro.objects.filter(execution_id=execution_id, status="ready").count()
+        )
+        logger.info(
+            "[%s] Step 6: %d registros prontos para carga no Keycloak",
+            execution_id, total_ready,
+        )
         admin = get_admin_client(realm=execution.target_realm)
 
         loaded = errors = skipped = total = 0
+        max_records = execution.max_records  # None = sem limite
+        remaining = max_records
+
+        if max_records:
+            logger.info("[%s] Step 6: modo teste — limitado a %d registros", execution_id, max_records)
 
         for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+            if remaining is not None and remaining <= 0:
+                break
             usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
             total += usuarios.count()
+            if remaining is not None:
+                usuarios = usuarios[:remaining]
             for usuario in usuarios.iterator(chunk_size=200):
                 l, s, e = _upsert_single_usuario(admin, usuario, execution.target_realm, execution)
                 loaded += l
                 skipped += s
                 errors += e
+                if remaining is not None:
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
 
         step.records_in = total
         step.records_out = loaded
@@ -348,6 +378,13 @@ def load_keycloak(self, execution_id: str):
 
         logger.info("[%s] Step 6 concluido: %d loaded, %d skipped, %d errors", execution_id, loaded, skipped, errors)
 
+    except SoftTimeLimitExceeded:
+        logger.warning("[%s] Step 6: soft time limit atingido — salvando progresso e re-agendando", execution_id)
+        step.status = ETLStepLog.StepStatus.FAILED
+        step.error_detail = "soft_time_limit excedido"
+        step.finished_at = timezone.now()
+        step.save()
+        raise self.retry(exc=SoftTimeLimitExceeded(), countdown=300)
     except Exception as e:
         logger.exception("[%s] Step 6 FAILED: %s", execution_id, e)
         step.status = ETLStepLog.StepStatus.FAILED
@@ -357,7 +394,13 @@ def load_keycloak(self, execution_id: str):
         raise self.retry(exc=e, countdown=60)
 
 
-@shared_task(bind=True, name="core.tasks.load_token_ms", max_retries=3)
+@shared_task(
+    bind=True,
+    name="core.tasks.load_token_ms",
+    max_retries=3,
+    soft_time_limit=3600,  # 1 h
+    time_limit=3900,
+)
 def load_token_ms(self, execution_id: str):
     """Envia os usuarios de staging em READY para o microsservico token-ms em lotes configuraveis."""
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
