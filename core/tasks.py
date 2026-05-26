@@ -521,6 +521,18 @@ def audit_etl(self, execution_id: str):
         execution.mark_finished("failed")
 
 
+@shared_task(bind=True, name="core.tasks.run_sync_catalogo_step", max_retries=2)
+def run_sync_catalogo_step(self, execution_id: str):
+    """Executa apenas o Step 0 (Sync Catalogo) de forma isolada, para uso via endpoint de step individual."""
+    from .models import ETLExecution
+    try:
+        execution = ETLExecution.objects.get(id=execution_id)
+        _sync_coresso_catalogo(execution_id=execution_id, realm=execution.target_realm)
+    except Exception as e:
+        logger.exception("[%s] run_sync_catalogo_step FAILED: %s", execution_id, e)
+        raise self.retry(exc=e, countdown=30)
+
+
 @shared_task(name="core.tasks.cleanup_old_staging")
 def cleanup_old_staging(keep_last: int = 2):
     """Apaga registros de staging de todas as execucoes, exceto as N mais recentes, para liberar espaco no banco."""

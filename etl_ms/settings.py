@@ -106,6 +106,9 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
+# Token de autenticação interna do ETL-MS (header: X-Internal-Token)
+ETL_INTERNAL_TOKEN = os.environ.get("ETL_INTERNAL_TOKEN", "dev-etl-token")
+
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
@@ -119,6 +122,12 @@ REST_FRAMEWORK = {
     ],
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S%z",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "core.authentication.InternalTokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
 }
 
 
@@ -126,7 +135,9 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "ETL-MS API — SME Identidade",
     "DESCRIPTION": (
         "Microsserviço ETL: extração (SE1426, EOL_DB, CORESSO),"
-        " transformação, carga no Keycloak e PostgreSQL."
+        " transformação, carga no Keycloak e PostgreSQL.\n\n"
+        "**Autenticação:** todas as rotas exigem o header `X-Internal-Token`.\n"
+        "Clique em **Authorize** (🔒) e informe o token antes de executar qualquer endpoint."
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,

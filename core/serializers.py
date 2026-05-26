@@ -45,6 +45,7 @@ class ETLExecutionSerializer(serializers.ModelSerializer):
             "target_realm",
             "load_keycloak",
             "load_token_ms",
+            "max_records",
             "total_extracted",
             "total_transformed",
             "total_loaded",
@@ -95,6 +96,12 @@ class ETLExecutionCreateSerializer(serializers.Serializer):
         default=True,
         help_text="Habilita o step 7 (envio ao Token-MS). Padrão: true.",
     )
+    max_records = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Limita usuários sincronizados no Keycloak (step 6). Útil para testes de carga. Nulo = sem limite.",
+    )
 
 
 class ETLExecutionListSerializer(serializers.ModelSerializer):
@@ -142,6 +149,53 @@ class UpsertControlSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class RunStepSerializer(serializers.Serializer):
+    """Entrada generica para re-executar um step individual de uma execucao existente."""
+
+    force = serializers.BooleanField(
+        default=True,
+        help_text=(
+            "Se True (padrão), apaga o ETLStepLog existente e força re-execução mesmo se já concluído."
+        ),
+    )
+
+
+class RunExtractSerializer(serializers.Serializer):
+    """Entrada para re-executar um ou mais steps de extração de uma execucao existente."""
+
+    source = serializers.ChoiceField(
+        choices=["all", "se1426", "eol_db", "eol_alunos", "coresso"],
+        default="all",
+        help_text=(
+            "Fonte a extrair. 'all' executa todas as 4 fontes. "
+            "'se1426' apenas servidores, 'eol_db' EOL (+ alunos), "
+            "'eol_alunos' apenas alunos, 'coresso' apenas CoreSSO."
+        ),
+    )
+    force = serializers.BooleanField(
+        default=True,
+        help_text="Se True (padrão), apaga ETLStepLogs existentes e força re-execução.",
+    )
+
+
+class ReloadKeycloakSerializer(serializers.Serializer):
+    """Entrada do endpoint que re-dispara apenas o step 6 (Load Keycloak) de uma execucao existente."""
+
+    max_records = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Limita o número de usuários carregados. Nulo = sem limite.",
+    )
+    reset_loaded = serializers.BooleanField(
+        default=True,
+        help_text=(
+            "Se True (padrão), reseta os registros 'loaded' → 'ready' antes de recarregar. "
+            "Use False para carregar apenas registros ainda em 'ready'."
+        ),
+    )
 
 
 class SyncSelectiveSerializer(serializers.Serializer):
