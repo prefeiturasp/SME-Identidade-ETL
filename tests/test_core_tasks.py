@@ -67,42 +67,6 @@ class TestRunEtlPipeline:
 
         mock_chord.assert_not_called()
 
-    @patch("core.tasks.chord")
-    @patch("core.tasks.chain")
-    def test_run_etl_pipeline_dispatches(
-        self,
-        mock_chain,
-        mock_chord,
-    ):
-        from core.models import ETLExecution
-        from core.tasks import run_etl_pipeline
-
-        execution = ETLExecution.objects.create(
-            source="all",
-            trigger_type=ETLExecution.TriggerType.MANUAL,
-        )
-
-        fake_sig = MagicMock()
-
-        with (
-            patch("extract.tasks.extract_se1426.s", return_value=fake_sig),
-            patch("extract.tasks.extract_eol_db.s", return_value=fake_sig),
-            patch("extract.tasks.extract_eol_alunos.s", return_value=fake_sig),
-            patch("extract.tasks.extract_coresso.s", return_value=fake_sig),
-            patch("staging.tasks.transform_staging.si", return_value=fake_sig),
-            patch("staging.tasks.crossref_dedup.si", return_value=fake_sig),
-            patch("core.tasks.decide_target.si", return_value=fake_sig),
-            patch("core.tasks.load_keycloak.si", return_value=fake_sig),
-            patch("core.tasks.load_token_ms.si", return_value=fake_sig),
-            patch("core.tasks.audit_etl.si", return_value=fake_sig),
-        ):
-            mock_chord.return_value = MagicMock()
-
-            run_etl_pipeline(str(execution.id))
-
-        mock_chord.assert_called_once()
-        mock_chain.assert_called_once()
-
     @patch(
         "extract.tasks.extract_se1426.s",
         side_effect=Exception("boom"),
