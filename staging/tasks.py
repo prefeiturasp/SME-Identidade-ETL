@@ -361,6 +361,13 @@ def _process_dedup_cluster(member_ids, records_by_id, staging_class):
     return winner, losers, None
 
 
+def _dedup_step_status(errors: int, ready: int) -> str:
+    """Retorna 'failed' apenas quando há erros e nenhum registro foi marcado como ready."""
+    if errors > 0 and ready == 0:
+        return "failed"
+    return "success"
+
+
 @shared_task(bind=True, name="staging.tasks.crossref_dedup")
 def crossref_dedup(self, execution_id: str):
     """Faz cross-reference dos usuarios de staging entre as fontes e deduplica por CPF/RF."""
@@ -490,7 +497,7 @@ def crossref_dedup(self, execution_id: str):
         step.records_in = total + n_alunos + n_terceiros
         step.records_out = total_ready
         step.records_error = errors
-        step.status = "failed" if (errors > 0 and ready == 0) else "success"
+        step.status = _dedup_step_status(errors, ready)
         step.finished_at = timezone.now()
         step.metadata = {
             "servidores_clusters": len(clusters),
