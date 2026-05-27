@@ -291,6 +291,29 @@ def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     return None
 
 
+def _create_or_update_kc_user(admin, upsert, usuario, payload: dict) -> tuple[str, str]:
+    """Cria ou atualiza o user no Keycloak e devolve (kc_user_id, action)."""
+    if upsert.target_id:
+        _with_backoff(admin.update_user, upsert.target_id, payload)
+        upsert.version = (upsert.version or 1) + 1
+        return upsert.target_id, "updated"
+
+    existing_kc_id = _find_existing_kc_user(admin, usuario, payload)
+    if existing_kc_id:
+        _with_backoff(admin.update_user, existing_kc_id, payload)
+        upsert.target_id = existing_kc_id
+        return existing_kc_id, "updated"
+
+    kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
+    upsert.target_id = kc_user_id
+    try:
+        initial_pwd = _generate_initial_password(usuario)
+        _with_backoff(admin.set_user_password, kc_user_id, initial_pwd, temporary=True)
+    except Exception as _pwd_err:
+        logger.warning("KC: senha inicial não definida para %s: %s", kc_user_id, _pwd_err)
+    return kc_user_id, "created"
+
+
 def upsert_user_to_keycloak(
     admin,
     usuario,
@@ -330,35 +353,7 @@ def upsert_user_to_keycloak(
     realm_roles = payload.pop("realmRoles", []) or []
     groups = payload.pop("groups", []) or []
 
-    if created or not upsert.target_id:
-        existing_kc_id = _find_existing_kc_user(admin, usuario, payload)
-        if existing_kc_id:
-            _with_backoff(admin.update_user, existing_kc_id, payload)
-            kc_user_id = existing_kc_id
-            upsert.target_id = kc_user_id
-            action = "updated"
-        else:
-            kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
-            upsert.target_id = kc_user_id
-            action = "created"
-            try:
-                initial_pwd = _generate_initial_password(usuario)
-                _with_backoff(
-                    admin.set_user_password,
-                    kc_user_id,
-                    initial_pwd,
-                    temporary=True,
-                )
-            except Exception as _pwd_err:
-                logger.warning(
-                    "KC: senha inicial não definida para %s: %s",
-                    kc_user_id, _pwd_err,
-                )
-    else:
-        _with_backoff(admin.update_user, upsert.target_id, payload)
-        kc_user_id = upsert.target_id
-        upsert.version = (upsert.version or 1) + 1
-        action = "updated"
+    kc_user_id, action = _create_or_update_kc_user(admin, upsert, usuario, payload)
 
     _assign_roles_and_groups(admin, kc_user_id, realm_roles, groups)
 
