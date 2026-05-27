@@ -412,18 +412,24 @@ def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str,
 
     if concurrency <= 1:
         # ── Modo sequencial (comportamento original) ──────────────────────────
+        # Busca PKs antecipadamente para evitar cursor de leitura aberto durante
+        # os saves (SQLite — usado nos testes — não suporta leitura + escrita
+        # simultânea na mesma tabela; PostgreSQL em produção não tem esse problema).
         processed_since_check = 0
         count = 0
-        for usuario in qs.iterator(chunk_size=200):
-            processed_since_check += 1
-            count += 1
-            if processed_since_check >= 500:
-                _check_cancelled(execution_id)
-                processed_since_check = 0
-            l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
-            loaded += l
-            skipped += s
-            errors += e
+        pk_list = list(qs.values_list("pk", flat=True))
+        for i in range(0, len(pk_list), 200):
+            chunk_pks = pk_list[i : i + 200]
+            for usuario in model_class.objects.filter(pk__in=chunk_pks).order_by():
+                processed_since_check += 1
+                count += 1
+                if processed_since_check >= 500:
+                    _check_cancelled(execution_id)
+                    processed_since_check = 0
+                l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
+                loaded += l
+                skipped += s
+                errors += e
         if remaining is not None:
             remaining = max(0, remaining - count)
     else:
