@@ -7,6 +7,32 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def _step_done(execution_id: str, step_name: str) -> bool:
+    """Retorna True se o step já foi concluído com sucesso para esta execução."""
+    from .models import ETLStepLog
+    return ETLStepLog.objects.filter(
+        execution_id=execution_id,
+        step_name=step_name,
+        status=ETLStepLog.StepStatus.SUCCESS,
+    ).exists()
+
+
+def _get_or_create_step(execution, step_name: str, step_order: int):
+    """Obtém ou cria um ETLStepLog, resetando para RUNNING se já existia com falha."""
+    from .models import ETLStepLog
+    step, created = ETLStepLog.objects.get_or_create(
+        execution=execution,
+        step_name=step_name,
+        defaults={"step_order": step_order},
+    )
+    if not created:
+        step.status = ETLStepLog.StepStatus.RUNNING
+        step.finished_at = None
+        step.error_detail = None
+        step.save(update_fields=["status", "finished_at", "error_detail"])
+    return step
+
+
 @shared_task(name="core.tasks.trigger_scheduled_etl")
 def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
     """Cria uma nova execucao de ETL agendada e a despacha para o Celery."""
@@ -21,6 +47,84 @@ def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
     run_etl_pipeline.delay(str(execution.id))
     logger.info("Scheduled ETL triggered — execution_id=%s source=%s realm=%s", execution.id, source, realm)
     return str(execution.id)
+
+
+def _sync_coresso_catalogo(execution_id: str, realm: str) -> None:
+    """Step 0 — sincroniza Sistemas e Perfis do CoreSSO como Clients/Client Roles no Keycloak."""
+    from django.conf import settings
+
+    from extract.tasks import extract_coresso_perfis, extract_coresso_sistemas
+    from staging.models import StagingPerfilCoreSSO, StagingSistema
+
+    from .keycloak_client import get_admin_client, upsert_kc_client, upsert_kc_client_role
+    from .models import ETLExecution, ETLStepLog
+
+    execution = ETLExecution.objects.get(id=execution_id)
+    step = _get_or_create_step(execution, ETLStepLog.StepName.SYNC_CATALOGO, 0)
+
+    if not getattr(settings, "CORESSO_DB_SERVER", None):
+        logger.info("[%s] Step 0: CORESSO_DB_SERVER ausente — pulando sync catálogo", execution_id)
+        step.status = ETLStepLog.StepStatus.SKIPPED
+        step.metadata = {"reason": "CORESSO_DB_SERVER não configurado"}
+        step.finished_at = timezone.now()
+        step.save()
+        return
+
+    logger.info("[%s] Step 0: Sync catálogo (sistemas + perfis) → realm=%s", execution_id, realm)
+    try:
+        # 1. Extrai sistemas CoreSSO → staging_sistema
+        total_sistemas = extract_coresso_sistemas(execution_id=execution_id)
+
+        # 2. Faz upsert de cada sistema como Client OIDC no Keycloak
+        admin = get_admin_client(realm=realm)
+        loaded_sistemas = errors_sistemas = 0
+        for sistema in StagingSistema.objects.filter(situacao=1):
+            try:
+                upsert_kc_client(admin, sistema, realm=realm)
+                loaded_sistemas += 1
+            except Exception as e:
+                logger.warning("[%s] Falha upsert client %s: %s", execution_id, sistema.sigla, e)
+                errors_sistemas += 1
+
+        # 3. Extrai perfis CoreSSO → staging_perfil_coresso
+        total_perfis = extract_coresso_perfis(execution_id=execution_id)
+
+        # 4. Faz upsert de cada perfil como Client Role no Keycloak
+        loaded_perfis = errors_perfis = 0
+        for perfil in StagingPerfilCoreSSO.objects.select_related("sistema").iterator(chunk_size=200):
+            try:
+                upsert_kc_client_role(admin, perfil)
+                loaded_perfis += 1
+            except Exception as e:
+                logger.warning("[%s] Falha upsert client role %s: %s", execution_id, perfil.kc_role_name, e)
+                errors_perfis += 1
+
+        step.records_in = total_sistemas + total_perfis
+        step.records_out = loaded_sistemas + loaded_perfis
+        step.records_error = errors_sistemas + errors_perfis
+        step.status = ETLStepLog.StepStatus.SUCCESS
+        step.metadata = {
+            "sistemas_extracted": total_sistemas,
+            "sistemas_loaded_kc": loaded_sistemas,
+            "sistemas_errors": errors_sistemas,
+            "perfis_extracted": total_perfis,
+            "perfis_loaded_kc": loaded_perfis,
+            "perfis_errors": errors_perfis,
+        }
+        step.finished_at = timezone.now()
+        step.save()
+        logger.info(
+            "[%s] Step 0 concluído: %d sistemas, %d perfis carregados no KC",
+            execution_id, loaded_sistemas, loaded_perfis,
+        )
+    except Exception as e:
+        logger.exception("[%s] Step 0 FAILED: %s", execution_id, e)
+        step.status = ETLStepLog.StepStatus.FAILED
+        step.error_detail = str(e)[:2000]
+        step.finished_at = timezone.now()
+        step.save()
+        # Não aborta o pipeline — usuários ainda podem ser carregados sem client roles
+        logger.warning("[%s] Continuando pipeline mesmo com falha no Step 0", execution_id)
 
 
 @shared_task(bind=True, name="core.tasks.run_etl_pipeline")
@@ -57,6 +161,9 @@ def run_etl_pipeline(self, execution_id: str):
             logger.error("No extract tasks for source=%s", source)
             return
 
+        # Step 0: sincroniza catálogo de sistemas e perfis antes de extrair usuários
+        _sync_coresso_catalogo(execution_id=execution_id, realm=execution.target_realm)
+
         chord(extract_tasks)(
             chain(
                 transform_staging.si(execution_id),
@@ -85,11 +192,13 @@ def decide_target(self, execution_id: str):
     from .models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
-    step = ETLStepLog.objects.create(
-        execution=execution,
-        step_name=ETLStepLog.StepName.DECISION,
-        step_order=5,
-    )
+
+    # Idempotência: pula se já concluiu com sucesso
+    if _step_done(execution_id, ETLStepLog.StepName.DECISION):
+        logger.info("[%s] Step 5: já concluído — pulando", execution_id)
+        return
+
+    step = _get_or_create_step(execution, ETLStepLog.StepName.DECISION, 5)
     logger.info("[%s] Step 5: roteamento", execution_id)
 
     try:
@@ -130,28 +239,27 @@ def decide_target(self, execution_id: str):
 @shared_task(bind=True, name="core.tasks.load_keycloak", max_retries=3)
 def load_keycloak(self, execution_id: str):
     """Faz upsert em lote dos usuarios em READY para o Keycloak e registra os resultados em UpsertControl."""
-    from django.conf import settings
-
     from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
-    from .keycloak_client import get_admin_client, upsert_user_to_keycloak
+    from .keycloak_client import assign_user_client_roles, get_admin_client, upsert_user_to_keycloak
     from .models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
-    step = ETLStepLog.objects.create(
-        execution=execution,
-        step_name=ETLStepLog.StepName.LOAD_KEYCLOAK,
-        step_order=6,
-    )
 
-    if not settings.ETL_LOAD_KEYCLOAK_BULK_ENABLED:
-        logger.warning(
-            "[%s] Step 6: Load Keycloak desabilitado por política"
-            " (ETL_LOAD_KEYCLOAK_BULK_ENABLED=false)", execution_id,
+    # Idempotência: pula se já concluiu com sucesso
+    if _step_done(execution_id, ETLStepLog.StepName.LOAD_KEYCLOAK):
+        logger.info("[%s] Step 6: já concluído — pulando", execution_id)
+        return
+
+    step = _get_or_create_step(execution, ETLStepLog.StepName.LOAD_KEYCLOAK, 6)
+
+    if not execution.load_keycloak:
+        logger.info(
+            "[%s] Step 6: Load Keycloak desabilitado (load_keycloak=False)", execution_id,
         )
         step.status = ETLStepLog.StepStatus.SKIPPED
         step.finished_at = timezone.now()
-        step.metadata = {"reason": "ETL_LOAD_KEYCLOAK_BULK_ENABLED=false"}
+        step.metadata = {"reason": "load_keycloak=False"}
         step.save()
         return
 
@@ -175,12 +283,26 @@ def load_keycloak(self, execution_id: str):
                         realm=execution.target_realm,
                         execution=execution,
                     )
+                    kc_user_id = result.get("kc_user_id")
                     if result["action"] == "skipped":
                         usuario.status = "skipped"
                         skipped += 1
                     else:
                         usuario.status = "loaded"
                         loaded += 1
+                        # Atribui client roles (perfis CoreSSO por sistema) se o upsert criou/atualizou
+                        if kc_user_id:
+                            login = (
+                                (getattr(usuario, "rf", None) or "").strip()
+                                or "".join(c for c in (usuario.cpf or "") if c.isdigit())
+                            )
+                            try:
+                                assign_user_client_roles(admin, kc_user_id, login)
+                            except Exception as role_exc:
+                                logger.warning(
+                                    "assign_user_client_roles falhou para %s (%s): %s",
+                                    login, kc_user_id, role_exc,
+                                )
                     usuario.save(update_fields=["status"])
                 except Exception as e:
                     logger.warning("Load KC error for %s: %s", getattr(usuario, 'rf', None) or usuario.cpf, e)
@@ -225,11 +347,22 @@ def load_token_ms(self, execution_id: str):
     from .token_ms_client import send_all
 
     execution = ETLExecution.objects.get(id=execution_id)
-    step = ETLStepLog.objects.create(
-        execution=execution,
-        step_name=ETLStepLog.StepName.LOAD_TOKEN_MS,
-        step_order=7,
-    )
+
+    # Idempotência: pula se já concluiu com sucesso
+    if _step_done(execution_id, ETLStepLog.StepName.LOAD_TOKEN_MS):
+        logger.info("[%s] Step 7: já concluído — pulando", execution_id)
+        return
+
+    step = _get_or_create_step(execution, ETLStepLog.StepName.LOAD_TOKEN_MS, 7)
+
+    if not execution.load_token_ms:
+        logger.info("[%s] Step 7: Load Token-MS desabilitado (load_token_ms=False)", execution_id)
+        step.status = ETLStepLog.StepStatus.SKIPPED
+        step.finished_at = timezone.now()
+        step.metadata = {"reason": "load_token_ms=False"}
+        step.save()
+        return
+
     logger.info("[%s] Step 7: Load token-ms", execution_id)
 
     try:
@@ -273,15 +406,18 @@ def audit_etl(self, execution_id: str):
     from .models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
-    step = ETLStepLog.objects.create(
-        execution=execution,
-        step_name=ETLStepLog.StepName.AUDIT,
-        step_order=8,
-    )
 
-    logger.info("[%s] Step 8: Audit", execution_id)
-
+    step = None
     try:
+        # Idempotência
+        if _step_done(execution_id, ETLStepLog.StepName.AUDIT):
+            logger.info("[%s] Step 8: já concluído — pulando", execution_id)
+            return
+
+        step = _get_or_create_step(execution, ETLStepLog.StepName.AUDIT, 8)
+
+        logger.info("[%s] Step 8: Audit", execution_id)
+
         steps = execution.steps.all()
         total_errors = sum(s.records_error for s in steps)
         has_failures = steps.filter(status=ETLStepLog.StepStatus.FAILED).exists()
@@ -316,6 +452,8 @@ def audit_etl(self, execution_id: str):
 
     except Exception as e:
         logger.exception("[%s] Step 8 FAILED: %s", execution_id, e)
+        if step is None:
+            step = _get_or_create_step(execution, ETLStepLog.StepName.AUDIT, 8)
         step.status = ETLStepLog.StepStatus.FAILED
         step.error_detail = str(e)
         step.finished_at = timezone.now()

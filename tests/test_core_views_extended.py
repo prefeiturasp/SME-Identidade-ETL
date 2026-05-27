@@ -14,14 +14,14 @@ def client():
 
 
 class TestSistemasExtract:
-    @patch("extract.tasks.extract_coresso_sistemas")
+    @patch("core.views.extract_coresso_sistemas")
     def test_returns_total_extracted(self, mock_extract, client):
         mock_extract.return_value = 42
         response = client.post("/api/etl/sistemas/extract/")
         assert response.status_code == 200
         assert response.json()["total_extracted"] == 42
 
-    @patch("extract.tasks.extract_coresso_sistemas")
+    @patch("core.views.extract_coresso_sistemas")
     def test_returns_502_on_error(self, mock_extract, client):
         mock_extract.side_effect = Exception("Connection error")
         response = client.post("/api/etl/sistemas/extract/")
@@ -29,8 +29,8 @@ class TestSistemasExtract:
 
 
 class TestSistemasLoadKeycloak:
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client")
     def test_loads_sistemas_to_keycloak(self, mock_upsert, mock_admin, client):
         from staging.models import StagingSistema
         StagingSistema.objects.create(
@@ -48,15 +48,15 @@ class TestSistemasLoadKeycloak:
         assert data["total"] == 1
         assert len(data["created"]) == 1
 
-    @patch("core.keycloak_client.get_admin_client")
+    @patch("core.views.get_admin_client")
     def test_returns_empty_when_no_sistemas(self, mock_admin, client):
         mock_admin.return_value = MagicMock()
         response = client.post("/api/etl/sistemas/load-keycloak/")
         assert response.status_code == 200
         assert response.json()["total"] == 0
 
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client")
     def test_handles_upsert_error_gracefully(self, mock_upsert, mock_admin, client):
         from staging.models import StagingSistema
         StagingSistema.objects.create(
@@ -98,14 +98,14 @@ class TestSistemasList:
 
 
 class TestPerfisExtract:
-    @patch("extract.tasks.extract_coresso_perfis")
+    @patch("core.views.extract_coresso_perfis")
     def test_returns_total_extracted(self, mock_extract, client):
         mock_extract.return_value = 10
         response = client.post("/api/etl/perfis/extract/")
         assert response.status_code == 200
         assert response.json()["total_extracted"] == 10
 
-    @patch("extract.tasks.extract_coresso_perfis")
+    @patch("core.views.extract_coresso_perfis")
     def test_returns_502_on_error(self, mock_extract, client):
         mock_extract.side_effect = Exception("DB error")
         response = client.post("/api/etl/perfis/extract/")
@@ -113,7 +113,7 @@ class TestPerfisExtract:
 
 
 class TestPerfisLoadKeycloak:
-    @patch("core.keycloak_client.get_admin_client")
+    @patch("core.views.get_admin_client")
     def test_returns_empty_when_no_perfis(self, mock_admin, client):
         mock_admin.return_value = MagicMock()
         response = client.post("/api/etl/perfis/load-keycloak/")
@@ -204,8 +204,8 @@ class TestPerfisLoadKeycloakWithData:
         mock_admin = MagicMock()
         mock_result = {"action": "created", "role_id": "role-uuid-100", "role_name": "admin-sgp"}
 
-        with patch("core.keycloak_client.get_admin_client", return_value=mock_admin), \
-             patch("core.keycloak_client.upsert_kc_client_role", return_value=mock_result):
+        with patch("core.views.get_admin_client", return_value=mock_admin), \
+             patch("core.views.upsert_kc_client_role", return_value=mock_result):
             response = client.post("/api/etl/perfis/load-keycloak/", {}, content_type="application/json")
 
         assert response.status_code == 200
@@ -227,8 +227,8 @@ class TestPerfisLoadKeycloakWithData:
         )
 
         mock_admin = MagicMock()
-        with patch("core.keycloak_client.get_admin_client", return_value=mock_admin), \
-             patch("core.keycloak_client.upsert_kc_client_role", side_effect=RuntimeError("KC fail")):
+        with patch("core.views.get_admin_client", return_value=mock_admin), \
+             patch("core.views.upsert_kc_client_role", side_effect=RuntimeError("KC fail")):
             response = client.post("/api/etl/perfis/load-keycloak/", {}, content_type="application/json")
 
         assert response.status_code == 200
@@ -251,8 +251,8 @@ class TestSistemasLoadKeycloakWithData:
         mock_admin = MagicMock()
         mock_result = {"action": "created", "client_id": "stl-prod", "kc_uuid": "uuid-stl"}
 
-        with patch("core.keycloak_client.get_admin_client", return_value=mock_admin), \
-             patch("core.keycloak_client.upsert_kc_client", return_value=mock_result):
+        with patch("core.views.get_admin_client", return_value=mock_admin), \
+             patch("core.views.upsert_kc_client", return_value=mock_result):
             response = client.post("/api/etl/sistemas/load-keycloak/", {}, content_type="application/json")
 
         assert response.status_code == 200
@@ -271,7 +271,7 @@ class TestAssignUserClientRoles:
     def test_returns_empty_when_no_grupos(self):
         from unittest.mock import patch
         admin = MagicMock()
-        with patch("extract.tasks.fetch_coresso_groups_for_login", return_value=[]):
+        with patch("core.keycloak_client.fetch_coresso_groups_for_login", return_value=[]):
             from core.keycloak_client import assign_user_client_roles
             result = assign_user_client_roles(admin, "kc-user-001", "12345")
         assert result["assigned"] == 0
@@ -295,7 +295,7 @@ class TestAssignUserClientRoles:
         admin = MagicMock()
         admin.assign_client_role = MagicMock()
 
-        with patch("extract.tasks.fetch_coresso_groups_for_login", return_value=grupos):
+        with patch("core.keycloak_client.fetch_coresso_groups_for_login", return_value=grupos):
             from core.keycloak_client import assign_user_client_roles
             result = assign_user_client_roles(admin, "kc-user-400", "12345")
 
@@ -321,7 +321,7 @@ class TestAssignUserClientRoles:
         admin = MagicMock()
         admin.assign_client_role.side_effect = RuntimeError("KC assign failed")
 
-        with patch("extract.tasks.fetch_coresso_groups_for_login", return_value=grupos):
+        with patch("core.keycloak_client.fetch_coresso_groups_for_login", return_value=grupos):
             from core.keycloak_client import assign_user_client_roles
             result = assign_user_client_roles(admin, "kc-user-410", "12345")
 

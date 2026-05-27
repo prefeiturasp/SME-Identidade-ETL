@@ -1,24 +1,19 @@
 import logging
 
 from .keycloak_client import (
+    assign_user_client_roles,
     build_kc_payload,
     build_token_ms_payload,
+    emit_retroalim,
     get_admin_client,
     upsert_user_to_keycloak,
 )
 from .models import ETLExecution
-
+from .token_ms_client import send_batch
 from staging.models import (
     StagingUsuarioAluno,
     StagingUsuarioServidor,
     StagingUsuarioTerceiro,
-)
-
-from core.keycloak_client import (
-    build_kc_payload,
-    build_token_ms_payload,
-    get_admin_client,
-    upsert_user_to_keycloak,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,10 +171,6 @@ class KeycloakUpsertService:
             return {"skipped": True}
 
         try:
-            from core.keycloak_client import (
-                assign_user_client_roles,
-            )
-
             login = (
                 usuario.rf
                 or usuario.cpf
@@ -208,10 +199,6 @@ class KeycloakUpsertService:
         roles_result,
     ):
         try:
-            from core.keycloak_client import (
-                emit_retroalim,
-            )
-
             emit_retroalim(
                 tipo=self._get_event_type(
                     result["action"]
@@ -250,8 +237,6 @@ class KeycloakUpsertService:
             return {"skipped": True}
 
         try:
-            from core.token_ms_client import send_batch
-
             token_ms_payload = (
                 build_token_ms_payload(usuario)
             )

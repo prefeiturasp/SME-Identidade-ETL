@@ -43,6 +43,8 @@ class ETLExecutionSerializer(serializers.ModelSerializer):
             "status",
             "source",
             "target_realm",
+            "load_keycloak",
+            "load_token_ms",
             "total_extracted",
             "total_transformed",
             "total_loaded",
@@ -85,6 +87,14 @@ class ETLExecutionCreateSerializer(serializers.Serializer):
     )
     target_realm = serializers.CharField(default="sme-apps")
     note = serializers.CharField(required=False, allow_blank=True)
+    load_keycloak = serializers.BooleanField(
+        default=False,
+        help_text="Habilita o step 6 (carga no Keycloak). Padrão: false.",
+    )
+    load_token_ms = serializers.BooleanField(
+        default=True,
+        help_text="Habilita o step 7 (envio ao Token-MS). Padrão: true.",
+    )
 
 
 class ETLExecutionListSerializer(serializers.ModelSerializer):
@@ -132,6 +142,60 @@ class UpsertControlSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class SyncSelectiveSerializer(serializers.Serializer):
+    """Entrada do endpoint de sincronizacao seletiva por CPF, RF ou quantidade."""
+
+    cpfs = serializers.ListField(
+        child=serializers.CharField(max_length=14),
+        required=False,
+        default=list,
+        help_text="Lista de CPFs (somente dígitos ou formatado).",
+    )
+    rfs = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        required=False,
+        default=list,
+        help_text="Lista de RFs (Registro Funcional).",
+    )
+    limit = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=500,
+        help_text="Quantidade de registros READY da última execução a sincronizar.",
+    )
+    realm = serializers.CharField(default="sme-apps")
+    load_keycloak = serializers.BooleanField(
+        default=False,
+        help_text="Envia para o Keycloak. Padrão: false.",
+    )
+    push_token_ms = serializers.BooleanField(
+        default=True,
+        help_text="Envia ao Token-MS. Padrão: true.",
+    )
+
+    def validate(self, attrs):
+        if not attrs.get("cpfs") and not attrs.get("rfs") and not attrs.get("limit"):
+            raise serializers.ValidationError(
+                "Informe ao menos um de: 'cpfs', 'rfs' ou 'limit'."
+            )
+        return attrs
+
+
+class SyncSelectiveResultSerializer(serializers.Serializer):
+    """Status individual de um registro na sincronizacao seletiva."""
+
+    identifier = serializers.CharField(help_text="CPF ou RF usado na busca")
+    identifier_type = serializers.CharField(help_text="'cpf' ou 'rf'")
+    nome = serializers.CharField(allow_null=True)
+    source = serializers.CharField(allow_null=True)
+    found_in_staging = serializers.BooleanField()
+    exists_coresso = serializers.BooleanField(help_text="Encontrado com source=coresso no staging")
+    kc_action = serializers.CharField(allow_null=True, help_text="created | updated | skipped | null")
+    kc_user_id = serializers.CharField(allow_null=True)
+    status = serializers.CharField(help_text="success | skipped | error | not_found")
+    error = serializers.CharField(allow_null=True)
 
 
 class CoreSSOHealthSerializer(serializers.Serializer):

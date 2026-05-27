@@ -238,6 +238,8 @@ class TestLoadKeycloakTask:
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
         )
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
 
         user = StagingUsuarioServidor.objects.create(
             cpf="123",
@@ -276,6 +278,8 @@ class TestLoadKeycloakTask:
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
         )
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
 
         user = StagingUsuarioServidor.objects.create(
             cpf="123",
@@ -310,6 +314,8 @@ class TestLoadKeycloakTask:
             source="all",
             trigger_type=ETLExecution.TriggerType.MANUAL,
         )
+        execution.load_keycloak = True
+        execution.save(update_fields=["load_keycloak"])
 
         with patch.object(
             load_keycloak,

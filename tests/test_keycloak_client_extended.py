@@ -193,7 +193,7 @@ class TestEmitRetroalim:
 
 
 class TestGetAdminClient:
-    @patch("keycloak.KeycloakAdmin")
+    @patch("core.keycloak_client.KeycloakAdmin")
     def test_returns_admin_client(self, mock_kc_cls, settings):
         settings.KEYCLOAK_SERVER_URL = "http://keycloak:8080"
         settings.KEYCLOAK_REALM = "sme-apps"

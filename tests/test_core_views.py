@@ -269,8 +269,8 @@ class TestKcUpsert:
 
 
 class TestSistemasLoadKeycloak:
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client")
     def test_filter_by_sigla(
         self,
         mock_upsert,
@@ -315,8 +315,8 @@ class TestSistemasLoadKeycloak:
 
 
 class TestPerfisLoadKeycloak:
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client_role")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
     def test_filter_by_coresso_sis_id(
         self,
         mock_upsert,
@@ -376,8 +376,8 @@ class TestPerfisLoadKeycloak:
 
         assert mock_upsert.call_count == 1
 
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client_role")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
     def test_refresh_admin_client_exception_is_ignored(
         self,
         mock_upsert,
@@ -429,8 +429,8 @@ class TestPerfisLoadKeycloak:
 
         assert resp.data["created"] == 51
 
-    @patch("core.keycloak_client.get_admin_client")
-    @patch("core.keycloak_client.upsert_kc_client_role")
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
     def test_updated_and_skipped_actions(
         self,
         mock_upsert,

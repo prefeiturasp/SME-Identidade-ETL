@@ -4,35 +4,51 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
+import unicodedata
 from typing import Any
 
+import requests
 from django.conf import settings
+
+try:
+    from keycloak import KeycloakAdmin
+    from keycloak.exceptions import (
+        KeycloakConnectionError,
+        KeycloakGetError,
+        KeycloakPostError,
+        KeycloakPutError,
+    )
+    from keycloak.keycloak_admin import raise_error_from_response
+except ImportError:
+    KeycloakAdmin = None  # type: ignore[assignment]
+    KeycloakConnectionError = ConnectionError  # type: ignore[assignment,misc]
+    KeycloakGetError = Exception  # type: ignore[assignment,misc]
+    KeycloakPostError = Exception  # type: ignore[assignment,misc]
+    KeycloakPutError = Exception  # type: ignore[assignment,misc]
+    raise_error_from_response = None  # type: ignore[assignment]
+
+from .models import UpsertControl
+from extract.tasks import fetch_coresso_groups_for_login
+from staging.models import (
+    RetroalimentacaoCoreSSO,
+    StagingPerfilCoreSSO,
+    StagingUsuarioAluno,
+    StagingUsuarioServidor,
+    StagingUsuarioTerceiro,
+)
 
 logger = logging.getLogger(__name__)
 
-
-def _get_retryable_exceptions() -> tuple[type[BaseException], ...]:
-    try:
-        from keycloak.exceptions import (
-            KeycloakConnectionError,
-            KeycloakGetError,
-            KeycloakPostError,
-            KeycloakPutError,
-        )
-        return (
-            KeycloakConnectionError,
-            KeycloakGetError,
-            KeycloakPostError,
-            KeycloakPutError,
-            ConnectionError,
-            TimeoutError,
-        )
-    except ImportError:
-        return (ConnectionError, TimeoutError)
-
-
-RETRYABLE = _get_retryable_exceptions()
+RETRYABLE = (
+    KeycloakConnectionError,
+    KeycloakGetError,
+    KeycloakPostError,
+    KeycloakPutError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kwargs):
@@ -55,8 +71,6 @@ def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kw
 
 def get_admin_client(realm: str | None = None):
     """Instancia e retorna um cliente KeycloakAdmin autenticado."""
-    from keycloak import KeycloakAdmin
-
     return KeycloakAdmin(
         server_url=settings.KEYCLOAK_SERVER_URL,
         username=settings.KEYCLOAK_ADMIN_USER,
@@ -142,7 +156,6 @@ def _build_email(usuario) -> str:
     email = (usuario.email or "").strip()
     if email:
         return email
-    from staging.models import StagingUsuarioAluno
     if isinstance(usuario, StagingUsuarioAluno):
         matricula = (getattr(usuario, "matricula", None) or "").strip()
         if matricula:
@@ -188,7 +201,6 @@ def build_kc_payload(usuario) -> dict[str, Any]:
 
 
 def _infer_tipo_usuario(usuario) -> str:
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
     if isinstance(usuario, StagingUsuarioServidor):
         return "servidor"
     if isinstance(usuario, StagingUsuarioAluno):
@@ -291,13 +303,8 @@ def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     return None
 
 
-def _create_or_update_kc_user(admin, upsert, usuario, payload: dict) -> tuple[str, str]:
-    """Cria ou atualiza o user no Keycloak e devolve (kc_user_id, action)."""
-    if upsert.target_id:
-        _with_backoff(admin.update_user, upsert.target_id, payload)
-        upsert.version = (upsert.version or 1) + 1
-        return upsert.target_id, "updated"
-
+def _handle_new_upsert(admin, upsert, usuario, payload) -> tuple[str, str]:
+    """Cria ou reconcilia o usuário no KC quando ainda não há target_id no controle."""
     existing_kc_id = _find_existing_kc_user(admin, usuario, payload)
     if existing_kc_id:
         _with_backoff(admin.update_user, existing_kc_id, payload)
@@ -309,8 +316,8 @@ def _create_or_update_kc_user(admin, upsert, usuario, payload: dict) -> tuple[st
     try:
         initial_pwd = _generate_initial_password(usuario)
         _with_backoff(admin.set_user_password, kc_user_id, initial_pwd, temporary=True)
-    except Exception as _pwd_err:
-        logger.warning("KC: senha inicial não definida para %s: %s", kc_user_id, _pwd_err)
+    except Exception as e:
+        logger.warning("KC: senha inicial não definida para %s: %s", kc_user_id, e)
     return kc_user_id, "created"
 
 
@@ -322,8 +329,6 @@ def upsert_user_to_keycloak(
     execution=None,
 ) -> dict[str, Any]:
     """Cria ou atualiza um usuario no Keycloak a partir de um registro de staging e registra em UpsertControl."""
-    from .models import UpsertControl
-
     payload = build_kc_payload(usuario)
     content_hash = compute_content_hash(payload)
 
@@ -353,7 +358,13 @@ def upsert_user_to_keycloak(
     realm_roles = payload.pop("realmRoles", []) or []
     groups = payload.pop("groups", []) or []
 
-    kc_user_id, action = _create_or_update_kc_user(admin, upsert, usuario, payload)
+    if created or not upsert.target_id:
+        kc_user_id, action = _handle_new_upsert(admin, upsert, usuario, payload)
+    else:
+        _with_backoff(admin.update_user, upsert.target_id, payload)
+        kc_user_id = upsert.target_id
+        upsert.version = (upsert.version or 1) + 1
+        action = "updated"
 
     _assign_roles_and_groups(admin, kc_user_id, realm_roles, groups)
 
@@ -370,19 +381,8 @@ def upsert_user_to_keycloak(
     }
 
 
-def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]:
-    """Cria ou atualiza um client OIDC no Keycloak a partir de um registro StagingSistema."""
-    import json as _json
-    import requests as _requests
-    from keycloak.exceptions import KeycloakPostError
-    from keycloak.keycloak_admin import raise_error_from_response
-
-    realm = realm or settings.KEYCLOAK_REALM
-    sigla = (sistema.sigla or _slugify_for_client(sistema.nome)).strip().lower()
-    suffix = (getattr(settings, "KEYCLOAK_CLIENT_SUFFIX", None) or "prod").strip().lower()
-    client_id = f"{sigla}-{suffix}" if suffix else sigla
-
-    payload = {
+def _build_client_payload(sistema, client_id: str) -> dict[str, Any]:
+    return {
         "clientId": client_id,
         "name": sistema.nome,
         "description": (sistema.descricao or "")[:255] if sistema.descricao else "",
@@ -399,63 +399,67 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
         },
     }
 
-    registration_access_token = None
-    existing_uuid = _with_backoff(admin.get_client_id, client_id)
 
-    if existing_uuid:
-        stored_token = getattr(sistema, "kc_registration_access_token", None) or ""
-        used_registration_api = False
-        if stored_token:
-            reg_url = (
-                f"{settings.KEYCLOAK_SERVER_URL.rstrip('/')}"
-                f"/realms/{realm}/clients-registrations/default/{client_id}"
-            )
-            try:
-                resp = _requests.put(
-                    reg_url,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {stored_token}",
-                        "Content-Type": "application/json",
-                    },
-                    verify=settings.KEYCLOAK_VERIFY_SSL,
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    client_data = resp.json()
-                    registration_access_token = client_data.get("registrationAccessToken")
-                    existing_uuid = client_data.get("id") or existing_uuid
-                    used_registration_api = True
-                else:
-                    logger.warning(
-                        "Client Registration API PUT retornou %d para %s — token inválido/expirado",
-                        resp.status_code, client_id,
-                    )
-            except Exception as e:
-                logger.warning("Client Registration API PUT erro para %s: %s", client_id, e)
+def _try_update_via_registration_api(
+    sistema, client_id: str, realm: str, existing_uuid: str, payload: dict
+) -> tuple[str | None, str | None]:
+    """Tenta atualizar o client via Registration API. Retorna (kc_uuid, token) no sucesso, (None, None) na falha."""
+    stored_token = getattr(sistema, "kc_registration_access_token", None) or ""
+    if not stored_token:
+        return None, None
+    reg_url = (
+        f"{settings.KEYCLOAK_SERVER_URL.rstrip('/')}"
+        f"/realms/{realm}/clients-registrations/default/{client_id}"
+    )
+    try:
+        resp = requests.put(
+            reg_url,
+            json=payload,
+            headers={"Authorization": f"Bearer {stored_token}", "Content-Type": "application/json"},
+            verify=settings.KEYCLOAK_VERIFY_SSL,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning("Client Registration API PUT erro para %s: %s", client_id, e)
+        return None, None
+    if resp.status_code != 200:
+        logger.warning(
+            "Client Registration API PUT retornou %d para %s — token inválido/expirado",
+            resp.status_code, client_id,
+        )
+        return None, None
+    client_data = resp.json()
+    return client_data.get("id") or existing_uuid, client_data.get("registrationAccessToken")
 
-        if not used_registration_api:
-            _with_backoff(admin.update_client, existing_uuid, payload)
 
-        action = "updated"
-        kc_uuid = existing_uuid
-    else:
-        kc_uuid = _with_backoff(admin.create_client, payload, skip_exists=True)
-        if not kc_uuid:
-            kc_uuid = _with_backoff(admin.get_client_id, client_id)
-        action = "created"
+def _update_existing_client(
+    admin, sistema, client_id: str, realm: str, existing_uuid: str, payload: dict
+) -> tuple[str, str | None]:
+    """Atualiza client existente no KC. Retorna (kc_uuid, registration_access_token)."""
+    kc_uuid, registration_access_token = _try_update_via_registration_api(
+        sistema, client_id, realm, existing_uuid, payload
+    )
+    if kc_uuid is None:
+        _with_backoff(admin.update_client, existing_uuid, payload)
+        return existing_uuid, None
+    return kc_uuid, registration_access_token
 
-    if not registration_access_token and kc_uuid:
-        try:
-            token_url = f"admin/realms/{realm}/clients/{kc_uuid}/registration-access-token"
-            data_raw = admin.connection.raw_post(token_url, data=_json.dumps({}))
-            token_data = raise_error_from_response(data_raw, KeycloakPostError, expected_codes=[200])
-            registration_access_token = (
-                token_data.get("registrationAccessToken") if isinstance(token_data, dict) else None
-            )
-        except Exception as e:
-            logger.warning("Não foi possível gerar registration access token para %s: %s", client_id, e)
 
+def _fetch_registration_token(admin, realm: str, kc_uuid: str, client_id: str) -> str | None:
+    """Solicita um novo registration access token para o client. Retorna None em caso de falha."""
+    try:
+        token_url = f"admin/realms/{realm}/clients/{kc_uuid}/registration-access-token"
+        data_raw = admin.connection.raw_post(token_url, data=json.dumps({}))
+        token_data = raise_error_from_response(data_raw, KeycloakPostError, expected_codes=[200])
+        return token_data.get("registrationAccessToken") if isinstance(token_data, dict) else None
+    except Exception as e:
+        logger.warning("Não foi possível gerar registration access token para %s: %s", client_id, e)
+        return None
+
+
+def _save_sistema(
+    sistema, client_id: str, kc_uuid: str | None, realm: str, registration_access_token: str | None
+) -> None:
     sistema.kc_client_id = client_id
     sistema.kc_client_uuid = kc_uuid
     sistema.kc_realm = realm
@@ -467,6 +471,34 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
         save_fields.append("kc_registration_access_token")
     sistema.save(update_fields=save_fields)
 
+
+def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]:
+    """Cria ou atualiza um client OIDC no Keycloak a partir de um registro StagingSistema."""
+    realm = realm or settings.KEYCLOAK_REALM
+    sigla = (sistema.sigla or _slugify_for_client(sistema.nome)).strip().lower()
+    suffix = (getattr(settings, "KEYCLOAK_CLIENT_SUFFIX", None) or "prod").strip().lower()
+    client_id = f"{sigla}-{suffix}" if suffix else sigla
+
+    payload = _build_client_payload(sistema, client_id)
+    existing_uuid = _with_backoff(admin.get_client_id, client_id)
+
+    if existing_uuid:
+        kc_uuid, registration_access_token = _update_existing_client(
+            admin, sistema, client_id, realm, existing_uuid, payload
+        )
+        action = "updated"
+    else:
+        kc_uuid = _with_backoff(admin.create_client, payload, skip_exists=True)
+        if not kc_uuid:
+            kc_uuid = _with_backoff(admin.get_client_id, client_id)
+        registration_access_token = None
+        action = "created"
+
+    if not registration_access_token and kc_uuid:
+        registration_access_token = _fetch_registration_token(admin, realm, kc_uuid, client_id)
+
+    _save_sistema(sistema, client_id, kc_uuid, realm, registration_access_token)
+
     return {
         "action": action,
         "client_id": client_id,
@@ -477,9 +509,6 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
 
 
 def _slugify_for_client(nome: str) -> str:
-    import re
-    import unicodedata
-
     s = unicodedata.normalize("NFKD", nome or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s or "sistema-sem-nome"
@@ -487,8 +516,6 @@ def _slugify_for_client(nome: str) -> str:
 
 def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
     """Cria ou verifica uma client role do Keycloak para um registro StagingPerfilCoreSSO."""
-    from staging.models import StagingPerfilCoreSSO
-
     sistema = perfil.sistema
     if sistema is None or not sistema.kc_client_uuid:
         perfil.status = StagingPerfilCoreSSO.Status.ERROR
@@ -539,9 +566,6 @@ def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
 
 def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, Any]:
     """Atribui ao usuario todas as client roles aplicaveis do Keycloak com base em seus grupos do CoreSSO."""
-    from extract.tasks import fetch_coresso_groups_for_login
-    from staging.models import StagingPerfilCoreSSO
-
     if not login:
         return {"assigned": 0, "skipped": 0, "details": []}
 
@@ -591,8 +615,6 @@ def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, An
 
 def emit_retroalim(tipo: str, usuario, payload: dict | None = None) -> None:
     """Emite um registro de evento de retroalimentacao para o CoreSSO apos uma operacao no Keycloak."""
-    from staging.models import RetroalimentacaoCoreSSO
-
     try:
         RetroalimentacaoCoreSSO.objects.create(
             tipo=tipo,

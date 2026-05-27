@@ -1,6 +1,10 @@
 """Tasks Celery para extrair dados do SE1426, EOL_DB e CoreSSO para as tabelas de staging."""
 import logging
+import re
+import unicodedata
+from datetime import date
 
+import httpx
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
@@ -267,17 +271,17 @@ def extract_se1426(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1 FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            # Não aborta a execução — chord continua com os demais sources
+            logger.error("[%s] extract_se1426 esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
 def _extract_se1426_api(execution_id: str) -> int:
-    import httpx
-
     yesterday = (timezone.now() - timezone.timedelta(days=1)).strftime("%Y-%m-%d")
     headers = {
         "Authorization": f"Bearer {settings.SE1426_API_TOKEN}",
@@ -391,11 +395,12 @@ def extract_eol_db(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1b FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_eol_db esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
@@ -462,7 +467,6 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
                 data_nasc_date = None
                 if data_nasc_str:
                     try:
-                        from datetime import date
                         parts = data_nasc_str.split("-")
                         data_nasc_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
                     except Exception:
@@ -560,11 +564,12 @@ def extract_eol_alunos(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1c FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_eol_alunos esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
@@ -675,8 +680,6 @@ def _extract_coresso_sql(execution_id: str) -> int:
 
 
 def _extract_coresso_api(execution_id: str) -> int:
-    import httpx
-
     headers = {"Authorization": f"Token {settings.CORESSO_API_TOKEN}"}
 
     with httpx.Client(timeout=120) as client:
@@ -780,18 +783,16 @@ def extract_coresso(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 2 FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_coresso esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=60)
 
 
 def _slugify_sigla(nome: str) -> str:
-    import re
-    import unicodedata
-
     s = unicodedata.normalize("NFKD", nome or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s or f"sistema-{abs(hash(nome)) % 100000}"

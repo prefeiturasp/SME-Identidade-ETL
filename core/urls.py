@@ -34,4 +34,5 @@ urlpatterns = [
     path("perfis/load-keycloak/", views.perfis_load_keycloak, name="perfis-load-kc"),
     path("perfis/", views.perfis_list, name="perfis-list"),
     path("retroalim/", views.retroalim_list, name="retroalim-list"),
+    path("sync-selective/", views.sync_selective, name="sync-selective"),
 ]
