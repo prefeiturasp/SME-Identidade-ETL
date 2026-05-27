@@ -400,6 +400,111 @@ def _select_staging_models(user_types: str) -> list:
     return models
 
 
+def _sum_load_results(results) -> tuple[int, int, int]:
+    """Soma os contadores de loaded/skipped/errors retornados no processamento de usuários."""
+    loaded = skipped = errors = 0
+    for loaded_count, skipped_count, error_count in results:
+        loaded += loaded_count
+        skipped += skipped_count
+        errors += error_count
+    return loaded, skipped, errors
+
+
+def _iter_sequential_usuarios(model_class, qs):
+    """Itera pelos usuários em chunks de PK para evitar cursor aberto durante save no SQLite."""
+    pk_list = list(qs.values_list("pk", flat=True))
+    for i in range(0, len(pk_list), 200):
+        chunk_pks = pk_list[i: i + 200]
+        yield from model_class.objects.filter(pk__in=chunk_pks).order_by()
+
+
+def _load_usuarios_sequential(admin, model_class, qs, execution_id: str, realm: str, execution):
+    """Processa usuários sequencialmente, com checagem periódica de cancelamento."""
+    loaded = skipped = errors = 0
+    processed_since_check = 0
+    processed_total = 0
+
+    for usuario in _iter_sequential_usuarios(model_class, qs):
+        processed_since_check += 1
+        processed_total += 1
+        if processed_since_check >= 500:
+            _check_cancelled(execution_id)
+            processed_since_check = 0
+
+        loaded_count, skipped_count, error_count = _upsert_single_usuario(
+            admin,
+            usuario,
+            realm,
+            execution,
+        )
+        loaded += loaded_count
+        skipped += skipped_count
+        errors += error_count
+
+    return loaded, skipped, errors, processed_total
+
+
+def _process_concurrent_usuario(args):
+    """Executa o upsert de um único usuário usando admin thread-local."""
+    from django.db import close_old_connections
+
+    usuario, realm, execution = args
+    thread_admin = _get_thread_admin(realm)
+    result = _upsert_single_usuario(thread_admin, usuario, realm, execution)
+    close_old_connections()
+    return result
+
+
+def _load_usuarios_concurrent(qs, execution_id: str, realm: str, execution, concurrency: int, batch_size: int, total: int):
+    """Processa usuários em lotes concorrentes, com log de progresso por batch."""
+    from django.db import close_old_connections
+
+    loaded = skipped = errors = 0
+    total_processed = 0
+    batch = []
+
+    for usuario in qs.iterator(chunk_size=batch_size):
+        batch.append(usuario)
+        if len(batch) < batch_size:
+            continue
+
+        _check_cancelled(execution_id)
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            batch_results = pool.map(
+                _process_concurrent_usuario,
+                ((usuario, realm, execution) for usuario in batch),
+            )
+            loaded_count, skipped_count, error_count = _sum_load_results(batch_results)
+
+        loaded += loaded_count
+        skipped += skipped_count
+        errors += error_count
+        total_processed += len(batch)
+        logger.info(
+            "[%s] Step 6 progresso: %d/%d (loaded=%d skipped=%d errors=%d)",
+            execution_id, total_processed, total, loaded, skipped, errors,
+        )
+        close_old_connections()
+        batch.clear()
+
+    if batch:
+        _check_cancelled(execution_id)
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            batch_results = pool.map(
+                _process_concurrent_usuario,
+                ((usuario, realm, execution) for usuario in batch),
+            )
+            loaded_count, skipped_count, error_count = _sum_load_results(batch_results)
+
+        loaded += loaded_count
+        skipped += skipped_count
+        errors += error_count
+        total_processed += len(batch)
+        close_old_connections()
+
+    return loaded, skipped, errors, total_processed
+
+
 def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str, execution, remaining):
     """Carrega usuários de um model staging para o Keycloak, respeitando o limite `remaining`.
 
@@ -409,11 +514,8 @@ def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str,
       concurrency=1  → ~5h   |  concurrency=20 → ~15min  |  concurrency=50 → ~6min
     """
     from django.conf import settings
-    from django.db import close_old_connections
-
     concurrency = getattr(settings, "ETL_KC_CONCURRENCY", 1)
     batch_size = getattr(settings, "ETL_KC_BATCH_SIZE", 500)
-    loaded = errors = skipped = 0
 
     qs = model_class.objects.filter(execution_id=execution_id, status="ready")
     total = qs.count()
@@ -421,68 +523,27 @@ def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str,
         qs = qs[:remaining]
 
     if concurrency <= 1:
-        # ── Modo sequencial (comportamento original) ──────────────────────────
-        # Busca PKs antecipadamente para evitar cursor de leitura aberto durante
-        # os saves (SQLite — usado nos testes — não suporta leitura + escrita
-        # simultânea na mesma tabela; PostgreSQL em produção não tem esse problema).
-        processed_since_check = 0
-        count = 0
-        pk_list = list(qs.values_list("pk", flat=True))
-        for i in range(0, len(pk_list), 200):
-            chunk_pks = pk_list[i : i + 200]
-            for usuario in model_class.objects.filter(pk__in=chunk_pks).order_by():
-                processed_since_check += 1
-                count += 1
-                if processed_since_check >= 500:
-                    _check_cancelled(execution_id)
-                    processed_since_check = 0
-                l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
-                loaded += l
-                skipped += s
-                errors += e
-        if remaining is not None:
-            remaining = max(0, remaining - count)
+        loaded, skipped, errors, processed_count = _load_usuarios_sequential(
+            admin,
+            model_class,
+            qs,
+            execution_id,
+            realm,
+            execution,
+        )
     else:
-        # ── Modo concorrente ──────────────────────────────────────────────────
-        # Cada thread usa _get_thread_admin() para obter seu próprio KeycloakAdmin.
-        def _process_one(usuario):
-            th_admin = _get_thread_admin(realm)
-            result = _upsert_single_usuario(th_admin, usuario, realm, execution)
-            close_old_connections()  # libera conexão DB imediatamente após cada thread
-            return result
+        loaded, skipped, errors, processed_count = _load_usuarios_concurrent(
+            qs,
+            execution_id,
+            realm,
+            execution,
+            concurrency,
+            batch_size,
+            total,
+        )
 
-        batch: list = []
-        total_processed = 0
-        for usuario in qs.iterator(chunk_size=batch_size):
-            batch.append(usuario)
-            if len(batch) >= batch_size:
-                _check_cancelled(execution_id)
-                with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                    for l, s, e in pool.map(_process_one, batch):
-                        loaded += l
-                        skipped += s
-                        errors += e
-                total_processed += len(batch)
-                logger.info(
-                    "[%s] Step 6 progresso: %d/%d (loaded=%d skipped=%d errors=%d)",
-                    execution_id, total_processed, total, loaded, skipped, errors,
-                )
-                # Fecha conexões DB inativas das threads encerradas
-                close_old_connections()
-                batch.clear()
-
-        if batch:
-            _check_cancelled(execution_id)
-            with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                for l, s, e in pool.map(_process_one, batch):
-                    loaded += l
-                    skipped += s
-                    errors += e
-            total_processed += len(batch)
-            close_old_connections()
-
-        if remaining is not None:
-            remaining = max(0, remaining - total_processed)
+    if remaining is not None:
+        remaining = max(0, remaining - processed_count)
 
     return loaded, skipped, errors, total, remaining
 
