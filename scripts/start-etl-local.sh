@@ -73,7 +73,7 @@ fi
 # 4. Subir ETL-MS (api + worker + beat)
 # ---------------------------------------------------------------------------
 info "[4/5] Buildando e subindo ETL-MS (api + worker + beat)..."
-docker compose -f "$ETL_COMPOSE" up -d --build 2>&1
+docker compose --env-file "$ENV_LOCAL" -f "$ETL_COMPOSE" up -d --build 2>&1
 
 # Aguarda apenas etl-api ficar healthy (worker/beat têm healthcheck desabilitado)
 # start_period=60s + até 5 checks × 15s = máx ~135s
@@ -139,5 +139,5 @@ echo "  KeyDB     →  localhost:6382"
 echo ""
 echo "  Logs API:    docker logs -f local-etl-api"
 echo "  Logs Worker: docker logs -f local-etl-worker"
-echo "  Parar tudo:  docker compose -f $ETL_COMPOSE down"
+echo "  Parar tudo:  docker compose --env-file $ENV_LOCAL -f $ETL_COMPOSE down"
 echo ""

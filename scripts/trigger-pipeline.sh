@@ -3,12 +3,17 @@
 # trigger-pipeline.sh — Dispara o pipeline ETL manualmente para o realm sme-apps
 #
 # Uso:
-#   ./scripts/trigger-pipeline.sh                    # defaults: source=all, realm=sme-apps
-#   ./scripts/trigger-pipeline.sh --source se1426    # apenas fonte SE1426
-#   ./scripts/trigger-pipeline.sh --realm sme-devops # outro realm
-#   ./scripts/trigger-pipeline.sh --load-keycloak    # habilita carga no Keycloak
-#   ./scripts/trigger-pipeline.sh --watch            # aguarda conclusão e exibe status
-#   ./scripts/trigger-pipeline.sh --no-logs          # não abre os logs após disparar
+#   ./scripts/trigger-pipeline.sh                          # defaults: servidor, 100k, step6=on, step7=off
+#   ./scripts/trigger-pipeline.sh --source se1426           # apenas fonte SE1426
+#   ./scripts/trigger-pipeline.sh --realm sme-devops        # outro realm
+#   ./scripts/trigger-pipeline.sh --all-users               # processa todos os tipos de usuário
+#   ./scripts/trigger-pipeline.sh --no-limit                # sem limite de registros
+#   ./scripts/trigger-pipeline.sh --max-records 50000       # limite customizado
+#   ./scripts/trigger-pipeline.sh --user-types aluno        # apenas alunos
+#   ./scripts/trigger-pipeline.sh --load-token-ms           # habilita step 7 (Token-MS)
+#   ./scripts/trigger-pipeline.sh --no-load-keycloak        # desabilita step 6
+#   ./scripts/trigger-pipeline.sh --watch                   # aguarda conclusão e exibe status
+#   ./scripts/trigger-pipeline.sh --no-logs                 # não abre os logs após disparar
 # =============================================================================
 set -euo pipefail
 
@@ -18,8 +23,10 @@ set -euo pipefail
 API_BASE="http://localhost:8001"
 SOURCE="all"
 REALM="sme-apps"
-LOAD_KEYCLOAK="false"
-LOAD_TOKEN_MS="true"
+LOAD_KEYCLOAK="true"       # step 6 habilitado por padrão
+LOAD_TOKEN_MS="false"      # step 7 pulado por padrão
+MAX_RECORDS_EXTRACT=100000  # limita extração a 100k registros
+USER_TYPES="servidor"       # processa apenas servidores por padrão
 WATCH=false
 FOLLOW_LOGS=true
 NOTE="Trigger manual via trigger-pipeline.sh"
@@ -29,14 +36,20 @@ NOTE="Trigger manual via trigger-pipeline.sh"
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api-base)     API_BASE="$2";      shift 2 ;;
-    --source)       SOURCE="$2";        shift 2 ;;
-    --realm)        REALM="$2";         shift 2 ;;
-    --load-keycloak) LOAD_KEYCLOAK="true"; shift ;;
-    --no-token-ms)  LOAD_TOKEN_MS="false"; shift ;;
-    --watch)        WATCH=true;         shift ;;
-    --no-logs)      FOLLOW_LOGS=false;  shift ;;
-    --note)         NOTE="$2";          shift 2 ;;
+    --api-base)          API_BASE="$2";                shift 2 ;;
+    --source)            SOURCE="$2";                  shift 2 ;;
+    --realm)             REALM="$2";                   shift 2 ;;
+    --load-keycloak)     LOAD_KEYCLOAK="true";          shift ;;
+    --no-load-keycloak)  LOAD_KEYCLOAK="false";         shift ;;
+    --load-token-ms)     LOAD_TOKEN_MS="true";          shift ;;
+    --no-token-ms)       LOAD_TOKEN_MS="false";         shift ;;
+    --max-records)       MAX_RECORDS_EXTRACT="$2";      shift 2 ;;
+    --user-types)        USER_TYPES="$2";               shift 2 ;;
+    --all-users)         USER_TYPES="all";              shift ;;
+    --no-limit)          MAX_RECORDS_EXTRACT="";        shift ;;
+    --watch)             WATCH=true;                   shift ;;
+    --no-logs)           FOLLOW_LOGS=false;             shift ;;
+    --note)              NOTE="$2";                    shift 2 ;;
     -h|--help)
       sed -n '2,9p' "$0" | sed 's/^# //'
       exit 0
@@ -76,14 +89,22 @@ fi
 # ---------------------------------------------------------------------------
 # Dispara o pipeline
 # ---------------------------------------------------------------------------
-PAYLOAD=$(printf '{"source":"%s","target_realm":"%s","load_keycloak":%s,"load_token_ms":%s,"note":"%s"}' \
-  "$SOURCE" "$REALM" "$LOAD_KEYCLOAK" "$LOAD_TOKEN_MS" "$NOTE")
+# Monta payload — max_records_extract é omitido quando vazio (sem limite)
+if [[ -n "${MAX_RECORDS_EXTRACT:-}" ]]; then
+  PAYLOAD=$(printf '{"source":"%s","target_realm":"%s","load_keycloak":%s,"load_token_ms":%s,"user_types":"%s","max_records_extract":%s,"note":"%s"}' \
+    "$SOURCE" "$REALM" "$LOAD_KEYCLOAK" "$LOAD_TOKEN_MS" "$USER_TYPES" "$MAX_RECORDS_EXTRACT" "$NOTE")
+else
+  PAYLOAD=$(printf '{"source":"%s","target_realm":"%s","load_keycloak":%s,"load_token_ms":%s,"user_types":"%s","note":"%s"}' \
+    "$SOURCE" "$REALM" "$LOAD_KEYCLOAK" "$LOAD_TOKEN_MS" "$USER_TYPES" "$NOTE")
+fi
 
 info "Disparando pipeline ETL..."
-detail "Realm:          $REALM"
-detail "Source:         $SOURCE"
-detail "Load Keycloak:  $LOAD_KEYCLOAK"
-detail "Load Token-MS:  $LOAD_TOKEN_MS"
+detail "Realm:               $REALM"
+detail "Source:              $SOURCE"
+detail "User types:          $USER_TYPES"
+detail "Max records extract: ${MAX_RECORDS_EXTRACT:-sem limite}"
+detail "Step 6 Keycloak:     $LOAD_KEYCLOAK"
+detail "Step 7 Token-MS:     $LOAD_TOKEN_MS"
 echo ""
 
 RESPONSE=$(curl -sf -X POST \
