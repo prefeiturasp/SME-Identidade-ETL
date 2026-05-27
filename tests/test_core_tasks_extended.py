@@ -250,6 +250,7 @@ class TestRunEtlPipelineSourceFiltering:
 
 
 
+@pytest.mark.django_db(transaction=True)
 class TestLoadKeycloakBulk:
     def test_bulk_enabled_loads_users(self, settings):
         settings.KEYCLOAK_SERVER_URL = "http://kc"
