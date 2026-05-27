@@ -368,35 +368,39 @@ def _assign_roles_and_groups(admin, kc_user_id: str, realm_roles: list[str], gro
             logger.info("KC group '%s' indisponível (ignorado): %s", group_path, e)
 
 
+def _search_kc_candidates(admin, new_username: str, email: str, usuario) -> list[dict]:
+    """Tenta encontrar candidatos KC por username, e-mail ou RF (em ordem de prioridade)."""
+    if new_username:
+        try:
+            result = admin.get_users({"username": new_username, "exact": True})
+            if result:
+                return result
+        except Exception:
+            pass
+
+    if email:
+        try:
+            result = admin.get_users({"email": email, "exact": True})
+            if result:
+                return result
+        except Exception:
+            pass
+
+    rf = (getattr(usuario, "rf", None) or "").strip()
+    if rf and rf != new_username:
+        try:
+            return admin.get_users({"username": rf, "exact": True})
+        except Exception:
+            pass
+
+    return []
+
+
 def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     new_username = payload.get("username", "")
     email = (payload.get("email") or "").strip()
 
-    candidates: list[dict] = []
-
-    # 1. Busca pelo username (CPF/RF/matrícula) — fonte mais confiável
-    if new_username:
-        try:
-            candidates = admin.get_users({"username": new_username, "exact": True})
-        except Exception:
-            pass
-
-    # 2. Busca por email (se não encontrou pelo username)
-    if not candidates and email:
-        try:
-            candidates = admin.get_users({"email": email, "exact": True})
-        except Exception:
-            pass
-
-    # 3. Busca por RF como fallback
-    if not candidates:
-        rf = (getattr(usuario, "rf", None) or "").strip()
-        if rf and rf != new_username:
-            try:
-                candidates = admin.get_users({"username": rf, "exact": True})
-            except Exception:
-                pass
-
+    candidates = _search_kc_candidates(admin, new_username, email, usuario)
     if not candidates:
         return None
 

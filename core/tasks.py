@@ -163,6 +163,41 @@ def _sync_coresso_catalogo(execution_id: str, realm: str) -> None:
         logger.warning("[%s] Continuando pipeline mesmo com falha no Step 0", execution_id)
 
 
+def _build_extract_tasks(source: str, user_type_set: set, skip_steps: set, execution_id: str) -> list:
+    """Constrói a lista de tasks de extração baseado em source, user_types e skip_steps."""
+    from extract.tasks import extract_coresso, extract_eol_alunos, extract_eol_db, extract_se1426
+
+    needs_servidor = "all" in user_type_set or "servidor" in user_type_set
+    needs_aluno = "all" in user_type_set or "aluno" in user_type_set
+    tasks = []
+    if source in ("all", "se1426") and needs_servidor and "extract_se1426" not in skip_steps:
+        tasks.append(extract_se1426.si(execution_id))
+    if source in ("all", "eol_db") and needs_servidor and "extract_eol_db" not in skip_steps:
+        tasks.append(extract_eol_db.si(execution_id))
+    if source in ("all", "eol_alunos", "eol_db") and needs_aluno and "extract_eol_db" not in skip_steps:
+        tasks.append(extract_eol_alunos.si(execution_id))
+    if source in ("all", "coresso") and "extract_coresso" not in skip_steps:
+        tasks.append(extract_coresso.si(execution_id))
+    return tasks
+
+
+def _append_pipeline_steps(pipeline_tasks: list, execution_id: str, skip_steps: set) -> None:
+    """Adiciona steps pós-extração à chain do pipeline respeitando skip_steps."""
+    from staging.tasks import crossref_dedup, transform_staging
+
+    optional_steps = [
+        ("staging", transform_staging),
+        ("crossref_dedup", crossref_dedup),
+        ("decision", decide_target),
+        ("load_keycloak", load_keycloak),
+        ("load_token_ms", load_token_ms),
+        ("audit", audit_etl),
+    ]
+    for step_name, task in optional_steps:
+        if step_name not in skip_steps:
+            pipeline_tasks.append(task.si(execution_id))
+
+
 @shared_task(bind=True, name="core.tasks.run_etl_pipeline")
 def run_etl_pipeline(self, execution_id: str):
     """Orquestra o pipeline completo do ETL para uma dada execucao via chord/chain do Celery."""
@@ -170,15 +205,14 @@ def run_etl_pipeline(self, execution_id: str):
 
     execution = ETLExecution.objects.get(id=execution_id)
 
-    # Verifica cancelamento antes de iniciar
     if execution.status == ETLExecution.Status.CANCELLED:
         logger.info("ETL Pipeline [%s] cancelado antes de iniciar.", execution_id)
         return
 
     execution.mark_running()
-
     skip_steps = set(execution.skip_steps or [])
     user_types = execution.user_types or "all"
+    user_type_set = {p.strip() for p in user_types.split(",") if p.strip()}
 
     logger.info(
         "ETL Pipeline [%s] started — source=%s, realm=%s, user_types=%s, skip_steps=%s",
@@ -186,30 +220,10 @@ def run_etl_pipeline(self, execution_id: str):
     )
 
     try:
-        from extract.tasks import extract_coresso, extract_eol_alunos, extract_eol_db, extract_se1426
-        from staging.tasks import crossref_dedup, transform_staging
-
-        extract_tasks = []
-        source = execution.source
-        user_type_set = {p.strip() for p in user_types.split(",") if p.strip()}
-        include_all = "all" in user_type_set
-
-        # Filtra extrações por source e por user_types
-        needs_servidor = include_all or "servidor" in user_type_set
-        needs_aluno = include_all or "aluno" in user_type_set
-
-        if source in ("all", "se1426") and needs_servidor and "extract_se1426" not in skip_steps:
-            extract_tasks.append(extract_se1426.si(execution_id))
-        if source in ("all", "eol_db") and needs_servidor and "extract_eol_db" not in skip_steps:
-            extract_tasks.append(extract_eol_db.si(execution_id))
-        if source in ("all", "eol_alunos", "eol_db") and needs_aluno and "extract_eol_db" not in skip_steps:
-            extract_tasks.append(extract_eol_alunos.si(execution_id))
-        if source in ("all", "coresso") and "extract_coresso" not in skip_steps:
-            extract_tasks.append(extract_coresso.si(execution_id))
-
+        extract_tasks = _build_extract_tasks(execution.source, user_type_set, skip_steps, execution_id)
         if not extract_tasks:
             execution.mark_finished("failed")
-            logger.error("No extract tasks for source=%s / user_types=%s", source, user_types)
+            logger.error("No extract tasks for source=%s / user_types=%s", execution.source, user_types)
             return
 
         # Garante que o realm-alvo existe antes de qualquer operação KC.
@@ -231,30 +245,15 @@ def run_etl_pipeline(self, execution_id: str):
                 e,
             )
 
-        # Step 0: sincroniza catálogo de sistemas e perfis (pode ser pulado)
         if "sync_catalogo" not in skip_steps:
             _sync_coresso_catalogo(execution_id=execution_id, realm=realm)
         else:
             logger.info("[%s] Step 0 (sync_catalogo) pulado por skip_steps.", execution_id)
 
-        # Monta a chain dinâmica respeitando skip_steps
         pipeline_tasks = list(extract_tasks)
-
-        if "staging" not in skip_steps:
-            pipeline_tasks.append(transform_staging.si(execution_id))
-        if "crossref_dedup" not in skip_steps:
-            pipeline_tasks.append(crossref_dedup.si(execution_id))
-        if "decision" not in skip_steps:
-            pipeline_tasks.append(decide_target.si(execution_id))
-        if "load_keycloak" not in skip_steps:
-            pipeline_tasks.append(load_keycloak.si(execution_id))
-        if "load_token_ms" not in skip_steps:
-            pipeline_tasks.append(load_token_ms.si(execution_id))
-        if "audit" not in skip_steps:
-            pipeline_tasks.append(audit_etl.si(execution_id))
+        _append_pipeline_steps(pipeline_tasks, execution_id, skip_steps)
 
         chain(*pipeline_tasks).delay()
-
         logger.info(
             "ETL Pipeline [%s] dispatched — %d tasks na chain (skip=%s)",
             execution_id, len(pipeline_tasks), sorted(skip_steps),
@@ -363,6 +362,64 @@ def _upsert_single_usuario(admin, usuario, realm: str, execution) -> tuple[int, 
         return 0, 0, 1
 
 
+def _select_staging_models(user_types: str) -> list:
+    """Retorna a lista de models de staging a processar com base em user_types."""
+    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+
+    parts = {p.strip() for p in user_types.split(",") if p.strip()}
+    include_all = "all" in parts
+    models = []
+    if include_all or "servidor" in parts:
+        models.append(StagingUsuarioServidor)
+    if include_all or "aluno" in parts:
+        models.append(StagingUsuarioAluno)
+    if include_all or "terceiro" in parts:
+        models.append(StagingUsuarioTerceiro)
+    return models
+
+
+def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str, execution, remaining):
+    """Carrega usuários de um model staging para o Keycloak, respeitando o limite `remaining`."""
+    CHECK_INTERVAL = 500
+    loaded = errors = skipped = 0
+    processed_since_check = 0
+
+    usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
+    total = usuarios.count()
+    if remaining is not None:
+        usuarios = usuarios[:remaining]
+
+    for usuario in usuarios.iterator(chunk_size=200):
+        processed_since_check += 1
+        if processed_since_check >= CHECK_INTERVAL:
+            _check_cancelled(execution_id)
+            processed_since_check = 0
+
+        l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
+        loaded += l
+        skipped += s
+        errors += e
+
+        if remaining is not None:
+            remaining -= 1
+            if remaining <= 0:
+                break
+
+    return loaded, skipped, errors, total, remaining
+
+
+def _generate_token_ms_payloads(models_to_send: list, execution_id: str, build_token_ms_payload):
+    """Gera payloads para o token-ms iterando pelos models de staging em READY/loaded."""
+    for model_class in models_to_send:
+        qs = model_class.objects.filter(
+            execution_id=execution_id,
+            status__in=["ready", "loaded"],
+        )
+        for u in qs.iterator(chunk_size=1000):
+            route = (u.raw_data or {}).get("route") or {}
+            yield route.get("token_ms") or build_token_ms_payload(u)
+
+
 @shared_task(
     bind=True,
     name="core.tasks.load_keycloak",
@@ -401,20 +458,8 @@ def load_keycloak(self, execution_id: str):
     logger.info("[%s] Step 6: Load Keycloak — realm=%s", execution_id, execution.target_realm)
 
     try:
-        from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
-
         user_types = execution.user_types or "all"
-        type_parts = {p.strip() for p in user_types.split(",") if p.strip()}
-        include_all = "all" in type_parts
-
-        # Filtra modelos por user_types
-        models_to_load = []
-        if include_all or "servidor" in type_parts:
-            models_to_load.append(StagingUsuarioServidor)
-        if include_all or "aluno" in type_parts:
-            models_to_load.append(StagingUsuarioAluno)
-        if include_all or "terceiro" in type_parts:
-            models_to_load.append(StagingUsuarioTerceiro)
+        models_to_load = _select_staging_models(user_types)
 
         total_ready = sum(
             m.objects.filter(execution_id=execution_id, status="ready").count()
@@ -427,37 +472,20 @@ def load_keycloak(self, execution_id: str):
         admin = get_admin_client(realm=execution.target_realm)
 
         loaded = errors = skipped = total = 0
-        max_records = execution.max_records  # None = sem limite
-        remaining = max_records
-
-        if max_records:
-            logger.info("[%s] Step 6: modo teste — limitado a %d registros", execution_id, max_records)
-
-        CHECK_INTERVAL = 500  # verifica cancelamento a cada N registros
-        processed_since_check = 0
+        remaining = execution.max_records
+        if remaining:
+            logger.info("[%s] Step 6: modo teste — limitado a %d registros", execution_id, remaining)
 
         for model_class in models_to_load:
             if remaining is not None and remaining <= 0:
                 break
-            usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
-            total += usuarios.count()
-            if remaining is not None:
-                usuarios = usuarios[:remaining]
-            for usuario in usuarios.iterator(chunk_size=200):
-                # Verificação periódica de cancelamento
-                processed_since_check += 1
-                if processed_since_check >= CHECK_INTERVAL:
-                    _check_cancelled(execution_id)
-                    processed_since_check = 0
-
-                l, s, e = _upsert_single_usuario(admin, usuario, execution.target_realm, execution)
-                loaded += l
-                skipped += s
-                errors += e
-                if remaining is not None:
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
+            l, s, e, t, remaining = _load_usuarios_from_model(
+                admin, model_class, execution_id, execution.target_realm, execution, remaining,
+            )
+            loaded += l
+            skipped += s
+            errors += e
+            total += t
 
         step.records_in = total
         step.records_out = loaded
@@ -537,30 +565,9 @@ def load_token_ms(self, execution_id: str):
 
     try:
         user_types = execution.user_types or "all"
-        type_parts = {p.strip() for p in user_types.split(",") if p.strip()}
-        include_all = "all" in type_parts
-
-        from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
-        models_to_send = []
-        if include_all or "servidor" in type_parts:
-            models_to_send.append(StagingUsuarioServidor)
-        if include_all or "aluno" in type_parts:
-            models_to_send.append(StagingUsuarioAluno)
-        if include_all or "terceiro" in type_parts:
-            models_to_send.append(StagingUsuarioTerceiro)
-
-        def _payloads():
-            for model_class in models_to_send:
-                qs = model_class.objects.filter(
-                    execution_id=execution_id,
-                    status__in=["ready", "loaded"],
-                )
-                for u in qs.iterator(chunk_size=1000):
-                    route = (u.raw_data or {}).get("route") or {}
-                    payload = route.get("token_ms") or build_token_ms_payload(u)
-                    yield payload
-
-        metrics = send_all(_payloads(), execution_id=execution_id)
+        models_to_send = _select_staging_models(user_types)
+        payloads = _generate_token_ms_payloads(models_to_send, execution_id, build_token_ms_payload)
+        metrics = send_all(payloads, execution_id=execution_id)
 
         step.records_in = metrics["sent"]
         step.records_out = metrics["sent"]
