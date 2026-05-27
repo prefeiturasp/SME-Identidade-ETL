@@ -188,6 +188,7 @@ class TestDecideTargetTask:
         assert "test error" in step.error_detail
 
 
+@pytest.mark.django_db(transaction=True)
 class TestLoadKeycloakTask:
     def test_load_keycloak_skipped_when_bulk_disabled(
         self,
