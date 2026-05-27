@@ -34,12 +34,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Criar rede Docker sme-identidade
+# 2. Criar redes Docker necessárias
 # ---------------------------------------------------------------------------
-info "[2/5] Criando rede Docker sme-identidade..."
+info "[2/5] Criando redes Docker..."
 docker network create sme-identidade 2>/dev/null \
-  && echo "      Rede criada." \
-  || echo "      Rede já existia (ok)."
+  && echo "      sme-identidade: criada." \
+  || echo "      sme-identidade: já existia (ok)."
+docker network create api_identidade-net 2>/dev/null \
+  && echo "      api_identidade-net: criada." \
+  || echo "      api_identidade-net: já existia (ok)."
 
 # ---------------------------------------------------------------------------
 # 3. Subir Keycloak local (pula se já houver Keycloak respondendo na 8080)
@@ -65,31 +68,6 @@ if [ -n "$KC_USERS" ]; then
 else
   warn "Não foi possível consultar usuários do Keycloak (container pode ainda não estar pronto)."
 fi
-
-# ---------------------------------------------------------------------------
-# 3.5 Garantir rede identidade-net e PgBouncer (main compose)
-# ---------------------------------------------------------------------------
-info "[3.5/5] Verificando rede identidade-net e PgBouncer..."
-MAIN_COMPOSE="$REPO_ROOT/docker-compose.yml"
-
-# Se a rede api_identidade-net existir sem labels do Compose (criada manualmente), remover
-NET_LABEL=$(docker network inspect api_identidade-net \
-  --format "{{index .Labels \"com.docker.compose.network\"}}" 2>/dev/null || echo "absent")
-if docker network ls --format "{{.Name}}" | grep -q "^api_identidade-net$" && [ -z "$NET_LABEL" ]; then
-  echo "      Rede api_identidade-net sem labels — removendo para o Compose recriar corretamente..."
-  docker network rm api_identidade-net 2>/dev/null || true
-fi
-
-# Garante PgBouncer + postgres-etl via main compose (cria api_identidade-net com labels corretas)
-if ! docker inspect identidade-pgbouncer > /dev/null 2>&1; then
-  echo "      PgBouncer não está rodando — iniciando via main compose..."
-  docker compose -f "$MAIN_COMPOSE" up -d postgres-etl pgbouncer \
-    || error "Falha ao iniciar PgBouncer. Verifique: $MAIN_COMPOSE"
-  echo "      PgBouncer e postgres-etl iniciados."
-else
-  echo "      PgBouncer já está rodando."
-fi
-echo "      Rede api_identidade-net ok."
 
 # ---------------------------------------------------------------------------
 # 4. Subir ETL-MS (api + worker + beat)
