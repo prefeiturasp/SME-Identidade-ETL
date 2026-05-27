@@ -81,6 +81,33 @@ def get_admin_client(realm: str | None = None):
     )
 
 
+def ensure_realm_exists(realm: str) -> bool:
+    """Verifica se o realm existe no Keycloak; cria-o com config mínima se ausente.
+
+    Retorna True se o realm foi criado, False se já existia.
+    """
+    admin_master = KeycloakAdmin(
+        server_url=settings.KEYCLOAK_SERVER_URL,
+        username=settings.KEYCLOAK_ADMIN_USER,
+        password=settings.KEYCLOAK_ADMIN_PAWD,
+        realm_name="master",
+        user_realm_name="master",
+        verify=settings.KEYCLOAK_VERIFY_SSL,
+    )
+    existing_realms = {r["realm"] for r in admin_master.get_realms()}
+    if realm in existing_realms:
+        logger.debug("Realm '%s' já existe — nenhuma ação necessária.", realm)
+        return False
+
+    logger.warning(
+        "Realm '%s' não encontrado no Keycloak — criando automaticamente com config mínima.",
+        realm,
+    )
+    admin_master.create_realm({"realm": realm, "enabled": True})
+    logger.info("Realm '%s' criado com sucesso.", realm)
+    return True
+
+
 # Mapa cargo → role Keycloak (match exato — mantido para retrocompatibilidade com testes)
 CARGO_ROLE_MAP = {
     "PROFESSOR DE EDUCACAO INFANTIL E ENSINO FUNDAMENTAL I": "Professor",
@@ -431,7 +458,22 @@ def upsert_user_to_keycloak(
     }
 
 
+def _sanitize_redirect_uri(raw: str | None) -> str | None:
+    """Remove aspas envolventes e retorna None se o valor não parecer uma URI válida."""
+    if not raw:
+        return None
+    cleaned = raw.strip().strip("'\"")
+    if not cleaned:
+        return None
+    # Aceita apenas http://, https:// ou wildcard *
+    if not re.match(r"^(https?://|\*)", cleaned):
+        logger.warning("url_callback ignorado por não ser URI válida: %r", raw)
+        return None
+    return cleaned
+
+
 def _build_client_payload(sistema, client_id: str) -> dict[str, Any]:
+    callback = _sanitize_redirect_uri(sistema.url_callback)
     return {
         "clientId": client_id,
         "name": sistema.nome,
@@ -442,7 +484,7 @@ def _build_client_payload(sistema, client_id: str) -> dict[str, Any]:
         "standardFlowEnabled": True,
         "directAccessGrantsEnabled": False,
         "serviceAccountsEnabled": False,
-        "redirectUris": [sistema.url_callback] if sistema.url_callback else ["*"],
+        "redirectUris": [callback] if callback else ["*"],
         "attributes": {
             "post.logout.redirect.uris": sistema.url_logout or "+",
             "coresso_sis_id": str(sistema.coresso_sis_id),
