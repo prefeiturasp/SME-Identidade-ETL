@@ -192,6 +192,9 @@ python -m pytest tests/ --cov=core --cov=staging --cov=extract -q
 ```bash
 # Cobertura detalhada por módulo
 python -m pytest tests/ --cov=core --cov=staging --cov=extract --cov-report=term-missing
+
+# Cobertura em HTML (abre no browser se xdg-utils disponível, senão sobe servidor em :9000)
+./scripts/coverage.sh 
 ```
 
 ---

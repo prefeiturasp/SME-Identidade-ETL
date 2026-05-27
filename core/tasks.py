@@ -1,11 +1,30 @@
 """Tasks Celery para orquestrar o pipeline completo do ETL, da extracao a carga no Keycloak."""
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from celery import chain, shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+# Admin client thread-local para o modo concorrente do step 6.
+# Cada thread do pool cria e reutiliza seu próprio KeycloakAdmin para evitar
+# race conditions no token de autenticação da session HTTP.
+_kc_thread_local = threading.local()
+
+
+def _get_thread_admin(realm: str):
+    """Retorna um KeycloakAdmin thread-local, criando-o se ainda não existir para esta thread."""
+    if (
+        not hasattr(_kc_thread_local, "admin")
+        or getattr(_kc_thread_local, "admin_realm", None) != realm
+    ):
+        from .keycloak_client import get_admin_client
+        _kc_thread_local.admin = get_admin_client(realm=realm)
+        _kc_thread_local.admin_realm = realm
+    return _kc_thread_local.admin
 
 
 class ExecutionCancelledError(Exception):
@@ -356,9 +375,12 @@ def _upsert_single_usuario(admin, usuario, realm: str, execution) -> tuple[int, 
         return 1, 0, 0
     except Exception as e:
         logger.warning("Load KC error for %s: %s", getattr(usuario, "rf", None) or usuario.cpf, e)
-        usuario.status = "error"
-        usuario.error_detail = str(e)[:1000]
-        usuario.save(update_fields=["status", "error_detail"])
+        try:
+            usuario.status = "error"
+            usuario.error_detail = str(e)[:1000]
+            usuario.save(update_fields=["status", "error_detail"])
+        except Exception:
+            pass  # Não propaga falha do save — preserva contagem de erros
         return 0, 0, 1
 
 
@@ -379,31 +401,82 @@ def _select_staging_models(user_types: str) -> list:
 
 
 def _load_usuarios_from_model(admin, model_class, execution_id: str, realm: str, execution, remaining):
-    """Carrega usuários de um model staging para o Keycloak, respeitando o limite `remaining`."""
-    CHECK_INTERVAL = 500
+    """Carrega usuários de um model staging para o Keycloak, respeitando o limite `remaining`.
+
+    Quando ETL_KC_CONCURRENCY > 1, usa ThreadPoolExecutor para paralelizar as chamadas à
+    API do Keycloak — cada thread mantém seu próprio KeycloakAdmin para evitar race conditions.
+    Referência de performance: 87k usuários, ~200ms/upsert local:
+      concurrency=1  → ~5h   |  concurrency=20 → ~15min  |  concurrency=50 → ~6min
+    """
+    from django.conf import settings
+    from django.db import close_old_connections
+
+    concurrency = getattr(settings, "ETL_KC_CONCURRENCY", 1)
+    batch_size = getattr(settings, "ETL_KC_BATCH_SIZE", 500)
     loaded = errors = skipped = 0
-    processed_since_check = 0
 
-    usuarios = model_class.objects.filter(execution_id=execution_id, status="ready")
-    total = usuarios.count()
+    qs = model_class.objects.filter(execution_id=execution_id, status="ready")
+    total = qs.count()
     if remaining is not None:
-        usuarios = usuarios[:remaining]
+        qs = qs[:remaining]
 
-    for usuario in usuarios.iterator(chunk_size=200):
-        processed_since_check += 1
-        if processed_since_check >= CHECK_INTERVAL:
+    if concurrency <= 1:
+        # ── Modo sequencial (comportamento original) ──────────────────────────
+        processed_since_check = 0
+        count = 0
+        for usuario in qs.iterator(chunk_size=200):
+            processed_since_check += 1
+            count += 1
+            if processed_since_check >= 500:
+                _check_cancelled(execution_id)
+                processed_since_check = 0
+            l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
+            loaded += l
+            skipped += s
+            errors += e
+        if remaining is not None:
+            remaining = max(0, remaining - count)
+    else:
+        # ── Modo concorrente ──────────────────────────────────────────────────
+        # Cada thread usa _get_thread_admin() para obter seu próprio KeycloakAdmin.
+        def _process_one(usuario):
+            th_admin = _get_thread_admin(realm)
+            result = _upsert_single_usuario(th_admin, usuario, realm, execution)
+            close_old_connections()  # libera conexão DB imediatamente após cada thread
+            return result
+
+        batch: list = []
+        total_processed = 0
+        for usuario in qs.iterator(chunk_size=batch_size):
+            batch.append(usuario)
+            if len(batch) >= batch_size:
+                _check_cancelled(execution_id)
+                with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                    for l, s, e in pool.map(_process_one, batch):
+                        loaded += l
+                        skipped += s
+                        errors += e
+                total_processed += len(batch)
+                logger.info(
+                    "[%s] Step 6 progresso: %d/%d (loaded=%d skipped=%d errors=%d)",
+                    execution_id, total_processed, total, loaded, skipped, errors,
+                )
+                # Fecha conexões DB inativas das threads encerradas
+                close_old_connections()
+                batch.clear()
+
+        if batch:
             _check_cancelled(execution_id)
-            processed_since_check = 0
-
-        l, s, e = _upsert_single_usuario(admin, usuario, realm, execution)
-        loaded += l
-        skipped += s
-        errors += e
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                for l, s, e in pool.map(_process_one, batch):
+                    loaded += l
+                    skipped += s
+                    errors += e
+            total_processed += len(batch)
+            close_old_connections()
 
         if remaining is not None:
-            remaining -= 1
-            if remaining <= 0:
-                break
+            remaining = max(0, remaining - total_processed)
 
     return loaded, skipped, errors, total, remaining
 

@@ -233,7 +233,7 @@ def _generate_initial_password(usuario) -> str:
     return _resolve_username(usuario)
 
 
-_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$')
 
 
 def _build_email(usuario) -> str:

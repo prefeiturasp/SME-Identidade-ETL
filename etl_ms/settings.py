@@ -222,9 +222,15 @@ KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "admin")
 KEYCLOAK_ADMIN_PAWD = os.environ.get("KEYCLOAK_ADMIN_PAWD", "admin")
 KEYCLOAK_CLIENT_SUFFIX = os.environ.get("KEYCLOAK_CLIENT_SUFFIX", "prod")
 KEYCLOAK_VERIFY_SSL = os.environ.get("KEYCLOAK_VERIFY_SSL", "true").lower() == "true"
-ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
-    os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
-)
+
+# Número de threads concorrentes para o step 6 (Load Keycloak).
+# 20 = padrão. Reduz carga de 87k usuários de ~5h para ~15min.
+# Aumentar para 50 para ~6min. Cada thread usa seu próprio KeycloakAdmin client.
+ETL_KC_CONCURRENCY = int(os.environ.get("ETL_KC_CONCURRENCY", "20"))
+
+# Tamanho do lote por batch no modo concorrente (default 500).
+# Batches maiores reduzem overhead de thread pool mas aumentam uso de memória.
+ETL_KC_BATCH_SIZE = int(os.environ.get("ETL_KC_BATCH_SIZE", "500"))
 
 
 TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "http://token-ms:8000")
@@ -237,11 +243,6 @@ TOKEN_MS_BATCH_SIZE = int(os.environ.get("TOKEN_MS_BATCH_SIZE", "500"))
 # Valores maiores reduzem roundtrips ao SQL Server e ao PostgreSQL.
 # Ajustar via ETL_EXTRACT_BATCH_SIZE se o worker sofrer pressão de memória.
 ETL_EXTRACT_BATCH_SIZE = int(os.environ.get("ETL_EXTRACT_BATCH_SIZE", "50000"))
-
-
-ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
-    os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
-)
 
 
 NIFI_API_URL = os.environ.get("NIFI_API_URL", "http://localhost:8443/nifi-api")

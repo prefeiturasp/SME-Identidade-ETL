@@ -692,10 +692,10 @@ def _row_to_coresso_record(row, execution_id: str):
         "data_alteracao": str(row.data_alteracao) if row.data_alteracao else None,
         "fonte": "coresso_sql",
     }
-    base_kwargs = dict(
-        cpf=cpf, nome=nome, email=email, situacao=situacao,
-        source="coresso", execution_id=execution_id, raw_data=raw,
-    )
+    base_kwargs = {
+        "cpf": cpf, "nome": nome, "email": email, "situacao": situacao,
+        "source": "coresso", "execution_id": execution_id, "raw_data": raw,
+    }
     if rf:
         from staging.models import StagingUsuarioServidor
         return StagingUsuarioServidor(rf=rf, **base_kwargs)

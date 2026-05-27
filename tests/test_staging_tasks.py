@@ -299,7 +299,7 @@ class TestTransformModelEdgeCases:
             StagingUsuarioServidor,
             execution.id,
             {},
-            BULK_SIZE=1,
+            bulk_size=1,
             extra_fields={"rf_field": True},
         )
 
@@ -337,7 +337,7 @@ class TestTransformModelEdgeCases:
             execution.id,
             # lotacao_map espera dicts com chaves "codigo", "dre_codigo", "tipo"
             {"0001": {"codigo": "0001", "dre_codigo": "DRE-TESTE", "tipo": "ue"}},
-            BULK_SIZE=100,
+            bulk_size=100,
             extra_fields={
                 "rf_field": True,
                 "lotacao_field": True,
@@ -381,7 +381,7 @@ class TestTransformModelEdgeCases:
             StagingUsuarioServidor,
             execution.id,
             {},
-            BULK_SIZE=1,
+            bulk_size=1,
             extra_fields={"rf_field": True},
         )
 
