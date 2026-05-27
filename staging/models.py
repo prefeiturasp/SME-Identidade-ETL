@@ -445,7 +445,7 @@ class DedupResult(models.Model):
     )
 
     cpf = models.CharField(max_length=11, blank=True, null=True, db_index=True)
-    rf = models.CharField(max_length=20, blank=True, null=True, db_index=True)
+    rf = models.CharField(max_length=50, blank=True, null=True, db_index=True)  # Aumentado para 50
 
     execution_id = models.UUIDField(db_index=True)
     confidence = models.FloatField(

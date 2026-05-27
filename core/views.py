@@ -7,18 +7,21 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from core.keycloak_client import get_admin_client, upsert_kc_client, upsert_kc_client_role
 from core.service import KeycloakUpsertService
 from etl_ms.celery import app as celery_app
 from extract.tasks import extract_coresso_perfis, extract_coresso_sistemas
 from staging.models import RetroalimentacaoCoreSSO, StagingPerfilCoreSSO, StagingSistema
 from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
 
+from .keycloak_client import get_admin_client, upsert_kc_client, upsert_kc_client_role
 from .models import ETLExecution, UpsertControl
 from .serializers import (
     ETLExecutionCreateSerializer,
     ETLExecutionListSerializer,
     ETLExecutionSerializer,
+    ReloadKeycloakSerializer,
+    RunExtractSerializer,
+    RunStepSerializer,
     SyncSelectiveSerializer,
     UpsertControlSerializer,
 )
@@ -58,6 +61,10 @@ class ETLExecutionViewSet(
             note=serializer.validated_data.get("note", ""),
             load_keycloak=serializer.validated_data.get("load_keycloak", False),
             load_token_ms=serializer.validated_data.get("load_token_ms", True),
+            max_records=serializer.validated_data.get("max_records", None),
+            max_records_extract=serializer.validated_data.get("max_records_extract", None),
+            user_types=serializer.validated_data.get("user_types", "all"),
+            skip_steps=serializer.validated_data.get("skip_steps", []),
             executed_by=request.META.get("HTTP_X_FORWARDED_USER", "api"),
         )
 
@@ -69,6 +76,94 @@ class ETLExecutionViewSet(
         return Response(
             ETLExecutionSerializer(execution).data,
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["post"])
+    def reload_keycloak(self, request, id=None):
+        """Re-executa apenas o step 6 (Load Keycloak) de uma execucao existente.
+
+        Util para re-carga apos limpeza do Keycloak ou testes parciais com max_records.
+        Idempotente: reseta o ETLStepLog do step 6 e, opcionalmente, os staging records.
+        """
+        from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+
+        from .models import ETLStepLog
+        from .tasks import load_keycloak
+
+        execution = self.get_object()
+
+        if execution.status == ETLExecution.Status.RUNNING:
+            return Response(
+                {"detail": "Execução ainda em andamento. Aguarde ou cancele antes de re-executar o step 6."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        serializer = ReloadKeycloakSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        max_records = serializer.validated_data.get("max_records")
+        reset_loaded = serializer.validated_data.get("reset_loaded", True)
+
+        execution_id = str(execution.id)
+
+        # Reseta staging records loaded → ready (para re-carga após limpeza do KC)
+        if reset_loaded:
+            reset_counts = {}
+            for model_class in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
+                n = model_class.objects.filter(
+                    execution_id=execution_id, status="loaded"
+                ).update(status="ready")
+                if n:
+                    reset_counts[model_class.__name__] = n
+            logger.info(
+                "[%s] reload_keycloak: staging records resetados → ready: %s",
+                execution_id, reset_counts,
+            )
+
+        # Conta quantos estão prontos
+        ready_count = (
+            StagingUsuarioServidor.objects.filter(execution_id=execution_id, status="ready").count()
+            + StagingUsuarioAluno.objects.filter(execution_id=execution_id, status="ready").count()
+            + StagingUsuarioTerceiro.objects.filter(execution_id=execution_id, status="ready").count()
+        )
+
+        if ready_count == 0:
+            return Response(
+                {"detail": "Nenhum registro em status 'ready' para esta execução. Tente com reset_loaded=true."},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        # Remove o ETLStepLog do step 6 para contornar o _step_done() e permitir re-execução
+        ETLStepLog.objects.filter(
+            execution=execution, step_name=ETLStepLog.StepName.LOAD_KEYCLOAK
+        ).delete()
+
+        # Atualiza flags da execução
+        execution.load_keycloak = True
+        if max_records is not None:
+            execution.max_records = max_records
+        execution.status = ETLExecution.Status.RUNNING
+        execution.save(update_fields=["load_keycloak", "max_records", "status", "updated_at"])
+
+        task = load_keycloak.delay(execution_id)
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info(
+            "[%s] reload_keycloak disparado — ready=%d, max_records=%s, reset_loaded=%s",
+            execution_id, ready_count, max_records, reset_loaded,
+        )
+
+        return Response(
+            {
+                "detail": "Step 6 (Load Keycloak) re-agendado com sucesso.",
+                "execution_id": execution_id,
+                "ready_records": ready_count,
+                "max_records": max_records,
+                "reset_loaded": reset_loaded,
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @action(detail=True, methods=["post"])
@@ -93,6 +188,293 @@ class ETLExecutionViewSet(
 
         logger.info("ETL execution %s cancelled", execution.id)
         return Response(ETLExecutionSerializer(execution).data)
+
+    # ------------------------------------------------------------------
+    # Helper interno
+    # ------------------------------------------------------------------
+
+    def _guard_step(self, execution, step_names: list, force: bool = True):
+        """Valida e prepara a execucao para re-executar um step individual.
+
+        Retorna Response 409 se a execucao estiver RUNNING; None caso contrario.
+        Quando force=True, apaga os ETLStepLogs listados e marca execution como RUNNING.
+        """
+        from .models import ETLStepLog
+
+        if execution.status == ETLExecution.Status.RUNNING:
+            return Response(
+                {"detail": "Execução ainda em andamento. Aguarde ou cancele antes de re-executar um step."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if force:
+            ETLStepLog.objects.filter(execution=execution, step_name__in=step_names).delete()
+        execution.status = ETLExecution.Status.RUNNING
+        execution.save(update_fields=["status", "updated_at"])
+        return None
+
+    # ------------------------------------------------------------------
+    # Steps individuais (0–8)
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["post"], url_path="run-sync-catalogo")
+    def run_sync_catalogo(self, request, id=None):
+        """Step 0 — Re-executa a sincronizacao de Sistemas e Perfis do CoreSSO como Clients/Roles no Keycloak."""
+        from .models import ETLStepLog
+        from .tasks import run_sync_catalogo_step
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.SYNC_CATALOGO],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        task = run_sync_catalogo_step.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_sync_catalogo agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 0 (Sync Catálogo) agendado.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-extract")
+    def run_extract(self, request, id=None):
+        """Steps 1/1b/1c/2 — Re-executa a extracao de uma ou todas as fontes (SE1426, EOL, CoreSSO)."""
+        from celery import chain as celery_chain
+
+        from extract.tasks import extract_coresso, extract_eol_alunos, extract_eol_db, extract_se1426
+
+        from .models import ETLStepLog
+
+        execution = self.get_object()
+        serializer = RunExtractSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        source = serializer.validated_data["source"]
+        force = serializer.validated_data["force"]
+
+        step_names_by_source = {
+            "se1426": [ETLStepLog.StepName.EXTRACT_SE1426],
+            "eol_db": [ETLStepLog.StepName.EXTRACT_EOL_DB],
+            "eol_alunos": [ETLStepLog.StepName.EXTRACT_EOL_DB],
+            "coresso": [ETLStepLog.StepName.EXTRACT_CORESSO],
+            "all": [
+                ETLStepLog.StepName.EXTRACT_SE1426,
+                ETLStepLog.StepName.EXTRACT_EOL_DB,
+                ETLStepLog.StepName.EXTRACT_CORESSO,
+            ],
+        }
+        err = self._guard_step(execution, step_names_by_source.get(source, []), force=force)
+        if err:
+            return err
+
+        execution_id = str(execution.id)
+        tasks = []
+        if source in ("all", "se1426"):
+            tasks.append(extract_se1426.si(execution_id))
+        if source in ("all", "eol_db"):
+            tasks.append(extract_eol_db.si(execution_id))
+        if source in ("all", "eol_alunos", "eol_db"):
+            tasks.append(extract_eol_alunos.si(execution_id))
+        if source in ("all", "coresso"):
+            tasks.append(extract_coresso.si(execution_id))
+
+        if not tasks:
+            return Response(
+                {"detail": f"Nenhuma task configurada para source='{source}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = celery_chain(*tasks).delay()
+        execution.celery_task_id = result.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_extract agendado — source=%s, %d task(s)", execution.id, source, len(tasks))
+        return Response(
+            {
+                "detail": f"Extração (source='{source}') agendada — {len(tasks)} task(s).",
+                "execution_id": execution_id,
+                "source": source,
+                "tasks_count": len(tasks),
+                "celery_task_id": result.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-transform")
+    def run_transform(self, request, id=None):
+        """Step 3 — Re-executa a transformacao e normalizacao dos registros de staging."""
+        from staging.tasks import transform_staging
+
+        from .models import ETLStepLog
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.STAGING],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        task = transform_staging.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_transform agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 3 (Transform Staging) agendado.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-crossref")
+    def run_crossref(self, request, id=None):
+        """Step 4 — Re-executa o cross-reference e deduplicacao entre fontes."""
+        from staging.tasks import crossref_dedup
+
+        from .models import ETLStepLog
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.CROSSREF_DEDUP],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        task = crossref_dedup.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_crossref agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 4 (Crossref/Dedup) agendado.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-decide")
+    def run_decide(self, request, id=None):
+        """Step 5 — Re-executa a decisao de create vs update para cada registro de staging."""
+        from .models import ETLStepLog
+        from .tasks import decide_target
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.DECISION],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        task = decide_target.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_decide agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 5 (Decide Target) agendado.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-load-token")
+    def run_load_token(self, request, id=None):
+        """Step 7 — Re-executa o envio de usuarios staged para o Token-MS."""
+        from .models import ETLStepLog
+        from .tasks import load_token_ms
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.LOAD_TOKEN_MS],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        execution.load_token_ms = True
+        execution.save(update_fields=["load_token_ms", "updated_at"])
+
+        task = load_token_ms.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_load_token agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 7 (Load Token-MS) agendado.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="run-audit")
+    def run_audit(self, request, id=None):
+        """Step 8 — Re-executa o audit e finaliza a execucao (marca como success/partial/failed)."""
+        from .models import ETLStepLog
+        from .tasks import audit_etl
+
+        execution = self.get_object()
+        serializer = RunStepSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        err = self._guard_step(
+            execution,
+            [ETLStepLog.StepName.AUDIT],
+            force=serializer.validated_data["force"],
+        )
+        if err:
+            return err
+
+        task = audit_etl.delay(str(execution.id))
+        execution.celery_task_id = task.id
+        execution.save(update_fields=["celery_task_id"])
+
+        logger.info("[%s] run_audit agendado", execution.id)
+        return Response(
+            {
+                "detail": "Step 8 (Audit) agendado. A execução será finalizada ao concluir.",
+                "execution_id": str(execution.id),
+                "celery_task_id": task.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class UpsertControlViewSet(
@@ -222,53 +604,6 @@ def test_kc_upsert(request, cpf=None):
         )
 
 
-@api_view(["POST"])
-def sistemas_extract(request):
-    """Dispara extração síncrona de SYS_Sistema (CoreSSO) → staging_sistema."""
-    try:
-        total = extract_coresso_sistemas(execution_id=None)
-    except Exception as e:
-        logger.exception("Falha na extração de sistemas: %s", e)
-        return Response(
-            {"detail": str(e)},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    return Response({"total_extracted": total})
-
-
-@api_view(["POST"])
-def sistemas_load_keycloak(request):
-    """Load staging sistemas into Keycloak as OIDC clients."""
-    body = request.data or {}
-    realm = body.get("realm") or None
-    only_sigla = body.get("sigla")
-
-    qs = StagingSistema.objects.filter(situacao=1)
-    if only_sigla:
-        qs = qs.filter(sigla=only_sigla)
-
-    admin = get_admin_client(realm=realm)
-    results = []
-    errors = []
-    for sistema in qs:
-        try:
-            r = upsert_kc_client(admin, sistema, realm=realm)
-            results.append(r)
-        except Exception as e:
-            logger.exception("Falha upsert client %s: %s", sistema.sigla, e)
-            sistema.status = StagingSistema.Status.ERROR
-            sistema.error_detail = str(e)
-            sistema.save(update_fields=["status", "error_detail", "updated_at"])
-            errors.append({"sistema": sistema.nome, "error": str(e)})
-
-    return Response({
-        "total": len(results),
-        "errors": errors,
-        "created": [r for r in results if r["action"] == "created"],
-        "updated": [r for r in results if r["action"] == "updated"],
-    })
-
-
 @api_view(["GET"])
 def sistemas_list(request):
     """Retorna a lista de todos os staging sistemas com o respectivo mapeamento de client Keycloak."""
@@ -288,57 +623,49 @@ def sistemas_list(request):
 
 
 @api_view(["POST"])
-def perfis_extract(request):
-    """Dispara extracao sincrona dos perfis do CoreSSO para staging."""
+def sistemas_extract(request):
+    """Extrai sistemas CoreSSO para staging_sistema."""
     try:
-        total = extract_coresso_perfis(execution_id=None)
+        total = extract_coresso_sistemas()
+        return Response({"total_extracted": total})
     except Exception as e:
-        logger.exception("Falha na extração de perfis: %s", e)
-        return Response({"detail": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
-    return Response({"total_extracted": total})
+        logger.exception("sistemas_extract FAILED: %s", e)
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 @api_view(["POST"])
-def perfis_load_keycloak(request):
-    """Carrega os perfis CoreSSO de staging como client roles no Keycloak."""
-    body = request.data or {}
-    realm = body.get("realm") or None
-    sis_id = body.get("coresso_sis_id")
+def sistemas_load_keycloak(request):
+    """Carrega sistemas staging como clients OIDC no Keycloak."""
+    from django.conf import settings
 
-    qs = StagingPerfilCoreSSO.objects.select_related("sistema").all()
-    if sis_id:
-        qs = qs.filter(coresso_sis_id=int(sis_id))
+    sigla = request.data.get("sigla")
+    realm = getattr(settings, "KEYCLOAK_REALM", "sme-apps")
+
+    qs = StagingSistema.objects.filter(situacao=1)
+    if sigla:
+        qs = qs.filter(sigla=sigla)
 
     admin = get_admin_client(realm=realm)
-    created = updated = skipped = errors = 0
-    error_details = []
-    for idx, perfil in enumerate(qs.iterator()):
-        if idx and idx % 50 == 0:
-            try:
-                admin = get_admin_client(realm=realm)
-            except Exception:
-                pass
+    created_items = []
+    updated_items = []
+    errors = []
+
+    for sistema in qs:
         try:
-            r = upsert_kc_client_role(admin, perfil)
-            if r["action"] == "created":
-                created += 1
-            elif r["action"] == "updated":
-                updated += 1
+            result = upsert_kc_client(admin, sistema, realm=realm)
+            if result.get("action") == "created":
+                created_items.append(result)
             else:
-                skipped += 1
+                updated_items.append(result)
         except Exception as e:
-            errors += 1
-            error_details.append({"perfil": perfil.nome, "error": str(e)[:200]})
-            perfil.status = StagingPerfilCoreSSO.Status.ERROR
-            perfil.error_detail = str(e)
-            perfil.save(update_fields=["status", "error_detail", "updated_at"])
+            logger.warning("Falha upsert client %s: %s", sistema.sigla, e)
+            errors.append({"sigla": sistema.sigla, "error": str(e)})
 
     return Response({
-        "created": created,
-        "updated": updated,
-        "skipped": skipped,
+        "total": len(created_items) + len(updated_items),
+        "created": created_items,
+        "updated": updated_items,
         "errors": errors,
-        "error_details": error_details[:20],
     })
 
 
@@ -361,6 +688,61 @@ def perfis_list(request):
         }
         for p in qs.order_by("coresso_sis_id", "nome")[:1000]
     ])
+
+
+@api_view(["POST"])
+def perfis_extract(request):
+    """Extrai perfis CoreSSO para staging_perfil_coresso."""
+    try:
+        total = extract_coresso_perfis()
+        return Response({"total_extracted": total})
+    except Exception as e:
+        logger.exception("perfis_extract FAILED: %s", e)
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+@api_view(["POST"])
+def perfis_load_keycloak(request):
+    """Carrega perfis staging como client roles no Keycloak."""
+    from django.conf import settings
+
+    coresso_sis_id = request.data.get("coresso_sis_id")
+    realm = getattr(settings, "KEYCLOAK_REALM", "sme-apps")
+
+    qs = StagingPerfilCoreSSO.objects.select_related("sistema")
+    if coresso_sis_id:
+        qs = qs.filter(coresso_sis_id=int(coresso_sis_id))
+
+    admin = get_admin_client(realm=realm)
+    created = updated = skipped = errors = 0
+    count = 0
+
+    for perfil in qs.iterator(chunk_size=200):
+        count += 1
+        if count % 50 == 0:
+            try:
+                admin = get_admin_client(realm=realm)
+            except Exception as e:
+                logger.warning("Falha ao renovar admin client: %s", e)
+        try:
+            result = upsert_kc_client_role(admin, perfil)
+            action = result.get("action", "created")
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning("Falha upsert client role %s: %s", getattr(perfil, "kc_role_name", str(perfil)), e)
+            errors += 1
+
+    return Response({
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    })
 
 
 @api_view(["GET"])

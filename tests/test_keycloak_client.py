@@ -150,7 +150,7 @@ class TestBuildKcPayload:
         u = _make_mock_usuario(nome="MARIA")
         p = self._fn(u)
         assert p["firstName"] == "MARIA"
-        assert p["lastName"] == ""
+        assert p["lastName"] == "-"  # implementação retorna '-' quando há apenas um nome
 
 
 

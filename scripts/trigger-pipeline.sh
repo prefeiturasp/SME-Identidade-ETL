@@ -90,6 +90,7 @@ RESPONSE=$(curl -sf -X POST \
   "${API_BASE}/api/etl/executions/" \
   -H "Content-Type: application/json" \
   -H "X-Forwarded-User: trigger-pipeline.sh" \
+  -H "X-Internal-Token: dev-etl-token" \
   -d "$PAYLOAD") || error "Falha ao chamar a API. Verifique se o container está rodando."
 
 EXECUTION_ID=$(echo "$RESPONSE" | jq -r '.id // empty')

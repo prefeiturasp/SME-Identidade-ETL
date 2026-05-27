@@ -57,6 +57,10 @@ def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kw
         try:
             return fn(*args, **kwargs)
         except RETRYABLE as e:
+            # Erros 4xx são permanentes (validação, conflito) — não faz retry
+            response_code = getattr(e, "response_code", None)
+            if response_code is not None and 400 <= response_code < 500:
+                raise
             attempt += 1
             if attempt > max_retries:
                 logger.error("KC call exceeded retries (%d): %s", max_retries, e)
@@ -212,9 +216,10 @@ def _derive_group_paths(usuario) -> list[str]:
 
 
 def _resolve_username(usuario) -> str:
+    # CPF: apenas dígitos, zero-padded à esquerda até 11 dígitos
     cpf = "".join(c for c in (usuario.cpf or "") if c.isdigit())
     if cpf:
-        return cpf
+        return cpf.zfill(11)
     rf = (getattr(usuario, "rf", None) or "").strip()
     if rf:
         return rf
@@ -228,24 +233,41 @@ def _generate_initial_password(usuario) -> str:
     return _resolve_username(usuario)
 
 
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
 def _build_email(usuario) -> str:
-    """Retorna o e-mail do usuario, gerando um placeholder para alunos sem e-mail."""
+    """Retorna o e-mail do usuario, gerando um placeholder para alunos sem e-mail.
+
+    Emails legados do CoreSSO vêm como 'HEXHASH@' (sem domínio) — são descartados.
+    """
     email = (usuario.email or "").strip()
-    if email:
+    if email and _EMAIL_RE.match(email):
         return email
     if isinstance(usuario, StagingUsuarioAluno):
         matricula = (getattr(usuario, "matricula", None) or "").strip()
         if matricula:
             return f"{matricula}@aluno.sme.prefeitura.sp.gov.br"
-    return email
+    return ""
+
+
+def _sanitize_kc_name(name: str) -> str:
+    """Remove caracteres inválidos para o validador de nome do Keycloak (error-person-name-invalid-character).
+    Mantém qualquer letra Unicode (categoria L*), espaços, hífens e apóstrofos."""
+    normalized = unicodedata.normalize("NFC", name or "")
+    sanitized = "".join(
+        c for c in normalized
+        if unicodedata.category(c).startswith("L") or c in " -'"
+    )
+    return " ".join(sanitized.split()) or "-"
 
 
 def build_kc_payload(usuario) -> dict[str, Any]:
     """Monta o dict de representacao do usuario para o Keycloak a partir de um registro de staging."""
     nome = (usuario.nome or "").strip()
     parts = nome.split()
-    first_name = parts[0] if parts else ""
-    last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+    first_name = _sanitize_kc_name(parts[0] if parts else "-")
+    last_name = _sanitize_kc_name(" ".join(parts[1:]) if len(parts) > 1 else "-")
 
     attributes: dict[str, list[str]] = {
         "cpf": [(usuario.cpf or "").strip()],
@@ -262,6 +284,12 @@ def build_kc_payload(usuario) -> dict[str, Any]:
         attributes["cod_escola"] = [cod_escola]
     if cod_dre:
         attributes["cod_dre"] = [cod_dre]
+
+    # Atributos de perfil — enviados sempre (vazios até serem populados no staging)
+    attributes["cargo"] = [(getattr(usuario, "cargo", None) or "").strip()]
+    attributes["coordenadoria"] = [(getattr(usuario, "coordenadoria", None) or "").strip()]
+    attributes["ultimo_acesso"] = [(getattr(usuario, "ultimo_acesso", None) or "").strip()]
+    attributes["tempo_sessao"] = [(getattr(usuario, "tempo_sessao", None) or "").strip()]
 
     return {
         "username": _resolve_username(usuario),
@@ -345,15 +373,25 @@ def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     email = (payload.get("email") or "").strip()
 
     candidates: list[dict] = []
-    if email:
+
+    # 1. Busca pelo username (CPF/RF/matrícula) — fonte mais confiável
+    if new_username:
+        try:
+            candidates = admin.get_users({"username": new_username, "exact": True})
+        except Exception:
+            pass
+
+    # 2. Busca por email (se não encontrou pelo username)
+    if not candidates and email:
         try:
             candidates = admin.get_users({"email": email, "exact": True})
         except Exception:
             pass
 
+    # 3. Busca por RF como fallback
     if not candidates:
         rf = (getattr(usuario, "rf", None) or "").strip()
-        if rf:
+        if rf and rf != new_username:
             try:
                 candidates = admin.get_users({"username": rf, "exact": True})
             except Exception:
@@ -388,7 +426,24 @@ def _handle_new_upsert(admin, upsert, usuario, payload) -> tuple[str, str]:
         upsert.target_id = existing_kc_id
         return existing_kc_id, "updated"
 
-    kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
+    try:
+        kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
+    except Exception as e:
+        # 409 pode ocorrer por conflito de email — tenta buscar e atualizar
+        response_code = getattr(e, "response_code", None)
+        if response_code == 409:
+            username = payload.get("username", "")
+            try:
+                users = admin.get_users({"username": username, "exact": True})
+                if users:
+                    kc_user_id = users[0]["id"]
+                    _with_backoff(admin.update_user, kc_user_id, payload)
+                    upsert.target_id = kc_user_id
+                    return kc_user_id, "updated"
+            except Exception:
+                pass
+        raise
+
     upsert.target_id = kc_user_id
     try:
         initial_pwd = _generate_initial_password(usuario)

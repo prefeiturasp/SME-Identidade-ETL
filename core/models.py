@@ -70,6 +70,26 @@ class ETLExecution(models.Model):
         default=True,
         help_text="Se True, o step 7 envia payload para o Token-MS",
     )
+    max_records = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Limita o número de usuários sincronizados no step 6 (KC). Nulo = sem limite.",
+    )
+    max_records_extract = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Limita o número de registros extraídos por fonte (steps 1 e 2). Nulo = sem limite.",
+    )
+    user_types = models.CharField(
+        max_length=100,
+        default="all",
+        help_text="Tipos de usuário a processar: 'all', 'servidor', 'aluno', 'terceiro' ou combinações separadas por vírgula.",
+    )
+    skip_steps = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Lista de nomes de steps a pular, ex: ['load_token_ms', 'audit']. Valores: sync_catalogo, extract_se1426, extract_eol_db, extract_coresso, staging, crossref_dedup, decision, load_keycloak, load_token_ms, audit.",
+    )
 
     note = models.TextField(blank=True, null=True, help_text="Observações da execução")
     executed_by = models.CharField(
