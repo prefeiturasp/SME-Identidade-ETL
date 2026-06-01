@@ -3,10 +3,8 @@
 Rotas:
     /api/etl/: CRUD de execucoes ETL, status e logs.
     /api/staging/: Consulta de dados de staging.
-    /admin/: Django Admin.
 """
 
-from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -15,7 +13,6 @@ from drf_spectacular.views import (
 )
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
     path("api/etl/", include("core.urls")),
     path("api/staging/", include("staging.urls")),
     # OpenAPI schema + Swagger UI + ReDoc
