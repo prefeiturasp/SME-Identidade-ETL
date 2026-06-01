@@ -93,7 +93,7 @@ CORESSO_API_URL=          # fallback REST caso o SQL Server não esteja acessív
 KEYCLOAK_SERVER_URL=
 KEYCLOAK_REALM=sme-apps
 KEYCLOAK_ADMIN_USER=
-KEYCLOAK_ADMIN_PASSWORD=
+KEYCLOAK_ADMIN_PAWD=
 KEYCLOAK_CLIENT_SUFFIX=prod   # sufixo do clientId: {sigla}-prod
 
 # Flags

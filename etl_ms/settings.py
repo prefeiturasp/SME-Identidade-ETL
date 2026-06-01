@@ -1,12 +1,12 @@
-import os
+"""Configuracoes Django do SME-Identidade-ETL."""
 
-from celery.schedules import crontab
+import os
 from pathlib import Path
 
 import dj_database_url
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
@@ -73,10 +73,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "etl_ms.wsgi.application"
 
-
 DATABASES = {
     "default": dj_database_url.config(
-        default="postgres://etl:etl@localhost:5434/etl_db",
+        env="DATABASE_URL",
+        default="sqlite:///:memory:",
         conn_max_age=600,
         conn_health_checks=True,
     ),
@@ -86,7 +86,9 @@ DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME":
+     "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -123,7 +125,8 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "ETL-MS API — SME Identidade",
-    "DESCRIPTION": "Microsserviço ETL: extração (SE1426, EOL_DB, CORESSO), transformação, carga no Keycloak e PostgreSQL.",
+    "DESCRIPTION":
+        "MS ETL: extração (SE1426, CORESSO), transformação, carga no Keycloak",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SWAGGER_UI_DIST": "SIDECAR",
@@ -133,8 +136,8 @@ SPECTACULAR_SETTINGS = {
 
 
 CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "").split(",") if not DEBUG else []
-
+CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "").split(",") if not DEBUG \
+    else []
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/2")
 CELERY_RESULT_BACKEND = "django-db"
@@ -170,16 +173,16 @@ CELERY_BEAT_SCHEDULE = {
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://identidade:identidade@localhost:5672/sme")
 
 
-KEYCLOAK_SERVER_URL = os.environ.get("KEYCLOAK_SERVER_URL", "http://localhost:8080/")
+KEYCLOAK_SERVER_URL = os.environ.get("KEYCLOAK_SERVER_URL", "https://localhost:8080/")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "sme-apps")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "api-middleware")
 KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET", "")
 KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "admin")
-KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
+KEYCLOAK_ADMIN_PAWD = os.environ.get("KEYCLOAK_ADMIN_PAWD", "admin")
 KEYCLOAK_VERIFY_SSL = os.environ.get("KEYCLOAK_VERIFY_SSL", "true").lower() == "true"
 
 
-TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "http://token-ms:8000")
+TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "https://token-ms:8000")
 TOKEN_MS_TOKEN = os.environ.get("TOKEN_MS_TOKEN", "")
 TOKEN_MS_INTERNAL_TOKEN = os.environ.get("TOKEN_MS_INTERNAL_TOKEN", "")
 TOKEN_MS_TIMEOUT = int(os.environ.get("TOKEN_MS_TIMEOUT", "60"))
@@ -191,7 +194,7 @@ ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
 )
 
 
-NIFI_API_URL = os.environ.get("NIFI_API_URL", "http://localhost:8443/nifi-api")
+NIFI_API_URL = os.environ.get("NIFI_API_URL", "https://localhost:8443/nifi-api")
 
 
 SE1426_API_URL = os.environ.get(
