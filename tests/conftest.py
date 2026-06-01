@@ -1,4 +1,4 @@
-"""Global test configuration.
+"""Configuração global para os testes.
 
 Estratégia:
 1. Define variáveis de ambiente antes da inicialização do Django.
@@ -76,7 +76,17 @@ os.environ.setdefault(
 
 @pytest.fixture(autouse=True)
 def override_celery_and_apps(settings):
-    """Override Celery settings and incompatible Django apps."""
+    """Configura o ambiente de testes para executar tarefas Celery de forma síncrona.
+
+    Esta fixture é aplicada automaticamente a todos os testes e ajusta as
+    configurações do Celery para execução imediata das tarefas, propagando
+    exceções para facilitar a depuração. Além disso, remove aplicativos
+    incompatíveis com esse modo de execução da lista de aplicativos instalados.
+
+    Args:
+        settings: Fixture do pytest-django utilizada para sobrescrever
+            configurações do Django durante a execução dos testes.
+    """
     settings.CELERY_TASK_ALWAYS_EAGER = True
     settings.CELERY_TASK_EAGER_PROPAGATES = True
 
