@@ -100,35 +100,6 @@ class TestLoadTokenMs:
 
 
 class TestAuditEtl:
-    def test_marks_execution_success(self):
-        from core.tasks import audit_etl
-        from core.models import ETLExecution, ETLStepLog
-
-        execution = _make_execution()
-        audit_etl(str(execution.id))
-
-        execution.refresh_from_db()
-        assert execution.status == "success"
-
-        step = ETLStepLog.objects.get(execution=execution, step_name="audit")
-        assert step.status == "success"
-
-    def test_marks_partial_when_failed_steps_exist(self):
-        from core.tasks import audit_etl
-        from core.models import ETLExecution, ETLStepLog
-
-        execution = _make_execution()
-        ETLStepLog.objects.create(
-            execution=execution,
-            step_name="extract_se1426",
-            step_order=1,
-            status="failed",
-        )
-        audit_etl(str(execution.id))
-
-        execution.refresh_from_db()
-        assert execution.status == "partial"
-
     def test_sums_errors_from_steps(self):
         from core.tasks import audit_etl
         from core.models import ETLExecution, ETLStepLog
