@@ -1,13 +1,9 @@
+"""Rotas da aplicacao core do ETL-MS."""
+
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from . import views
-from .health import (
-    health_coresso,
-    health_sme_integracao,
-    health_sme_integracao_auth,
-    health_sources,
-)
 
 router = DefaultRouter()
 router.register(r"executions", views.ETLExecutionViewSet, basename="etl-execution")
@@ -18,14 +14,6 @@ urlpatterns = [
     path("stats/", views.etl_stats, name="etl-stats"),
     path("test-kc-upsert/", views.test_kc_upsert, name="etl-test-kc-upsert"),
     path("test-kc-upsert/<str:cpf>/", views.test_kc_upsert, name="etl-test-kc-upsert-cpf"),
-    path("health/sources/", health_sources, name="health-sources"),
-    path("health/sources/coresso/", health_coresso, name="health-coresso"),
-    path("health/sources/sme-integracao/", health_sme_integracao, name="health-sme-integracao"),
-    path(
-        "health/sources/sme-integracao/auth/",
-        health_sme_integracao_auth,
-        name="health-sme-integracao-auth",
-    ),
     path("sistemas/extract/", views.sistemas_extract, name="sistemas-extract"),
     path("sistemas/load-keycloak/", views.sistemas_load_keycloak, name="sistemas-load-kc"),
     path("sistemas/", views.sistemas_list, name="sistemas-list"),
