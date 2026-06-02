@@ -6,6 +6,13 @@ Roda como **worker Celery + API Django REST**. O banco de staging fica no Postgr
 
 ---
 
+## 📚 Documentação Adicional
+
+- **[README_INICIAR_PROJETO.md](README_INICIAR_PROJETO.md)** — Guia completo: scripts, testes, cobertura e resumo dos PRs
+- **[scripts/README.md](scripts/README.md)** — Documentação detalhada dos scripts operacionais
+
+---
+
 ## Visão Geral da Arquitetura
 
 ```
