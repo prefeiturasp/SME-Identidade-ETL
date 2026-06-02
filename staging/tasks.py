@@ -21,6 +21,293 @@ MERGEABLE_FIELDS = [
 ]
 
 
+def _mark_non_servidores_ready(execution_id):
+    """Marca alunos e terceiros como READY."""
+    from .models import StagingUsuarioAluno, StagingUsuarioTerceiro
+
+    alunos_ready = StagingUsuarioAluno.objects.filter(
+        execution_id=execution_id,
+        status=StagingUsuarioAluno.Status.TRANSFORMED,
+    )
+    n_alunos = alunos_ready.update(status=StagingUsuarioAluno.Status.READY)
+
+    terceiros_ready = StagingUsuarioTerceiro.objects.filter(
+        execution_id=execution_id,
+        status=StagingUsuarioTerceiro.Status.TRANSFORMED,
+    )
+    n_terceiros = terceiros_ready.update(status=StagingUsuarioTerceiro.Status.READY)
+
+    return n_alunos, n_terceiros
+
+
+def _build_indexes(transformed_qs):
+    """Constrói índices de CPF e RF e mapa de registros."""
+    cpf_index = defaultdict(list)
+    rf_index = defaultdict(list)
+    records_by_id = {}
+
+    for record in transformed_qs.only(
+        "id", "rf", "cpf", "source", "extracted_at",
+        "email", "data_nascimento", "cargo", "funcao", "situacao",
+        "lotacao", "lotacao_nome", "dre", "ue", "nome",
+    ).iterator(chunk_size=1000):
+        records_by_id[record.id] = record
+        cpf = record.cpf
+        rf = record.rf
+        if cpf and validate_cpf(cpf):
+            cpf_index[cpf].append(record.id)
+        if rf:
+            rf_index[rf].append(record.id)
+
+    return cpf_index, rf_index, records_by_id
+
+
+def _create_union_find(records_by_id):
+    """Cria estrutura Union-Find."""
+    parent = {rid: rid for rid in records_by_id}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    return parent, find, union
+
+
+def _merge_by_index(index, union_fn):
+    """Mescla registros usando um índice (CPF ou RF)."""
+    for ids in index.values():
+        for i in range(1, len(ids)):
+            union_fn(ids[0], ids[i])
+
+
+def _crossref_cpf_rf(cpf_index, rf_index, records_by_id, union_fn):
+    """Faz cross-reference entre CPF e RF."""
+    cpf_to_rf = {}
+    for rid, rec in records_by_id.items():
+        cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
+        rf = rec.rf
+        if cpf and rf:
+            cpf_to_rf[cpf] = rf
+
+    for cpf, rf in cpf_to_rf.items():
+        cpf_ids = cpf_index.get(cpf, [])
+        rf_ids = rf_index.get(rf, [])
+        if cpf_ids and rf_ids:
+            for rid in rf_ids:
+                union_fn(cpf_ids[0], rid)
+
+
+def _union_find_merge(cpf_index, rf_index, records_by_id):
+    """Aplica Union-Find para criar clusters de registros duplicados."""
+    _, find, union = _create_union_find(records_by_id)
+    
+    _merge_by_index(cpf_index, union)
+    _merge_by_index(rf_index, union)
+    _crossref_cpf_rf(cpf_index, rf_index, records_by_id, union)
+
+    clusters = defaultdict(list)
+    for rid in records_by_id:
+        clusters[find(rid)].append(rid)
+
+    return clusters
+
+
+def _merge_fields_from_loser(winner, loser):
+    """Mescla campos vazios do winner com valores do loser."""
+    merged_fields_list = []
+    for field in MERGEABLE_FIELDS:
+        winner_val = getattr(winner, field, None)
+        loser_val = getattr(loser, field, None)
+        if not winner_val and loser_val:
+            setattr(winner, field, loser_val)
+            merged_fields_list.append(field)
+    return merged_fields_list
+
+
+def _process_loser_record(winner, loser, execution_id):
+    """Processa um registro perdedor e cria resultado de dedup."""
+    from .models import DedupResult, StagingUsuarioServidor
+
+    merged_fields_list = _merge_fields_from_loser(winner, loser)
+    match_type = _determine_match_type(winner, loser)
+    has_conflict = _check_conflicts(winner, loser)
+    
+    if has_conflict:
+        decision = DedupResult.Decision.CONFLICT
+    elif merged_fields_list:
+        decision = DedupResult.Decision.MERGE
+    else:
+        decision = DedupResult.Decision.SKIP_DUPLICATE
+
+    dedup_result = DedupResult(
+        dedup_key=build_dedup_key(winner.cpf, winner.rf),
+        winner=None,
+        loser=None,
+        match_type=match_type,
+        decision=decision,
+        merged_fields=merged_fields_list + [
+            f"_winner_id:{winner.id}", f"_loser_id:{loser.id}",
+        ],
+        cpf=winner.cpf,
+        rf=winner.rf,
+        execution_id=execution_id,
+        confidence=1.0 if match_type != DedupResult.MatchType.CPF_RF_CROSS else 0.9,
+    )
+
+    loser.status = StagingUsuarioServidor.Status.SKIPPED
+    loser.error_detail = f"Dedup: merged into {winner.id} ({match_type})"
+
+    return dedup_result, merged_fields_list, has_conflict
+
+
+def _process_single_cluster(member_ids, records_by_id, execution_id):
+    """Processa um cluster individual retornando winner, losers e dedup_results."""
+    from .models import StagingUsuarioServidor
+
+    members = [records_by_id[mid] for mid in member_ids]
+    members.sort(
+        key=lambda r: (
+            SOURCE_PRIORITY.get(r.source, 99),
+            r.extracted_at or timezone.now(),
+        )
+    )
+    winner = members[0]
+
+    dedup_key = build_dedup_key(winner.cpf, winner.rf)
+    if not dedup_key:
+        winner.status = StagingUsuarioServidor.Status.ERROR
+        winner.error_detail = "Sem CPF válido nem RF para dedup"
+        return {
+            "winner": winner,
+            "losers": [],
+            "dedup_results": [],
+            "error": True,
+            "merged": False,
+            "conflicts": 0,
+        }
+
+    if len(members) == 1:
+        winner.status = StagingUsuarioServidor.Status.READY
+        return {
+            "winner": winner,
+            "losers": [],
+            "dedup_results": [],
+            "error": False,
+            "merged": False,
+            "conflicts": 0,
+        }
+
+    losers = members[1:]
+    dedup_results = []
+    winner_updated_fields = []
+    conflicts = 0
+
+    for loser in losers:
+        result, merged_fields, has_conflict = _process_loser_record(winner, loser, execution_id)
+        dedup_results.append(result)
+        
+        for field in merged_fields:
+            if field not in winner_updated_fields:
+                winner_updated_fields.append(field)
+        
+        if has_conflict:
+            conflicts += 1
+
+    # Aplicar situação do CoreSSO se existir
+    coresso_members = [m for m in members if m.source == "coresso"]
+    if coresso_members:
+        winner.situacao = coresso_members[0].situacao
+        if "situacao" not in winner_updated_fields:
+            winner_updated_fields.append("situacao")
+
+    winner.status = StagingUsuarioServidor.Status.READY
+
+    return {
+        "winner": winner,
+        "losers": losers,
+        "dedup_results": dedup_results,
+        "error": False,
+        "merged": bool(winner_updated_fields),
+        "conflicts": conflicts,
+    }
+
+
+def _process_all_clusters(clusters, records_by_id, execution_id):
+    """Processa todos os clusters e retorna estatísticas e listas de updates."""
+    ready = 0
+    skipped = 0
+    merged = 0
+    conflicts = 0
+    errors = 0
+    all_dedup_results = []
+    winners_ready = []
+    losers_skipped = []
+    errors_no_key = []
+
+    for cluster_root, member_ids in clusters.items():
+        try:
+            result = _process_single_cluster(member_ids, records_by_id, execution_id)
+            
+            if result["error"]:
+                errors_no_key.append(result["winner"])
+                errors += 1
+            else:
+                winners_ready.append(result["winner"])
+                ready += 1
+                if result["merged"]:
+                    merged += 1
+                if result["losers"]:
+                    losers_skipped.extend(result["losers"])
+                    skipped += len(result["losers"])
+                all_dedup_results.extend(result["dedup_results"])
+                conflicts += result["conflicts"]
+
+        except Exception as e:
+            logger.warning("[%s] Dedup error for cluster %s: %s", execution_id, cluster_root, e)
+            errors += 1
+
+    return {
+        "ready": ready,
+        "skipped": skipped,
+        "merged": merged,
+        "conflicts": conflicts,
+        "errors": errors,
+        "all_dedup_results": all_dedup_results,
+        "winners_ready": winners_ready,
+        "losers_skipped": losers_skipped,
+        "errors_no_key": errors_no_key,
+    }
+
+
+def _save_dedup_bulk(winners_ready, losers_skipped, errors_no_key, dedup_results):
+    """Salva resultados de deduplicação em bulk."""
+    from .models import DedupResult, StagingUsuarioServidor
+
+    BULK = 500
+    winner_fields = ["status", "email", "data_nascimento", "cargo", "funcao",
+                     "situacao", "lotacao", "lotacao_nome", "dre", "ue"]
+    
+    if winners_ready:
+        StagingUsuarioServidor.objects.bulk_update(winners_ready, winner_fields, batch_size=BULK)
+    if losers_skipped:
+        StagingUsuarioServidor.objects.bulk_update(
+            losers_skipped, ["status", "error_detail"], batch_size=BULK,
+        )
+    if errors_no_key:
+        StagingUsuarioServidor.objects.bulk_update(
+            errors_no_key, ["status", "error_detail"], batch_size=BULK,
+        )
+    if dedup_results:
+        DedupResult.objects.bulk_create(dedup_results, batch_size=500)
+
+
 def _transform_model(ModelClass, execution_id, lotacao_map, BULK_SIZE, extra_fields=None):
     base_fields = ["cpf", "nome", "status", "transformed_at", "error_detail"]
     rf_field = extra_fields.get("rf_field", False) if extra_fields else False
@@ -152,9 +439,7 @@ def transform_staging(self, execution_id: str):
 def crossref_dedup(self, execution_id: str):
     """Faz cross-reference dos usuarios de staging entre as fontes e deduplica por CPF/RF."""
     from core.models import ETLExecution, ETLStepLog
-    from .models import (
-        DedupResult, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro,
-    )
+    from .models import StagingUsuarioServidor
 
     execution = ETLExecution.objects.get(id=execution_id)
     step = ETLStepLog.objects.create(
@@ -166,24 +451,14 @@ def crossref_dedup(self, execution_id: str):
     logger.info("[%s] Step 4: Crossref/Dedup (servidor) + mark ready (aluno/terceiro)", execution_id)
 
     try:
-
-        alunos_ready = StagingUsuarioAluno.objects.filter(
-            execution_id=execution_id,
-            status=StagingUsuarioAluno.Status.TRANSFORMED,
-        )
-        n_alunos = alunos_ready.update(status=StagingUsuarioAluno.Status.READY)
-
-        terceiros_ready = StagingUsuarioTerceiro.objects.filter(
-            execution_id=execution_id,
-            status=StagingUsuarioTerceiro.Status.TRANSFORMED,
-        )
-        n_terceiros = terceiros_ready.update(status=StagingUsuarioTerceiro.Status.READY)
-
+        # Marca alunos e terceiros como READY
+        n_alunos, n_terceiros = _mark_non_servidores_ready(execution_id)
         logger.info(
             "[%s] Alunos prontos: %d | Terceiros prontos: %d",
             execution_id, n_alunos, n_terceiros,
         )
 
+        # Busca servidores transformados
         transformed = StagingUsuarioServidor.objects.filter(
             execution_id=execution_id,
             status=StagingUsuarioServidor.Status.TRANSFORMED,
@@ -199,201 +474,53 @@ def crossref_dedup(self, execution_id: str):
             step.save()
             return
 
-        cpf_index = defaultdict(list)
-        rf_index = defaultdict(list)
-        records_by_id = {}
+        # Constrói índices e clusters
+        cpf_index, rf_index, records_by_id = _build_indexes(transformed)
+        clusters = _union_find_merge(cpf_index, rf_index, records_by_id)
 
-        for record in transformed.only(
-            "id", "rf", "cpf", "source", "extracted_at",
-            "email", "data_nascimento", "cargo", "funcao", "situacao",
-            "lotacao", "lotacao_nome", "dre", "ue", "nome",
-        ).iterator(chunk_size=1000):
-            records_by_id[record.id] = record
-            cpf = record.cpf
-            rf = record.rf
-            if cpf and validate_cpf(cpf):
-                cpf_index[cpf].append(record.id)
-            if rf:
-                rf_index[rf].append(record.id)
+        # Processa todos os clusters
+        stats = _process_all_clusters(clusters, records_by_id, execution_id)
 
-        parent = {rid: rid for rid in records_by_id}
+        # Salva resultados em bulk
+        _save_dedup_bulk(
+            stats["winners_ready"],
+            stats["losers_skipped"],
+            stats["errors_no_key"],
+            stats["all_dedup_results"]
+        )
 
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for cpf, ids in cpf_index.items():
-            for i in range(1, len(ids)):
-                union(ids[0], ids[i])
-
-        for rf, ids in rf_index.items():
-            for i in range(1, len(ids)):
-                union(ids[0], ids[i])
-
-        cpf_to_rf = {}
-        rf_to_cpf = {}
-        for rid, rec in records_by_id.items():
-            cpf = rec.cpf if rec.cpf and validate_cpf(rec.cpf) else None
-            rf = rec.rf
-            if cpf and rf:
-                cpf_to_rf[cpf] = rf
-                rf_to_cpf[rf] = cpf
-
-        for cpf, rf in cpf_to_rf.items():
-            cpf_ids = cpf_index.get(cpf, [])
-            rf_ids = rf_index.get(rf, [])
-            if cpf_ids and rf_ids:
-                for rid in rf_ids:
-                    union(cpf_ids[0], rid)
-
-        clusters = defaultdict(list)
-        for rid in records_by_id:
-            clusters[find(rid)].append(rid)
-
-        ready = 0
-        skipped = 0
-        merged = 0
-        conflicts = 0
-        errors = 0
-        dedup_results = []
-        winners_ready: list = []
-        losers_skipped: list = []
-        errors_no_key: list = []
-
-        for cluster_root, member_ids in clusters.items():
-            try:
-                members = [records_by_id[mid] for mid in member_ids]
-                members.sort(
-                    key=lambda r: (
-                        SOURCE_PRIORITY.get(r.source, 99),
-                        r.extracted_at or timezone.now(),
-                    )
-                )
-                winner = members[0]
-
-                dedup_key = build_dedup_key(winner.cpf, winner.rf)
-                if not dedup_key:
-                    winner.status = StagingUsuarioServidor.Status.ERROR
-                    winner.error_detail = "Sem CPF válido nem RF para dedup"
-                    errors_no_key.append(winner)
-                    errors += 1
-                    continue
-
-                if len(members) == 1:
-                    winner.status = StagingUsuarioServidor.Status.READY
-                    winners_ready.append(winner)
-                    ready += 1
-                    continue
-
-                losers = members[1:]
-                winner_updated_fields = []
-
-                for loser in losers:
-                    merged_fields_list = []
-                    for field in MERGEABLE_FIELDS:
-                        winner_val = getattr(winner, field, None)
-                        loser_val = getattr(loser, field, None)
-                        if not winner_val and loser_val:
-                            setattr(winner, field, loser_val)
-                            merged_fields_list.append(field)
-                            if field not in winner_updated_fields:
-                                winner_updated_fields.append(field)
-
-                    match_type = _determine_match_type(winner, loser)
-                    has_conflict = _check_conflicts(winner, loser)
-                    decision = (
-                        DedupResult.Decision.CONFLICT if has_conflict
-                        else DedupResult.Decision.MERGE if merged_fields_list
-                        else DedupResult.Decision.SKIP_DUPLICATE
-                    )
-                    if has_conflict:
-                        conflicts += 1
-
-                    dedup_results.append(
-                        DedupResult(
-                            dedup_key=dedup_key,
-                            winner=None,
-                            loser=None,
-                            match_type=match_type,
-                            decision=decision,
-                            merged_fields=merged_fields_list + [
-                                f"_winner_id:{winner.id}", f"_loser_id:{loser.id}",
-                            ],
-                            cpf=winner.cpf,
-                            rf=winner.rf,
-                            execution_id=execution_id,
-                            confidence=1.0 if match_type != DedupResult.MatchType.CPF_RF_CROSS else 0.9,
-                        )
-                    )
-
-                    loser.status = StagingUsuarioServidor.Status.SKIPPED
-                    loser.error_detail = f"Dedup: merged into {winner.id} ({match_type})"
-                    losers_skipped.append(loser)
-                    skipped += 1
-
-                coresso_members = [m for m in members if m.source == "coresso"]
-                if coresso_members:
-                    winner.situacao = coresso_members[0].situacao
-                    if "situacao" not in winner_updated_fields:
-                        winner_updated_fields.append("situacao")
-
-                winner.status = StagingUsuarioServidor.Status.READY
-                winners_ready.append(winner)
-                ready += 1
-                if winner_updated_fields:
-                    merged += 1
-
-            except Exception as e:
-                logger.warning("[%s] Dedup error for cluster %s: %s", execution_id, cluster_root, e)
-                errors += 1
-
-        BULK = 500
-        winner_fields = ["status", "email", "data_nascimento", "cargo", "funcao",
-                         "situacao", "lotacao", "lotacao_nome", "dre", "ue"]
-        if winners_ready:
-            StagingUsuarioServidor.objects.bulk_update(winners_ready, winner_fields, batch_size=BULK)
-        if losers_skipped:
-            StagingUsuarioServidor.objects.bulk_update(
-                losers_skipped, ["status", "error_detail"], batch_size=BULK,
-            )
-        if errors_no_key:
-            StagingUsuarioServidor.objects.bulk_update(
-                errors_no_key, ["status", "error_detail"], batch_size=BULK,
-            )
-        if dedup_results:
-            DedupResult.objects.bulk_create(dedup_results, batch_size=500)
-
-        total_ready = ready + n_alunos + n_terceiros
+        # Atualiza step log
+        total_ready = stats["ready"] + n_alunos + n_terceiros
         step.records_in = total + n_alunos + n_terceiros
         step.records_out = total_ready
-        step.records_error = errors
-        step.status = "success" if errors == 0 else ("failed" if ready == 0 else "success")
+        step.records_error = stats["errors"]
+        
+        if stats["errors"] == 0:
+            step.status = "success"
+        elif stats["ready"] == 0:
+            step.status = "failed"
+        else:
+            step.status = "success"
+        
         step.finished_at = timezone.now()
         step.metadata = {
             "servidores_clusters": len(clusters),
-            "servidores_ready": ready,
-            "servidores_skipped": skipped,
-            "servidores_merged": merged,
-            "servidores_conflicts": conflicts,
+            "servidores_ready": stats["ready"],
+            "servidores_skipped": stats["skipped"],
+            "servidores_merged": stats["merged"],
+            "servidores_conflicts": stats["conflicts"],
             "alunos_ready": n_alunos,
             "terceiros_ready": n_terceiros,
-            "dedup_results_created": len(dedup_results),
+            "dedup_results_created": len(stats["all_dedup_results"]),
         }
         step.save()
 
-        execution.total_skipped = skipped
+        execution.total_skipped = stats["skipped"]
         execution.save(update_fields=["total_skipped", "updated_at"])
 
         logger.info(
             "[%s] Step 4 concluido: srv=%d ready/%d skip | aluno=%d | terc=%d",
-            execution_id, ready, skipped, n_alunos, n_terceiros,
+            execution_id, stats["ready"], stats["skipped"], n_alunos, n_terceiros,
         )
 
     except Exception as e:
