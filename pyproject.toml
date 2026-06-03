@@ -1,0 +1,32 @@
+[project]
+name = "SME-Identidade-ETL"
+version = "0.0.1"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+authors = [{ name = "SME" }]
+
+# ==== Coverage ====
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "*/migrations/*",
+    "*/tests/*",
+    "*/templates/*"
+]
+
+# ==== Ruff ====
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "D"]
+ignore = ["D203", "D212", "D104", "D105", "D106", "D107"]
+
+[tool.ruff.lint.per-file-ignores] 
+"**/tests.py" = ["D100"]
+"**/tests/**/*.py" = ["D100", "D101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

@@ -23,3 +23,4 @@ pytest-django>=4.8
 factory-boy>=3.3
 gunicorn>=22.0
 whitenoise>=6.7
+ruff==0.15.15
