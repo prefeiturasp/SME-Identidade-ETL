@@ -1,3 +1,5 @@
+"""Configuracoes Django do SME-Identidade-ETL."""
+
 import os
 
 import structlog
@@ -5,9 +7,9 @@ from celery.schedules import crontab
 from pathlib import Path
 
 import dj_database_url
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
@@ -74,10 +76,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "etl_ms.wsgi.application"
 
-
 DATABASES = {
     "default": dj_database_url.config(
-        default="postgres://etl:etl@localhost:5434/etl_db",
+        env="DATABASE_URL",
+        default="sqlite:///:memory:",
         conn_max_age=600,
         conn_health_checks=True,
     ),
@@ -87,7 +89,9 @@ DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME":
+     "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -147,9 +151,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 
-_cors_raw = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
-CORS_ALLOW_ALL_ORIGINS = DEBUG or "*" in _cors_raw
-CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else _cors_raw
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "").split(",") if not DEBUG else []
 
 
 # Broker: KeyDB (drop-in Redis replacement) — em produção injeta CELERY_BROKER_URL=redis://keydb:6379/2
@@ -214,7 +217,7 @@ CELERY_BEAT_SCHEDULE = {
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://identidade:identidade@localhost:5672/sme")
 
 
-KEYCLOAK_SERVER_URL = os.environ.get("KEYCLOAK_SERVER_URL", "http://localhost:8080/")
+KEYCLOAK_SERVER_URL = os.environ.get("KEYCLOAK_SERVER_URL", "https://localhost:8080/")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "sme-apps")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "api-middleware")
 KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET", "")
@@ -233,7 +236,7 @@ ETL_KC_CONCURRENCY = int(os.environ.get("ETL_KC_CONCURRENCY", "20"))
 ETL_KC_BATCH_SIZE = int(os.environ.get("ETL_KC_BATCH_SIZE", "500"))
 
 
-TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "http://token-ms:8000")
+TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "https://token-ms:8000")
 TOKEN_MS_TOKEN = os.environ.get("TOKEN_MS_TOKEN", "")
 TOKEN_MS_INTERNAL_TOKEN = os.environ.get("TOKEN_MS_INTERNAL_TOKEN", "")
 TOKEN_MS_TIMEOUT = int(os.environ.get("TOKEN_MS_TIMEOUT", "60"))
@@ -245,7 +248,7 @@ TOKEN_MS_BATCH_SIZE = int(os.environ.get("TOKEN_MS_BATCH_SIZE", "500"))
 ETL_EXTRACT_BATCH_SIZE = int(os.environ.get("ETL_EXTRACT_BATCH_SIZE", "50000"))
 
 
-NIFI_API_URL = os.environ.get("NIFI_API_URL", "http://localhost:8443/nifi-api")
+NIFI_API_URL = os.environ.get("NIFI_API_URL", "https://localhost:8443/nifi-api")
 
 
 SE1426_API_URL = os.environ.get(

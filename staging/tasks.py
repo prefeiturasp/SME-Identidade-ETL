@@ -372,9 +372,7 @@ def _dedup_step_status(errors: int, ready: int) -> str:
 def crossref_dedup(self, execution_id: str):
     """Faz cross-reference dos usuarios de staging entre as fontes e deduplica por CPF/RF."""
     from core.models import ETLExecution, ETLStepLog
-    from .models import (
-        DedupResult, StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro,
-    )
+    from .models import StagingUsuarioServidor
 
     execution = ETLExecution.objects.get(id=execution_id)
     step = ETLStepLog.objects.create(
@@ -509,12 +507,12 @@ def crossref_dedup(self, execution_id: str):
         }
         step.save()
 
-        execution.total_skipped = skipped
+        execution.total_skipped = stats["skipped"]
         execution.save(update_fields=["total_skipped", "updated_at"])
 
         logger.info(
             "[%s] Step 4 concluído: srv=%d ready/%d skip | aluno=%d | terc=%d",
-            execution_id, ready, skipped, n_alunos, n_terceiros,
+            execution_id, stats["ready"], stats["skipped"], n_alunos, n_terceiros,
         )
 
     except Exception as e:
