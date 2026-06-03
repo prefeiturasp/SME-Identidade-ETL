@@ -4,35 +4,51 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
+import unicodedata
 from typing import Any
 
+import requests
 from django.conf import settings
+
+try:
+    from keycloak import KeycloakAdmin
+    from keycloak.exceptions import (
+        KeycloakConnectionError,
+        KeycloakGetError,
+        KeycloakPostError,
+        KeycloakPutError,
+    )
+    from keycloak.keycloak_admin import raise_error_from_response
+except ImportError:
+    KeycloakAdmin = None  # type: ignore[assignment]
+    KeycloakConnectionError = ConnectionError  # type: ignore[assignment,misc]
+    KeycloakGetError = Exception  # type: ignore[assignment,misc]
+    KeycloakPostError = Exception  # type: ignore[assignment,misc]
+    KeycloakPutError = Exception  # type: ignore[assignment,misc]
+    raise_error_from_response = None  # type: ignore[assignment]
+
+from .models import UpsertControl
+from extract.tasks import fetch_coresso_groups_for_login
+from staging.models import (
+    RetroalimentacaoCoreSSO,
+    StagingPerfilCoreSSO,
+    StagingUsuarioAluno,
+    StagingUsuarioServidor,
+    StagingUsuarioTerceiro,
+)
 
 logger = logging.getLogger(__name__)
 
-
-def _get_retryable_exceptions() -> tuple[type[BaseException], ...]:
-    try:
-        from keycloak.exceptions import (
-            KeycloakConnectionError,
-            KeycloakGetError,
-            KeycloakPostError,
-            KeycloakPutError,
-        )
-        return (
-            KeycloakConnectionError,
-            KeycloakGetError,
-            KeycloakPostError,
-            KeycloakPutError,
-            ConnectionError,
-            TimeoutError,
-        )
-    except ImportError:
-        return (ConnectionError, TimeoutError)
-
-
-RETRYABLE = _get_retryable_exceptions()
+RETRYABLE = (
+    KeycloakConnectionError,
+    KeycloakGetError,
+    KeycloakPostError,
+    KeycloakPutError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kwargs):
@@ -41,6 +57,10 @@ def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kw
         try:
             return fn(*args, **kwargs)
         except RETRYABLE as e:
+            # Erros 4xx são permanentes (validação, conflito) — não faz retry
+            response_code = getattr(e, "response_code", None)
+            if response_code is not None and 400 <= response_code < 500:
+                raise
             attempt += 1
             if attempt > max_retries:
                 logger.error("KC call exceeded retries (%d): %s", max_retries, e)
@@ -55,19 +75,44 @@ def _with_backoff(fn, *args, max_retries: int = 5, base_delay: float = 1.0, **kw
 
 def get_admin_client(realm: str | None = None):
     """Instancia e retorna um cliente KeycloakAdmin autenticado."""
-    from keycloak import KeycloakAdmin
-
     return KeycloakAdmin(
         server_url=settings.KEYCLOAK_SERVER_URL,
         username=settings.KEYCLOAK_ADMIN_USER,
-        password=settings.KEYCLOAK_ADMIN_PASSWORD,
+        password=settings.KEYCLOAK_ADMIN_PAWD,
         realm_name=realm or settings.KEYCLOAK_REALM,
         user_realm_name="master",
         verify=settings.KEYCLOAK_VERIFY_SSL,
     )
 
 
-# Mapa cargo → role Keycloak
+def ensure_realm_exists(realm: str) -> bool:
+    """Verifica se o realm existe no Keycloak; cria-o com config mínima se ausente.
+
+    Retorna True se o realm foi criado, False se já existia.
+    """
+    admin_master = KeycloakAdmin(
+        server_url=settings.KEYCLOAK_SERVER_URL,
+        username=settings.KEYCLOAK_ADMIN_USER,
+        password=settings.KEYCLOAK_ADMIN_PAWD,
+        realm_name="master",
+        user_realm_name="master",
+        verify=settings.KEYCLOAK_VERIFY_SSL,
+    )
+    existing_realms = {r["realm"] for r in admin_master.get_realms()}
+    if realm in existing_realms:
+        logger.debug("Realm '%s' já existe — nenhuma ação necessária.", realm)
+        return False
+
+    logger.warning(
+        "Realm '%s' não encontrado no Keycloak — criando automaticamente com config mínima.",
+        realm,
+    )
+    admin_master.create_realm({"realm": realm, "enabled": True})
+    logger.info("Realm '%s' criado com sucesso.", realm)
+    return True
+
+
+# Mapa cargo → role Keycloak (match exato — mantido para retrocompatibilidade com testes)
 CARGO_ROLE_MAP = {
     "PROFESSOR DE EDUCACAO INFANTIL E ENSINO FUNDAMENTAL I": "Professor",
     "PROFESSOR DE ENSINO FUNDAMENTAL II E MEDIO": "Professor",
@@ -90,19 +135,69 @@ FUNCAO_ROLE_MAP = {
     "POSL": "POSL",
 }
 
+# Regras de padrão para cargo → Realm Role.
+# Usadas como fallback quando o match exato (CARGO_ROLE_MAP) não encontra resultado.
+# Cobrem formas abreviadas do eol_db (ex: "PROF.ED.INF.E ENS.FUND.I") e nomes
+# completos do SE1426. Ordem importa: regras mais específicas devem vir primeiro.
+_CARGO_RULES: list[tuple[re.Pattern[str], str]] = [
+    # AssistenteDiretor antes de Diretor para evitar colisão
+    (re.compile(r"\bASSISTENTE\s+DE\s+DIRETOR\b|\bASSIST\.?\s*DIR\b", re.IGNORECASE), "AssistenteDiretor"),
+    (re.compile(r"\bDIRETOR\b", re.IGNORECASE), "Diretor"),
+    (re.compile(r"\bCOORDENADOR\s+PEDAGOGICO\b", re.IGNORECASE), "CoordenadorPedagogico"),
+    # Professores: PROF., PROF.ED.INF., PROF.ENS.FUND.II E MED.-, PROFESSOR ...
+    (re.compile(r"\bPROF(ESSOR)?\b", re.IGNORECASE), "Professor"),
+    (re.compile(r"\bAUXILIAR\s+TECNICO\s+DE\s+EDUCACAO\b", re.IGNORECASE), "AuxiliarTecnico"),
+    (re.compile(r"\bSECRETARIO\s+DE\s+ESCOLA\b", re.IGNORECASE), "SecretarioEscola"),
+    (re.compile(r"\bSUPERVISOR\s+ESCOLAR\b", re.IGNORECASE), "Supervisor"),
+    (re.compile(r"\bAGENTE\s+ESCOLAR\b", re.IGNORECASE), "AgenteEscolar"),
+]
+
+# Regras de padrão para funcao → Realm Role.
+# Cobre dc_funcao_atividade (nomes completos) e dc_tipo_funcao (abreviações como
+# "PROF OR SALA DE LEITURA POSL", "AUX. DIRECAO", "PROF DE APOIO ACOMP INCL PAAI").
+_FUNCAO_RULES: list[tuple[re.Pattern[str], str]] = [
+    # AssistenteDiretor antes de Diretor
+    (re.compile(r"\bASSISTENTE\s+DE\s+DIRECAO\b|\bAUX\.?\s+DIRECAO\b", re.IGNORECASE), "AssistenteDiretor"),
+    (re.compile(r"\bDIRETOR\s+DE\s+ESCOLA\b", re.IGNORECASE), "Diretor"),
+    (re.compile(r"\bCOORDENADOR\s+PEDAGOGICO\b", re.IGNORECASE), "CoordenadorPedagogico"),
+    # Siglas especiais que aparecem como sufixo em dc_tipo_funcao
+    (re.compile(r"\bPAAI\b", re.IGNORECASE), "PAAI"),
+    (re.compile(r"\bPOEI\b", re.IGNORECASE), "POEI"),
+    (re.compile(r"\bPOSL\b", re.IGNORECASE), "POSL"),
+    (re.compile(r"\bPOA\b", re.IGNORECASE), "POA"),
+]
+
+
+def _resolve_role(
+    value: str,
+    exact_map: dict[str, str],
+    pattern_rules: list[tuple[re.Pattern[str], str]],
+) -> str | None:
+    raw = value.strip()
+    role = exact_map.get(raw.upper())
+    if role:
+        return role
+    for pattern, r in pattern_rules:
+        if pattern.search(raw):
+            return r
+    return None
+
 
 def _derive_realm_roles(usuario) -> list[str]:
     roles: set[str] = set()
     cargo = getattr(usuario, "cargo", None)
     funcao = getattr(usuario, "funcao", None)
+
     if cargo:
-        key = cargo.strip().upper()
-        if key in CARGO_ROLE_MAP:
-            roles.add(CARGO_ROLE_MAP[key])
+        role = _resolve_role(cargo, CARGO_ROLE_MAP, _CARGO_RULES)
+        if role:
+            roles.add(role)
+
     if funcao:
-        key = funcao.strip().upper()
-        if key in FUNCAO_ROLE_MAP:
-            roles.add(FUNCAO_ROLE_MAP[key])
+        role = _resolve_role(funcao, FUNCAO_ROLE_MAP, _FUNCAO_RULES)
+        if role:
+            roles.add(role)
+
     return sorted(roles)
 
 
@@ -121,9 +216,10 @@ def _derive_group_paths(usuario) -> list[str]:
 
 
 def _resolve_username(usuario) -> str:
+    # CPF: apenas dígitos, zero-padded à esquerda até 11 dígitos
     cpf = "".join(c for c in (usuario.cpf or "") if c.isdigit())
     if cpf:
-        return cpf
+        return cpf.zfill(11)
     rf = (getattr(usuario, "rf", None) or "").strip()
     if rf:
         return rf
@@ -137,25 +233,41 @@ def _generate_initial_password(usuario) -> str:
     return _resolve_username(usuario)
 
 
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$')
+
+
 def _build_email(usuario) -> str:
-    """Retorna o e-mail do usuario, gerando um placeholder para alunos sem e-mail."""
+    """Retorna o e-mail do usuario, gerando um placeholder para alunos sem e-mail.
+
+    Emails legados do CoreSSO vêm como 'HEXHASH@' (sem domínio) — são descartados.
+    """
     email = (usuario.email or "").strip()
-    if email:
+    if email and _EMAIL_RE.match(email):
         return email
-    from staging.models import StagingUsuarioAluno
     if isinstance(usuario, StagingUsuarioAluno):
         matricula = (getattr(usuario, "matricula", None) or "").strip()
         if matricula:
             return f"{matricula}@aluno.sme.prefeitura.sp.gov.br"
-    return email
+    return ""
+
+
+def _sanitize_kc_name(name: str) -> str:
+    """Remove caracteres inválidos para o validador de nome do Keycloak (error-person-name-invalid-character).
+    Mantém qualquer letra Unicode (categoria L*), espaços, hífens e apóstrofos."""
+    normalized = unicodedata.normalize("NFC", name or "")
+    sanitized = "".join(
+        c for c in normalized
+        if unicodedata.category(c).startswith("L") or c in " -'"
+    )
+    return " ".join(sanitized.split()) or "-"
 
 
 def build_kc_payload(usuario) -> dict[str, Any]:
     """Monta o dict de representacao do usuario para o Keycloak a partir de um registro de staging."""
     nome = (usuario.nome or "").strip()
     parts = nome.split()
-    first_name = parts[0] if parts else ""
-    last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+    first_name = _sanitize_kc_name(parts[0] if parts else "-")
+    last_name = _sanitize_kc_name(" ".join(parts[1:]) if len(parts) > 1 else "-")
 
     attributes: dict[str, list[str]] = {
         "cpf": [(usuario.cpf or "").strip()],
@@ -173,6 +285,12 @@ def build_kc_payload(usuario) -> dict[str, Any]:
     if cod_dre:
         attributes["cod_dre"] = [cod_dre]
 
+    # Atributos de perfil — enviados sempre (vazios até serem populados no staging)
+    attributes["cargo"] = [(getattr(usuario, "cargo", None) or "").strip()]
+    attributes["coordenadoria"] = [(getattr(usuario, "coordenadoria", None) or "").strip()]
+    attributes["ultimo_acesso"] = [(getattr(usuario, "ultimo_acesso", None) or "").strip()]
+    attributes["tempo_sessao"] = [(getattr(usuario, "tempo_sessao", None) or "").strip()]
+
     return {
         "username": _resolve_username(usuario),
         "email": _build_email(usuario),
@@ -188,7 +306,6 @@ def build_kc_payload(usuario) -> dict[str, Any]:
 
 
 def _infer_tipo_usuario(usuario) -> str:
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
     if isinstance(usuario, StagingUsuarioServidor):
         return "servidor"
     if isinstance(usuario, StagingUsuarioAluno):
@@ -251,25 +368,39 @@ def _assign_roles_and_groups(admin, kc_user_id: str, realm_roles: list[str], gro
             logger.info("KC group '%s' indisponível (ignorado): %s", group_path, e)
 
 
+def _search_kc_candidates(admin, new_username: str, email: str, usuario) -> list[dict]:
+    """Tenta encontrar candidatos KC por username, e-mail ou RF (em ordem de prioridade)."""
+    if new_username:
+        try:
+            result = admin.get_users({"username": new_username, "exact": True})
+            if result:
+                return result
+        except Exception:
+            pass
+
+    if email:
+        try:
+            result = admin.get_users({"email": email, "exact": True})
+            if result:
+                return result
+        except Exception:
+            pass
+
+    rf = (getattr(usuario, "rf", None) or "").strip()
+    if rf and rf != new_username:
+        try:
+            return admin.get_users({"username": rf, "exact": True})
+        except Exception:
+            pass
+
+    return []
+
+
 def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     new_username = payload.get("username", "")
     email = (payload.get("email") or "").strip()
 
-    candidates: list[dict] = []
-    if email:
-        try:
-            candidates = admin.get_users({"email": email, "exact": True})
-        except Exception:
-            pass
-
-    if not candidates:
-        rf = (getattr(usuario, "rf", None) or "").strip()
-        if rf:
-            try:
-                candidates = admin.get_users({"username": rf, "exact": True})
-            except Exception:
-                pass
-
+    candidates = _search_kc_candidates(admin, new_username, email, usuario)
     if not candidates:
         return None
 
@@ -291,26 +422,38 @@ def _find_existing_kc_user(admin, usuario, payload: dict) -> str | None:
     return None
 
 
-def _create_or_update_kc_user(admin, upsert, usuario, payload: dict) -> tuple[str, str]:
-    """Cria ou atualiza o user no Keycloak e devolve (kc_user_id, action)."""
-    if upsert.target_id:
-        _with_backoff(admin.update_user, upsert.target_id, payload)
-        upsert.version = (upsert.version or 1) + 1
-        return upsert.target_id, "updated"
-
+def _handle_new_upsert(admin, upsert, usuario, payload) -> tuple[str, str]:
+    """Cria ou reconcilia o usuário no KC quando ainda não há target_id no controle."""
     existing_kc_id = _find_existing_kc_user(admin, usuario, payload)
     if existing_kc_id:
         _with_backoff(admin.update_user, existing_kc_id, payload)
         upsert.target_id = existing_kc_id
         return existing_kc_id, "updated"
 
-    kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
+    try:
+        kc_user_id = _with_backoff(admin.create_user, payload, exist_ok=True)
+    except Exception as e:
+        # 409 pode ocorrer por conflito de email — tenta buscar e atualizar
+        response_code = getattr(e, "response_code", None)
+        if response_code == 409:
+            username = payload.get("username", "")
+            try:
+                users = admin.get_users({"username": username, "exact": True})
+                if users:
+                    kc_user_id = users[0]["id"]
+                    _with_backoff(admin.update_user, kc_user_id, payload)
+                    upsert.target_id = kc_user_id
+                    return kc_user_id, "updated"
+            except Exception:
+                pass
+        raise
+
     upsert.target_id = kc_user_id
     try:
         initial_pwd = _generate_initial_password(usuario)
         _with_backoff(admin.set_user_password, kc_user_id, initial_pwd, temporary=True)
-    except Exception as _pwd_err:
-        logger.warning("KC: senha inicial não definida para %s: %s", kc_user_id, _pwd_err)
+    except Exception as e:
+        logger.warning("KC: senha inicial não definida para %s: %s", kc_user_id, e)
     return kc_user_id, "created"
 
 
@@ -322,8 +465,6 @@ def upsert_user_to_keycloak(
     execution=None,
 ) -> dict[str, Any]:
     """Cria ou atualiza um usuario no Keycloak a partir de um registro de staging e registra em UpsertControl."""
-    from .models import UpsertControl
-
     payload = build_kc_payload(usuario)
     content_hash = compute_content_hash(payload)
 
@@ -353,7 +494,13 @@ def upsert_user_to_keycloak(
     realm_roles = payload.pop("realmRoles", []) or []
     groups = payload.pop("groups", []) or []
 
-    kc_user_id, action = _create_or_update_kc_user(admin, upsert, usuario, payload)
+    if created or not upsert.target_id:
+        kc_user_id, action = _handle_new_upsert(admin, upsert, usuario, payload)
+    else:
+        _with_backoff(admin.update_user, upsert.target_id, payload)
+        kc_user_id = upsert.target_id
+        upsert.version = (upsert.version or 1) + 1
+        action = "updated"
 
     _assign_roles_and_groups(admin, kc_user_id, realm_roles, groups)
 
@@ -370,19 +517,23 @@ def upsert_user_to_keycloak(
     }
 
 
-def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]:
-    """Cria ou atualiza um client OIDC no Keycloak a partir de um registro StagingSistema."""
-    import json as _json
-    import requests as _requests
-    from keycloak.exceptions import KeycloakPostError
-    from keycloak.keycloak_admin import raise_error_from_response
+def _sanitize_redirect_uri(raw: str | None) -> str | None:
+    """Remove aspas envolventes e retorna None se o valor não parecer uma URI válida."""
+    if not raw:
+        return None
+    cleaned = raw.strip().strip("'\"")
+    if not cleaned:
+        return None
+    # Aceita apenas http://, https:// ou wildcard *
+    if not re.match(r"^(https?://|\*)", cleaned):
+        logger.warning("url_callback ignorado por não ser URI válida: %r", raw)
+        return None
+    return cleaned
 
-    realm = realm or settings.KEYCLOAK_REALM
-    sigla = (sistema.sigla or _slugify_for_client(sistema.nome)).strip().lower()
-    suffix = (getattr(settings, "KEYCLOAK_CLIENT_SUFFIX", None) or "prod").strip().lower()
-    client_id = f"{sigla}-{suffix}" if suffix else sigla
 
-    payload = {
+def _build_client_payload(sistema, client_id: str) -> dict[str, Any]:
+    callback = _sanitize_redirect_uri(sistema.url_callback)
+    return {
         "clientId": client_id,
         "name": sistema.nome,
         "description": (sistema.descricao or "")[:255] if sistema.descricao else "",
@@ -392,70 +543,74 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
         "standardFlowEnabled": True,
         "directAccessGrantsEnabled": False,
         "serviceAccountsEnabled": False,
-        "redirectUris": [sistema.url_callback] if sistema.url_callback else ["*"],
+        "redirectUris": [callback] if callback else ["*"],
         "attributes": {
             "post.logout.redirect.uris": sistema.url_logout or "+",
             "coresso_sis_id": str(sistema.coresso_sis_id),
         },
     }
 
-    registration_access_token = None
-    existing_uuid = _with_backoff(admin.get_client_id, client_id)
 
-    if existing_uuid:
-        stored_token = getattr(sistema, "kc_registration_access_token", None) or ""
-        used_registration_api = False
-        if stored_token:
-            reg_url = (
-                f"{settings.KEYCLOAK_SERVER_URL.rstrip('/')}"
-                f"/realms/{realm}/clients-registrations/default/{client_id}"
-            )
-            try:
-                resp = _requests.put(
-                    reg_url,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {stored_token}",
-                        "Content-Type": "application/json",
-                    },
-                    verify=settings.KEYCLOAK_VERIFY_SSL,
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    client_data = resp.json()
-                    registration_access_token = client_data.get("registrationAccessToken")
-                    existing_uuid = client_data.get("id") or existing_uuid
-                    used_registration_api = True
-                else:
-                    logger.warning(
-                        "Client Registration API PUT retornou %d para %s — token inválido/expirado",
-                        resp.status_code, client_id,
-                    )
-            except Exception as e:
-                logger.warning("Client Registration API PUT erro para %s: %s", client_id, e)
+def _try_update_via_registration_api(
+    sistema, client_id: str, realm: str, existing_uuid: str, payload: dict
+) -> tuple[str | None, str | None]:
+    """Tenta atualizar o client via Registration API. Retorna (kc_uuid, token) no sucesso, (None, None) na falha."""
+    stored_token = getattr(sistema, "kc_registration_access_token", None) or ""
+    if not stored_token:
+        return None, None
+    reg_url = (
+        f"{settings.KEYCLOAK_SERVER_URL.rstrip('/')}"
+        f"/realms/{realm}/clients-registrations/default/{client_id}"
+    )
+    try:
+        resp = requests.put(
+            reg_url,
+            json=payload,
+            headers={"Authorization": f"Bearer {stored_token}", "Content-Type": "application/json"},
+            verify=settings.KEYCLOAK_VERIFY_SSL,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning("Client Registration API PUT erro para %s: %s", client_id, e)
+        return None, None
+    if resp.status_code != 200:
+        logger.warning(
+            "Client Registration API PUT retornou %d para %s — token inválido/expirado",
+            resp.status_code, client_id,
+        )
+        return None, None
+    client_data = resp.json()
+    return client_data.get("id") or existing_uuid, client_data.get("registrationAccessToken")
 
-        if not used_registration_api:
-            _with_backoff(admin.update_client, existing_uuid, payload)
 
-        action = "updated"
-        kc_uuid = existing_uuid
-    else:
-        kc_uuid = _with_backoff(admin.create_client, payload, skip_exists=True)
-        if not kc_uuid:
-            kc_uuid = _with_backoff(admin.get_client_id, client_id)
-        action = "created"
+def _update_existing_client(
+    admin, sistema, client_id: str, realm: str, existing_uuid: str, payload: dict
+) -> tuple[str, str | None]:
+    """Atualiza client existente no KC. Retorna (kc_uuid, registration_access_token)."""
+    kc_uuid, registration_access_token = _try_update_via_registration_api(
+        sistema, client_id, realm, existing_uuid, payload
+    )
+    if kc_uuid is None:
+        _with_backoff(admin.update_client, existing_uuid, payload)
+        return existing_uuid, None
+    return kc_uuid, registration_access_token
 
-    if not registration_access_token and kc_uuid:
-        try:
-            token_url = f"admin/realms/{realm}/clients/{kc_uuid}/registration-access-token"
-            data_raw = admin.connection.raw_post(token_url, data=_json.dumps({}))
-            token_data = raise_error_from_response(data_raw, KeycloakPostError, expected_codes=[200])
-            registration_access_token = (
-                token_data.get("registrationAccessToken") if isinstance(token_data, dict) else None
-            )
-        except Exception as e:
-            logger.warning("Não foi possível gerar registration access token para %s: %s", client_id, e)
 
+def _fetch_registration_token(admin, realm: str, kc_uuid: str, client_id: str) -> str | None:
+    """Solicita um novo registration access token para o client. Retorna None em caso de falha."""
+    try:
+        token_url = f"admin/realms/{realm}/clients/{kc_uuid}/registration-access-token"
+        data_raw = admin.connection.raw_post(token_url, data=json.dumps({}))
+        token_data = raise_error_from_response(data_raw, KeycloakPostError, expected_codes=[200])
+        return token_data.get("registrationAccessToken") if isinstance(token_data, dict) else None
+    except Exception as e:
+        logger.warning("Não foi possível gerar registration access token para %s: %s", client_id, e)
+        return None
+
+
+def _save_sistema(
+    sistema, client_id: str, kc_uuid: str | None, realm: str, registration_access_token: str | None
+) -> None:
     sistema.kc_client_id = client_id
     sistema.kc_client_uuid = kc_uuid
     sistema.kc_realm = realm
@@ -467,6 +622,34 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
         save_fields.append("kc_registration_access_token")
     sistema.save(update_fields=save_fields)
 
+
+def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]:
+    """Cria ou atualiza um client OIDC no Keycloak a partir de um registro StagingSistema."""
+    realm = realm or settings.KEYCLOAK_REALM
+    sigla = (sistema.sigla or _slugify_for_client(sistema.nome)).strip().lower()
+    suffix = (getattr(settings, "KEYCLOAK_CLIENT_SUFFIX", None) or "prod").strip().lower()
+    client_id = f"{sigla}-{suffix}" if suffix else sigla
+
+    payload = _build_client_payload(sistema, client_id)
+    existing_uuid = _with_backoff(admin.get_client_id, client_id)
+
+    if existing_uuid:
+        kc_uuid, registration_access_token = _update_existing_client(
+            admin, sistema, client_id, realm, existing_uuid, payload
+        )
+        action = "updated"
+    else:
+        kc_uuid = _with_backoff(admin.create_client, payload, skip_exists=True)
+        if not kc_uuid:
+            kc_uuid = _with_backoff(admin.get_client_id, client_id)
+        registration_access_token = None
+        action = "created"
+
+    if not registration_access_token and kc_uuid:
+        registration_access_token = _fetch_registration_token(admin, realm, kc_uuid, client_id)
+
+    _save_sistema(sistema, client_id, kc_uuid, realm, registration_access_token)
+
     return {
         "action": action,
         "client_id": client_id,
@@ -477,9 +660,6 @@ def upsert_kc_client(admin, sistema, realm: str | None = None) -> dict[str, Any]
 
 
 def _slugify_for_client(nome: str) -> str:
-    import re
-    import unicodedata
-
     s = unicodedata.normalize("NFKD", nome or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s or "sistema-sem-nome"
@@ -487,8 +667,6 @@ def _slugify_for_client(nome: str) -> str:
 
 def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
     """Cria ou verifica uma client role do Keycloak para um registro StagingPerfilCoreSSO."""
-    from staging.models import StagingPerfilCoreSSO
-
     sistema = perfil.sistema
     if sistema is None or not sistema.kc_client_uuid:
         perfil.status = StagingPerfilCoreSSO.Status.ERROR
@@ -539,9 +717,6 @@ def upsert_kc_client_role(admin, perfil) -> dict[str, Any]:
 
 def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, Any]:
     """Atribui ao usuario todas as client roles aplicaveis do Keycloak com base em seus grupos do CoreSSO."""
-    from extract.tasks import fetch_coresso_groups_for_login
-    from staging.models import StagingPerfilCoreSSO
-
     if not login:
         return {"assigned": 0, "skipped": 0, "details": []}
 
@@ -591,8 +766,6 @@ def assign_user_client_roles(admin, kc_user_id: str, login: str) -> dict[str, An
 
 def emit_retroalim(tipo: str, usuario, payload: dict | None = None) -> None:
     """Emite um registro de evento de retroalimentacao para o CoreSSO apos uma operacao no Keycloak."""
-    from staging.models import RetroalimentacaoCoreSSO
-
     try:
         RetroalimentacaoCoreSSO.objects.create(
             tipo=tipo,

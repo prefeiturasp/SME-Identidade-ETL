@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETL SME-Identidade — Fluxo do Pipeline</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; }
+
+  /* ── HEADER ─────────────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+    color: #fff; padding: 32px 40px 28px; border-bottom: 4px solid #e94560;
+  }
+  .header h1 { font-size: 26px; font-weight: 700; letter-spacing: 0.5px; }
+  .header h1 span { color: #e94560; }
+  .header p  { font-size: 14px; color: #a0aec0; margin-top: 6px; }
+  .header-meta { display: flex; gap: 24px; margin-top: 16px; flex-wrap: wrap; }
+  .badge {
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 20px; padding: 4px 14px; font-size: 12px; color: #e2e8f0;
+  }
+  .badge b { color: #68d391; }
+
+  /* ── LEGEND ─────────────────────────────────────────── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    padding: 16px 40px; background: #fff;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .legend-dot  { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+
+  /* ── SWIMLANE WRAPPER ───────────────────────────────── */
+  .wrapper { padding: 28px 24px 40px; overflow-x: auto; }
+
+  .swimlane-table { border-collapse: collapse; min-width: 1100px; width: 100%; }
+
+  /* Actor header row */
+  .actor-header th {
+    padding: 10px 14px; font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    border: 1px solid #cbd5e0; text-align: center;
+  }
+  .actor-header .col-phase { background: #2d3748; color: #fff; width: 120px; }
+  .actor-header .col-trigger   { background: #553c9a; color: #fff; }
+  .actor-header .col-worker    { background: #2b6cb0; color: #fff; }
+  .actor-header .col-sources   { background: #c05621; color: #fff; }
+  .actor-header .col-staging   { background: #2c7a7b; color: #fff; }
+  .actor-header .col-keycloak  { background: #276749; color: #fff; }
+  .actor-header .col-token     { background: #744210; color: #fff; }
+
+  /* Phase rows */
+  .swimlane-table td {
+    border: 1px solid #e2e8f0; vertical-align: top;
+    padding: 10px 8px; min-height: 90px;
+  }
+  .col-phase-label {
+    font-size: 11px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 1px; writing-mode: horizontal-tb;
+    padding: 14px 10px; text-align: center; vertical-align: middle;
+  }
+
+  /* Cards inside cells */
+  .card {
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5;
+    border-left: 4px solid; position: relative;
+  }
+  .card-title { font-weight: 700; font-size: 13px; margin-bottom: 5px; }
+  .card-desc  { color: #4a5568; font-size: 11.5px; }
+  .card-data  { margin-top: 7px; }
+  .card-data span {
+    display: inline-block; background: rgba(0,0,0,0.06); border-radius: 3px;
+    padding: 1px 6px; font-size: 10.5px; margin: 2px 2px 0 0; font-family: monospace;
+  }
+  .card-guarantee {
+    margin-top: 8px; padding: 5px 8px; border-radius: 5px;
+    font-size: 11px; background: rgba(72,187,120,0.12);
+    border: 1px solid rgba(72,187,120,0.3); color: #276749;
+  }
+  .card-guarantee::before { content: "✅ "; }
+  .card-warning {
+    margin-top: 8px; padding: 5px 8px; border-radius: 5px;
+    font-size: 11px; background: rgba(237,137,54,0.12);
+    border: 1px solid rgba(237,137,54,0.3); color: #9c4221;
+  }
+  .card-warning::before { content: "⚠️ "; }
+
+  /* Arrow between steps */
+  .arrow-row td { background: #f7fafc; height: 22px; text-align: center; }
+  .arrow-row td span { font-size: 16px; color: #a0aec0; }
+
+  /* Phase color schemes */
+  .phase-prep     td { background: #faf5ff; }
+  .phase-extract  td { background: #fffbeb; }
+  .phase-transform td { background: #fff5f0; }
+  .phase-load     td { background: #f0fff4; }
+  .phase-audit    td { background: #f7fafc; }
+
+  .phase-prep    .col-phase-label { background: #553c9a; color: #fff; }
+  .phase-extract .col-phase-label { background: #c05621; color: #fff; }
+  .phase-transform .col-phase-label { background: #dd6b20; color: #fff; }
+  .phase-load    .col-phase-label { background: #276749; color: #fff; }
+  .phase-audit   .col-phase-label { background: #2d3748; color: #fff; }
+
+  .card-prep    { background: #fdf4ff; border-color: #805ad5; }
+  .card-extract { background: #fefce8; border-color: #d97706; }
+  .card-transform { background: #fff7ed; border-color: #ea580c; }
+  .card-load    { background: #f0fdf4; border-color: #16a34a; }
+  .card-audit   { background: #f8fafc; border-color: #64748b; }
+
+  /* ── QUALITY SECTION ────────────────────────────────── */
+  .quality-section {
+    margin: 0 24px 32px; background: #fff;
+    border-radius: 12px; padding: 28px 32px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .quality-section h2 {
+    font-size: 18px; color: #1a202c; margin-bottom: 20px;
+    padding-bottom: 10px; border-bottom: 2px solid #e2e8f0;
+  }
+  .quality-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .quality-card {
+    border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px;
+    border-top: 3px solid;
+  }
+  .quality-card.green  { border-top-color: #48bb78; }
+  .quality-card.blue   { border-top-color: #4299e1; }
+  .quality-card.orange { border-top-color: #ed8936; }
+  .quality-card.purple { border-top-color: #9f7aea; }
+  .quality-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+  .quality-card ul { padding-left: 18px; font-size: 13px; color: #4a5568; line-height: 1.8; }
+
+  /* ── CONTROL SECTION ────────────────────────────────── */
+  .control-section {
+    margin: 0 24px 40px; background: #1a1a2e;
+    border-radius: 12px; padding: 28px 32px; color: #e2e8f0;
+  }
+  .control-section h2 { font-size: 18px; color: #fff; margin-bottom: 6px; }
+  .control-section p  { font-size: 13px; color: #a0aec0; margin-bottom: 20px; }
+  .control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .control-card {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .control-card h3 { font-size: 13px; font-weight: 700; color: #90cdf4; margin-bottom: 8px; }
+  .control-card code {
+    display: block; background: rgba(0,0,0,0.3); border-radius: 5px;
+    padding: 8px 10px; font-size: 11.5px; font-family: 'Courier New', monospace;
+    color: #9ae6b4; line-height: 1.6; white-space: pre-wrap;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  /* ── FOOTER ─────────────────────────────────────────── */
+  .footer {
+    text-align: center; padding: 20px; font-size: 12px; color: #a0aec0;
+    border-top: 1px solid #e2e8f0;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .wrapper { padding: 0; }
+    .swimlane-table { min-width: unset; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     HEADER
+════════════════════════════════════════════════════════════ -->
+<div class="header">
+  <h1>ETL <span>SME-Identidade</span> — Pipeline de Sincronização de Usuários</h1>
+  <p>Secretaria Municipal de Educação de São Paulo — Sistema de Autenticação Centralizada (Keycloak)</p>
+  <div class="header-meta">
+    <span class="badge">Fontes: <b>SE1426 · EOL · CoreSSO</b></span>
+    <span class="badge">Destino: <b>Keycloak + Token-MS</b></span>
+    <span class="badge">Steps: <b>0 → 8</b></span>
+    <span class="badge">Validação: <b>CPF · RF · Dedup · Hash</b></span>
+    <span class="badge">Controle granular: <b>por step, por CPF, por RF, por lote</b></span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     LEGEND
+════════════════════════════════════════════════════════════ -->
+<div class="legend">
+  <strong style="font-size:13px;margin-right:8px">Fases:</strong>
+  <div class="legend-item"><div class="legend-dot" style="background:#805ad5"></div> Preparação</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#d97706"></div> Extração (fontes legadas)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ea580c"></div> Tratamento de dados</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#16a34a"></div> Carga (destino)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#64748b"></div> Auditoria</div>
+  <div style="margin-left:auto;font-size:12px;color:#718096;align-self:center">
+    ✅ Garantia de qualidade &nbsp; ⚠️ Dado tratado/excluído
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     SWIM LANE DIAGRAM
+════════════════════════════════════════════════════════════ -->
+<div class="wrapper">
+<table class="swimlane-table">
+
+  <!-- Actor headers -->
+  <tr class="actor-header">
+    <th class="col-phase">Fase / Step</th>
+    <th class="col-trigger">🚀 Gatilho<br><small>API / Agendamento</small></th>
+    <th class="col-worker">⚙️ ETL Worker<br><small>Celery (Python)</small></th>
+    <th class="col-sources">🗄️ Fontes Legadas<br><small>SQL Server PMSP</small></th>
+    <th class="col-staging">💾 Staging<br><small>PostgreSQL</small></th>
+    <th class="col-keycloak">🔐 Keycloak<br><small>Novo SSO</small></th>
+    <th class="col-token">🪙 Token-MS<br><small>Microsserviço</small></th>
+  </tr>
+
+  <!-- ════ PHASE 0: PREP ════════════════════════════════ -->
+  <tr class="phase-prep">
+    <td class="col-phase-label" rowspan="1">⚙️ PREP<br>Step 0</td>
+    <td>
+      <div class="card card-prep">
+        <div class="card-title">Trigger Manual ou Beat</div>
+        <div class="card-desc">POST /api/executions/<br>ou agendamento automático</div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-prep">
+        <div class="card-title">sync_catalogo</div>
+        <div class="card-desc">Extrai Sistemas e Perfis do CoreSSO e sincroniza no Keycloak</div>
+        <div class="card-data"><span>SYS_Sistema</span><span>SYS_Grupo</span></div>
+        <div class="card-guarantee">Garante clients OIDC atualizados antes da carga</div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-prep">
+        <div class="card-title">CoreSSO — Sistemas</div>
+        <div class="card-desc">Lê SYS_Sistema e SYS_Grupo ativos (situacao=1)</div>
+        <div class="card-data"><span>sis_id</span><span>sis_nome</span><span>gru_nome</span></div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-prep">
+        <div class="card-title">staging_sistema</div>
+        <div class="card-desc">Armazena sistemas e perfis para mapeamento de roles</div>
+        <div class="card-data"><span>kc_client_id</span><span>kc_role_name</span></div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-load">
+        <div class="card-title">Clients OIDC criados</div>
+        <div class="card-desc">Um client por sistema CoreSSO com suas roles configuradas</div>
+        <div class="card-data"><span>client_id</span><span>client_roles</span></div>
+        <div class="card-guarantee">Roles existem antes de atribuir usuários</div>
+      </div>
+    </td>
+    <td></td>
+  </tr>
+
+  <!-- arrow -->
+  <tr class="arrow-row"><td></td><td colspan="6"><span>▼ Extração das fontes legadas ▼</span></td></tr>
+
+  <!-- ════ PHASE EXTRACT ════════════════════════════════ -->
+  <tr class="phase-extract">
+    <td class="col-phase-label" rowspan="1">📥 EXTRAÇÃO<br>Steps 1–2</td>
+    <td></td>
+    <td>
+      <div class="card card-extract" style="margin-bottom:8px">
+        <div class="card-title">extract_se1426 (Step 1)</div>
+        <div class="card-desc">Lê servidores ativos da PMSP via SQL Server</div>
+        <div class="card-data"><span>v_servidor_sme_serap</span><span>v_cargo_base</span></div>
+      </div>
+      <div class="card card-extract" style="margin-bottom:8px">
+        <div class="card-title">extract_eol_db (Step 1b)</div>
+        <div class="card-desc">Lê lotações, UEs e DREs do EOL</div>
+        <div class="card-data"><span>v_lotacao</span><span>v_unidade_educacao</span></div>
+      </div>
+      <div class="card card-extract" style="margin-bottom:8px">
+        <div class="card-title">extract_eol_alunos (Step 1c)</div>
+        <div class="card-desc">Lê alunos ativos com e-mail cadastrado</div>
+        <div class="card-data"><span>v_aluno_ativo</span><span>cd_aluno</span></div>
+      </div>
+      <div class="card card-extract">
+        <div class="card-title">extract_coresso (Step 2)</div>
+        <div class="card-desc">Lê usuários com grupo ativo em algum sistema da PMSP</div>
+        <div class="card-data"><span>SYS_Usuario</span><span>SYS_UsuarioGrupo</span></div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-extract" style="margin-bottom:8px">
+        <div class="card-title">SE1426 (PRODAM)</div>
+        <div class="card-desc">Cadastro de servidores SME<br>~280 mil registros</div>
+        <div class="card-data"><span>RF</span><span>CPF</span><span>nome</span><span>cargo</span><span>email</span></div>
+      </div>
+      <div class="card card-extract" style="margin-bottom:8px">
+        <div class="card-title">EOL_DB</div>
+        <div class="card-desc">Sistema de gestão educacional<br>Lotações e unidades</div>
+        <div class="card-data"><span>cod_unidade</span><span>cod_dre</span></div>
+      </div>
+      <div class="card card-extract">
+        <div class="card-title">CoreSSO</div>
+        <div class="card-desc">SSO legado PMSP<br>~3.8 milhões usuários corporativos</div>
+        <div class="card-data"><span>usu_login</span><span>pes_nome</span><span>psd_numero (CPF)</span></div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-extract">
+        <div class="card-title">staging_usuario_servidor</div>
+        <div class="card-desc">staging_usuario_aluno<br>staging_usuario_terceiro</div>
+        <div class="card-data"><span>status = RAW</span><span>raw_data (JSON completo)</span><span>execution_id</span></div>
+        <div class="card-guarantee">Extração em lotes de 50k — sem estouro de memória</div>
+      </div>
+    </td>
+    <td></td>
+    <td></td>
+  </tr>
+
+  <!-- arrow -->
+  <tr class="arrow-row"><td></td><td colspan="6"><span>▼ Normalização e validação dos dados ▼</span></td></tr>
+
+  <!-- ════ PHASE TRANSFORM ══════════════════════════════ -->
+  <tr class="phase-transform">
+    <td class="col-phase-label" rowspan="1">🔧 TRATAMENTO<br>Steps 3–5</td>
+    <td></td>
+    <td>
+      <div class="card card-transform" style="margin-bottom:8px">
+        <div class="card-title">transform_staging (Step 3)</div>
+        <div class="card-desc">Normaliza e valida cada registro RAW</div>
+        <div class="card-data">
+          <span>CPF → mod11</span><span>RF → zfill(7)</span>
+          <span>nome → Title Case</span><span>DRE → lookup</span>
+        </div>
+        <div class="card-guarantee">CPF inválido marcado como 'error' — não vai ao Keycloak</div>
+        <div class="card-warning">Registros com CPF inválido: excluídos da carga, logados em error_detail</div>
+      </div>
+      <div class="card card-transform" style="margin-bottom:8px">
+        <div class="card-title">crossref_dedup (Step 4)</div>
+        <div class="card-desc">Cruza os 3 modelos pelo CPF, elimina duplicatas</div>
+        <div class="card-data">
+          <span>prioridade: SE1426 > EOL > CoreSSO</span>
+        </div>
+        <div class="card-guarantee">Mesmo usuário em 3 fontes = 1 registro no Keycloak</div>
+      </div>
+      <div class="card card-transform">
+        <div class="card-title">decide_target (Step 5)</div>
+        <div class="card-desc">Compara hash SHA-256 dos dados com UpsertControl</div>
+        <div class="card-data"><span>create</span><span>update</span><span>skip (sem alteração)</span></div>
+        <div class="card-guarantee">Dados inalterados = sem re-envio ao Keycloak (idempotente)</div>
+      </div>
+    </td>
+    <td></td>
+    <td>
+      <div class="card card-transform">
+        <div class="card-title">Staging atualizado</div>
+        <div class="card-desc">
+          Status evolui:<br>
+          <code style="background:#fff3;color:#1a202c;font-size:11px;padding:2px 5px;border-radius:3px">
+            RAW → TRANSFORMED → DEDUP → READY / ERROR
+          </code>
+        </div>
+        <div class="card-data"><span>status = READY</span><span>dedup_key</span><span>target_action</span></div>
+        <div class="card-guarantee">Apenas registros READY chegam ao Keycloak</div>
+      </div>
+    </td>
+    <td></td>
+    <td></td>
+  </tr>
+
+  <!-- arrow -->
+  <tr class="arrow-row"><td></td><td colspan="6"><span>▼ Carga nos sistemas de destino ▼</span></td></tr>
+
+  <!-- ════ PHASE LOAD ═══════════════════════════════════ -->
+  <tr class="phase-load">
+    <td class="col-phase-label" rowspan="1">📤 CARGA<br>Steps 6–7</td>
+    <td></td>
+    <td>
+      <div class="card card-load" style="margin-bottom:8px">
+        <div class="card-title">load_keycloak (Step 6)</div>
+        <div class="card-desc">Upsert em lote dos usuários READY no Keycloak. Controlável por max_records.</div>
+        <div class="card-data"><span>username = RF ou CPF</span><span>email</span><span>firstName</span><span>lastName</span><span>attributes</span></div>
+        <div class="card-guarantee">Soft time limit 3h — progresso salvo em caso de timeout</div>
+      </div>
+      <div class="card card-load">
+        <div class="card-title">load_token_ms (Step 7)</div>
+        <div class="card-desc">Envia payload enriquecido (usuário + roles) para o Token-MS</div>
+        <div class="card-data"><span>systems[]</span><span>groups[]</span><span>roles[]</span></div>
+      </div>
+    </td>
+    <td></td>
+    <td>
+      <div class="card card-load">
+        <div class="card-title">staging → status = LOADED</div>
+        <div class="card-desc">Atualizado após carga confirmada no Keycloak</div>
+        <div class="card-data"><span>upsert_control.content_hash</span><span>last_synced_at</span></div>
+        <div class="card-guarantee">Hash salvo — próxima execução pula registros inalterados</div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-load">
+        <div class="card-title">Usuários criados / atualizados</div>
+        <div class="card-desc">Username, e-mail, atributos e roles configurados</div>
+        <div class="card-data">
+          <span>users.create</span><span>users.update</span>
+          <span>roles.assign</span><span>groups.assign</span>
+        </div>
+        <div class="card-guarantee">Ação registrada em UpsertControl por usuário</div>
+      </div>
+    </td>
+    <td>
+      <div class="card card-load">
+        <div class="card-title">Payload de roles recebido</div>
+        <div class="card-desc">Token-MS processa atribuição de sistemas e perfis</div>
+        <div class="card-data"><span>systems</span><span>profiles</span></div>
+      </div>
+    </td>
+  </tr>
+
+  <!-- arrow -->
+  <tr class="arrow-row"><td></td><td colspan="6"><span>▼ Encerramento da execução ▼</span></td></tr>
+
+  <!-- ════ PHASE AUDIT ══════════════════════════════════ -->
+  <tr class="phase-audit">
+    <td class="col-phase-label">📊 AUDIT<br>Step 8</td>
+    <td></td>
+    <td>
+      <div class="card card-audit">
+        <div class="card-title">audit_etl (Step 8)</div>
+        <div class="card-desc">Agrega métricas de todos os steps e define status final</div>
+        <div class="card-data"><span>extracted</span><span>transformed</span><span>loaded</span><span>errors</span><span>skipped</span></div>
+        <div class="card-guarantee">Status: success / partial / failed com rastreamento completo</div>
+      </div>
+    </td>
+    <td></td>
+    <td>
+      <div class="card card-audit">
+        <div class="card-title">ETLExecution finalizada</div>
+        <div class="card-desc">Métricas consolidadas, steps logados individualmente</div>
+        <div class="card-data"><span>total_extracted</span><span>total_loaded</span><span>total_errors</span><span>duration_seconds</span></div>
+      </div>
+    </td>
+    <td></td>
+    <td></td>
+  </tr>
+
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     QUALITY SECTION
+════════════════════════════════════════════════════════════ -->
+<div class="quality-section">
+  <h2>🛡️ Garantias de Qualidade e Confiabilidade dos Dados</h2>
+  <div class="quality-grid">
+
+    <div class="quality-card green">
+      <h3>✅ Validação de CPF</h3>
+      <ul>
+        <li>Algoritmo módulo 11 aplicado em cada registro</li>
+        <li>Sequências inválidas (111.111.111-11) rejeitadas</li>
+        <li>CPFs rejeitados: logados com detalhe do erro</li>
+        <li>Usuário com CPF inválido <strong>não chega ao Keycloak</strong></li>
+        <li>Visível em: <code>steps[staging].records_error</code></li>
+      </ul>
+    </div>
+
+    <div class="quality-card blue">
+      <h3>🔗 Deduplicação por CPF</h3>
+      <ul>
+        <li>Mesmo usuário em SE1426, EOL e CoreSSO = 1 conta no KC</li>
+        <li>Prioridade: SE1426 (RH) > EOL > CoreSSO</li>
+        <li>Campos complementares mesclados entre fontes</li>
+        <li>Chave de dedup: CPF normalizado</li>
+        <li>Visível em: <code>steps[crossref_dedup].records_out</code></li>
+      </ul>
+    </div>
+
+    <div class="quality-card orange">
+      <h3>♻️ Idempotência (evita re-envio)</h3>
+      <ul>
+        <li>Hash SHA-256 dos dados comparado a cada execução</li>
+        <li>Dados inalterados: <strong>ignorados sem re-envio ao KC</strong></li>
+        <li>Registro em UpsertControl por usuário/realm</li>
+        <li>Falha no worker: pipeline reinicia do step que falhou</li>
+        <li>Re-execuções paralelas: bloqueadas por lock de execução</li>
+      </ul>
+    </div>
+
+    <div class="quality-card purple">
+      <h3>📋 Rastreabilidade Total</h3>
+      <ul>
+        <li>Cada execução tem log individual por step (ETLStepLog)</li>
+        <li>Contadores: extraídos, transformados, carregados, erros</li>
+        <li>error_detail por registro com dado inválido</li>
+        <li>Auditoria em UpsertControl: quando, o quê, qual ação (create/update)</li>
+        <li>Consulta: <code>GET /api/executions/{id}/</code></li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     CONTROL SECTION
+════════════════════════════════════════════════════════════ -->
+<div class="control-section">
+  <h2>🎮 Controle Granular — Validação e Carga Parcial</h2>
+  <p>Para validação do PO: é possível carregar 1, 100 ou qualquer N usuários, ou um CPF/RF específico, sem precisar rodar o pipeline completo.</p>
+  <div class="control-grid">
+
+    <div class="control-card">
+      <h3>🔍 Verificar usuário por CPF (sem enviar ao KC)</h3>
+      <code>POST /api/sync-selective/
+{
+  "cpfs": ["123.456.789-09"],
+  "load_keycloak": false
+}
+→ Mostra: nome, fonte, CPF validado, status</code>
+    </div>
+
+    <div class="control-card">
+      <h3>🚀 Enviar 1 usuário por CPF ao Keycloak</h3>
+      <code>POST /api/sync-selective/
+{
+  "cpfs": ["123.456.789-09"],
+  "load_keycloak": true,
+  "realm": "sme-apps"
+}
+→ Retorna: kc_action: created/updated</code>
+    </div>
+
+    <div class="control-card">
+      <h3>🧪 Carregar 100 usuários (piloto)</h3>
+      <code>POST /api/executions/{id}/reload_keycloak/
+{
+  "max_records": 100,
+  "reset_loaded": true
+}
+→ Carrega exatamente 100 do staging</code>
+    </div>
+
+    <div class="control-card">
+      <h3>📦 Carregar 1.000 usuários (homologação)</h3>
+      <code>POST /api/executions/{id}/reload_keycloak/
+{
+  "max_records": 1000,
+  "reset_loaded": true
+}
+→ Valide no KC antes do go-live</code>
+    </div>
+
+    <div class="control-card">
+      <h3>🔄 Re-executar step 3 (transform) isolado</h3>
+      <code>POST /api/executions/{id}/run-transform/
+{ "force": true }
+→ Reprocessa validação de CPF/RF/nome</code>
+    </div>
+
+    <div class="control-card">
+      <h3>📊 Ver métricas de qualidade da execução</h3>
+      <code>GET /api/executions/{id}/
+→ steps[staging].records_error = CPFs inválidos
+→ steps[crossref_dedup].records_out = após dedup
+→ steps[load_keycloak].records_out = enviados</code>
+    </div>
+
+  </div>
+</div>
+
+<div class="footer">
+  SME-Identidade ETL — Secretaria Municipal de Educação de São Paulo &nbsp;|&nbsp;
+  Pipeline: Steps 0–8 &nbsp;|&nbsp; Fontes: SE1426, EOL_DB, CoreSSO &nbsp;|&nbsp; Destino: Keycloak + Token-MS
+</div>
+
+</body>
+</html>

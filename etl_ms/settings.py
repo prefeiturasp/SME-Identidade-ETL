@@ -1,6 +1,9 @@
 """Configuracoes Django do SME-Identidade-ETL."""
 
 import os
+
+import structlog
+from celery.schedules import crontab
 from pathlib import Path
 
 import dj_database_url
@@ -107,6 +110,9 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
+# Token de autenticação interna do ETL-MS (header: X-Internal-Token)
+ETL_INTERNAL_TOKEN = os.environ.get("ETL_INTERNAL_TOKEN", "dev-etl-token")
+
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
@@ -120,6 +126,12 @@ REST_FRAMEWORK = {
     ],
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S%z",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "core.authentication.InternalTokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
 }
 
 
@@ -127,7 +139,9 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "ETL-MS API — SME Identidade",
     "DESCRIPTION": (
         "Microsserviço ETL: extração (SE1426, EOL_DB, CORESSO),"
-        " transformação, carga no Keycloak e PostgreSQL."
+        " transformação, carga no Keycloak e PostgreSQL.\n\n"
+        "**Autenticação:** todas as rotas exigem o header `X-Internal-Token`.\n"
+        "Clique em **Authorize** (🔒) e informe o token antes de executar qualquer endpoint."
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
@@ -162,16 +176,42 @@ CELERY_TASK_ROUTES = {
     "core.tasks.audit_etl": {"queue": "celery"},
 }
 
+# Limites de memória por worker para evitar SIGKILL por OOM killer
+# max_memory_per_child: recicla o processo quando ultrapassar 400 MB (em KB)
+# max_tasks_per_child: recicla após 50 tarefas, liberando memória acumulada (leak gradual)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = int(
+    os.environ.get("CELERY_WORKER_MAX_MEMORY_PER_CHILD", "409600")  # 400 MB em KB
+)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(
+    os.environ.get("CELERY_WORKER_MAX_TASKS_PER_CHILD", "50")
+)
+
+# Controle de reentrega em caso de SIGKILL (OOM killer / crash do worker)
+# acks_late: mantido True para não perder mensagens em crash do broker.
+# reject_on_worker_lost: DESABILITADO (False) — quando o worker é morto pelo OOM killer
+#   ou pelo kernel (SIGKILL), a task NÃO é recolocada na fila automaticamente.
+#   O operador deve reiniciar manualmente via POST /api/etl/executions/ com nova execução,
+#   garantindo que não haja reexecuções automáticas não supervisionadas.
+# prefetch_multiplier=1: cada worker segura no máximo 1 mensagem por vez.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = False
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+# Agendamento automático desabilitado por padrão — ativar via ETL_BEAT_SCHEDULE_ENABLED=true
+# Toda carga deve ser iniciada manualmente via POST /api/etl/executions/
+_BEAT_ENABLED = os.environ.get("ETL_BEAT_SCHEDULE_ENABLED", "false").lower() == "true"
+_BEAT_REALM = os.environ.get("KEYCLOAK_REALM", "sme-apps")
 
 CELERY_BEAT_SCHEDULE = {
     "etl-daily-all-sources": {
         "task": "core.tasks.trigger_scheduled_etl",
         "schedule": crontab(hour=2, minute=0),
-        "kwargs": {"source": "all", "realm": "sme-apps"},
+        "kwargs": {"source": "all", "realm": _BEAT_REALM},
         "options": {"queue": "celery"},
     },
-}
+} if _BEAT_ENABLED else {}
 
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://identidade:identidade@localhost:5672/sme")
@@ -185,9 +225,15 @@ KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "admin")
 KEYCLOAK_ADMIN_PAWD = os.environ.get("KEYCLOAK_ADMIN_PAWD", "admin")
 KEYCLOAK_CLIENT_SUFFIX = os.environ.get("KEYCLOAK_CLIENT_SUFFIX", "prod")
 KEYCLOAK_VERIFY_SSL = os.environ.get("KEYCLOAK_VERIFY_SSL", "true").lower() == "true"
-ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
-    os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
-)
+
+# Número de threads concorrentes para o step 6 (Load Keycloak).
+# 20 = padrão. Reduz carga de 87k usuários de ~5h para ~15min.
+# Aumentar para 50 para ~6min. Cada thread usa seu próprio KeycloakAdmin client.
+ETL_KC_CONCURRENCY = int(os.environ.get("ETL_KC_CONCURRENCY", "20"))
+
+# Tamanho do lote por batch no modo concorrente (default 500).
+# Batches maiores reduzem overhead de thread pool mas aumentam uso de memória.
+ETL_KC_BATCH_SIZE = int(os.environ.get("ETL_KC_BATCH_SIZE", "500"))
 
 
 TOKEN_MS_URL = os.environ.get("TOKEN_MS_URL", "https://token-ms:8000")
@@ -196,10 +242,10 @@ TOKEN_MS_INTERNAL_TOKEN = os.environ.get("TOKEN_MS_INTERNAL_TOKEN", "")
 TOKEN_MS_TIMEOUT = int(os.environ.get("TOKEN_MS_TIMEOUT", "60"))
 TOKEN_MS_BATCH_SIZE = int(os.environ.get("TOKEN_MS_BATCH_SIZE", "500"))
 
-
-ETL_LOAD_KEYCLOAK_BULK_ENABLED = (
-    os.environ.get("ETL_LOAD_KEYCLOAK_BULK_ENABLED", "false").lower() == "true"
-)
+# Tamanho do lote para extração e insert no staging.
+# Valores maiores reduzem roundtrips ao SQL Server e ao PostgreSQL.
+# Ajustar via ETL_EXTRACT_BATCH_SIZE se o worker sofrer pressão de memória.
+ETL_EXTRACT_BATCH_SIZE = int(os.environ.get("ETL_EXTRACT_BATCH_SIZE", "50000"))
 
 
 NIFI_API_URL = os.environ.get("NIFI_API_URL", "https://localhost:8443/nifi-api")
@@ -229,6 +275,16 @@ CORESSO_DB_USER = os.environ.get("CORESSO_DB_USER", "")
 CORESSO_DB_PASSWORD = os.environ.get("CORESSO_DB_PASSWORD", "")
 CORESSO_DB_TIMEOUT = int(os.environ.get("CORESSO_DB_TIMEOUT", "300"))
 
+# IDs de sistemas do CoreSSO a EXCLUIR da extração de usuários (SYS_Sistema.sis_id).
+# Usuários cujo ÚNICO acesso seja a estes sistemas não serão extraídos.
+# Exemplo: CORESSO_EXCLUDE_SISTEMA_IDS=174,200
+_coresso_exclude_raw = os.environ.get("CORESSO_EXCLUDE_SISTEMA_IDS", "")
+CORESSO_EXCLUDE_SISTEMA_IDS: list[int] = (
+    [int(x.strip()) for x in _coresso_exclude_raw.split(",") if x.strip().isdigit()]
+    if _coresso_exclude_raw.strip()
+    else []
+)
+
 
 SME_INTEGRACAO_BASE_URL = os.environ.get(
     "SME_INTEGRACAO_BASE_URL",
@@ -245,10 +301,10 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "json": {
-            "()": "structlog.stdlib.ProcessorFormatter",
-            "processor": "structlog.dev.ConsoleRenderer"
+            "()": structlog.stdlib.ProcessorFormatter,
+            "processor": structlog.dev.ConsoleRenderer()
             if DEBUG
-            else "structlog.processors.JSONRenderer",
+            else structlog.processors.JSONRenderer(),
         },
     },
     "handlers": {

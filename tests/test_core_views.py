@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.urls import reverse
 from rest_framework.test import APIClient
+from rest_framework.test import APIRequestFactory
 
 pytestmark = pytest.mark.django_db
 
@@ -12,7 +13,9 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def api_client():
-    return APIClient()
+    client = APIClient()
+    client.credentials(HTTP_X_INTERNAL_TOKEN="dev-etl-token")
+    return client
 
 
 @pytest.fixture
@@ -168,13 +171,13 @@ class TestEtlStats:
 class TestUpsertControlViewSet:
     def _make_upsert(self, **kwargs):
         from core.models import UpsertControl
-        defaults = dict(
-            entity_type=UpsertControl.EntityType.USER,
-            source_id="cpf:52998224725",
-            source_system="se1426",
-            target_realm="sme-apps",
-            content_hash="abc123",
-        )
+        defaults = {
+            "entity_type": UpsertControl.EntityType.USER,
+            "source_id": "cpf:52998224725",
+            "source_system": "se1426",
+            "target_realm": "sme-apps",
+            "content_hash": "abc123",
+        }
         defaults.update(kwargs)
         return UpsertControl.objects.create(**defaults)
 
@@ -214,14 +217,14 @@ class TestKcUpsert:
         resp = api_client.post(url, {"cpf": "52998224725"}, format="json")
         assert resp.status_code == 404
 
-    @patch("core.views.get_admin_client")
-    @patch("core.views.upsert_user_to_keycloak")
+    @patch("core.service.get_admin_client")
+    @patch("core.service.upsert_user_to_keycloak")
     def test_success_with_cpf(self, mock_upsert, mock_admin, api_client):
         from staging.models import StagingUsuarioServidor
         import uuid
 
         exec_id = uuid.uuid4()
-        usuario = StagingUsuarioServidor.objects.create(
+        StagingUsuarioServidor.objects.create(
             cpf="52998224725",
             nome="JOAO SILVA",
             source="se1426",
@@ -242,8 +245,8 @@ class TestKcUpsert:
         }, format="json")
         assert resp.status_code == 200
 
-    @patch("core.views.get_admin_client")
-    @patch("core.views.upsert_user_to_keycloak")
+    @patch("core.service.get_admin_client")
+    @patch("core.service.upsert_user_to_keycloak")
     def test_keycloak_error_returns_502(self, mock_upsert, mock_admin, api_client):
         from staging.models import StagingUsuarioServidor
         import uuid
@@ -265,3 +268,237 @@ class TestKcUpsert:
             "push_token_ms": False,
         }, format="json")
         assert resp.status_code == 502
+
+
+class TestSistemasLoadKeycloak:
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client")
+    def test_filter_by_sigla(
+        self,
+        mock_upsert,
+        mock_admin,
+    ):
+        from core.views import sistemas_load_keycloak
+        from staging.models import StagingSistema
+
+        factory = APIRequestFactory()
+
+        mock_admin.return_value = MagicMock()
+
+        mock_upsert.return_value = {
+            "action": "created",
+        }
+
+        StagingSistema.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema A",
+            sigla="SIGA",
+            situacao=1,
+        )
+
+        StagingSistema.objects.create(
+            coresso_sis_id=2,
+            nome="Sistema B",
+            sigla="OUTRO",
+            situacao=1,
+        )
+
+        request = factory.post(
+            "/fake-url/",
+            {"sigla": "SIGA"},
+            format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
+        )
+
+        resp = sistemas_load_keycloak(request)
+
+        assert resp.status_code == 200
+
+        assert mock_upsert.call_count == 1
+
+
+class TestPerfisLoadKeycloak:
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
+    def test_filter_by_coresso_sis_id(
+        self,
+        mock_upsert,
+        mock_admin,
+    ):
+        from core.views import perfis_load_keycloak
+        from staging.models import (
+            StagingPerfilCoreSSO,
+            StagingSistema,
+        )
+
+        factory = APIRequestFactory()
+
+        mock_admin.return_value = MagicMock()
+
+        mock_upsert.return_value = {
+            "action": "created",
+        }
+
+        sistema1 = StagingSistema.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema A",
+            sigla="AAA",
+            situacao=1,
+        )
+
+        sistema2 = StagingSistema.objects.create(
+            coresso_sis_id=2,
+            nome="Sistema B",
+            sigla="BBB",
+            situacao=1,
+        )
+
+        StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id=100,
+            nome="Perfil A",
+            sistema=sistema1,
+            coresso_sis_id=1,
+        )
+
+        StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id=200,
+            nome="Perfil B",
+            sistema=sistema2,
+            coresso_sis_id=2,
+        )
+
+        request = factory.post(
+            "/fake-url/",
+            {"coresso_sis_id": 1},
+            format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
+        )
+
+        resp = perfis_load_keycloak(request)
+
+        assert resp.status_code == 200
+
+        assert mock_upsert.call_count == 1
+
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
+    def test_refresh_admin_client_exception_is_ignored(
+        self,
+        mock_upsert,
+        mock_admin,
+    ):
+        from core.views import perfis_load_keycloak
+        from staging.models import (
+            StagingPerfilCoreSSO,
+            StagingSistema,
+        )
+
+        factory = APIRequestFactory()
+
+        admin_instance = MagicMock()
+
+        mock_admin.side_effect = [
+            admin_instance,
+            Exception("refresh failed"),
+        ]
+
+        mock_upsert.return_value = {
+            "action": "created",
+        }
+
+        sistema = StagingSistema.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema A",
+            sigla="AAA",
+            situacao=1,
+        )
+
+        for i in range(51):
+            StagingPerfilCoreSSO.objects.create(
+                coresso_gru_id=1000 + i,
+                nome=f"Perfil {i}",
+                sistema=sistema,
+                coresso_sis_id=1,
+            )
+
+        request = factory.post(
+            "/fake-url/",
+            {},
+            format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
+        )
+
+        resp = perfis_load_keycloak(request)
+
+        assert resp.status_code == 200
+
+        assert resp.data["created"] == 51
+
+    @patch("core.views.get_admin_client")
+    @patch("core.views.upsert_kc_client_role")
+    def test_updated_and_skipped_actions(
+        self,
+        mock_upsert,
+        mock_admin,
+    ):
+        from core.views import perfis_load_keycloak
+        from staging.models import (
+            StagingPerfilCoreSSO,
+            StagingSistema,
+        )
+
+        factory = APIRequestFactory()
+
+        mock_admin.return_value = MagicMock()
+
+        mock_upsert.side_effect = [
+            {"action": "updated"},
+            {"action": "skipped"},
+        ]
+
+        sistema = StagingSistema.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema A",
+            sigla="AAA",
+            situacao=1,
+        )
+
+        StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id=10,
+            nome="Perfil Updated",
+            sistema=sistema,
+            coresso_sis_id=1,
+        )
+
+        StagingPerfilCoreSSO.objects.create(
+            coresso_gru_id=20,
+            nome="Perfil Skipped",
+            sistema=sistema,
+            coresso_sis_id=1,
+        )
+
+        request = factory.post(
+            "/fake-url/",
+            {},
+            format="json",
+            HTTP_X_INTERNAL_TOKEN="dev-etl-token",
+        )
+
+        resp = perfis_load_keycloak(request)
+
+        assert resp.status_code == 200
+        assert resp.data["updated"] == 1
+        assert resp.data["skipped"] == 1
+
+
+class TestETLExecutionViewSetSerializer:
+    def test_get_serializer_class_for_create_action(self):
+        from core.serializers import ETLExecutionCreateSerializer
+        from core.views import ETLExecutionViewSet
+
+        viewset = ETLExecutionViewSet()
+        viewset.action = "create"
+
+        serializer = viewset.get_serializer_class()
+
+        assert serializer == ETLExecutionCreateSerializer

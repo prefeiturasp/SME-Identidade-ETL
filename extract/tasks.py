@@ -1,6 +1,10 @@
 """Tasks Celery para extrair dados do SE1426, EOL_DB e CoreSSO para as tabelas de staging."""
 import logging
+import re
+import unicodedata
+from datetime import date
 
+import httpx
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
@@ -21,12 +25,33 @@ def _build_se1426_conn_str() -> str:
     )
 
 
-def _extract_se1426_sql(execution_id: str) -> int:
+def _row_to_servidor_se1426(item: dict, execution_id: str):
+    """Converte um row do SE1426 em StagingUsuarioServidor."""
+    from staging.models import StagingUsuarioServidor
+
+    situacao_raw = item.get("situacao", "")
+    return StagingUsuarioServidor(
+        rf=item.get("rf"),
+        nome=item.get("nome"),
+        cpf=item.get("cpf"),
+        email=item.get("email"),
+        situacao=situacao_raw.lower() if situacao_raw else None,
+        cargo=item.get("cargo") or None,
+        funcao=item.get("funcao") or None,
+        lotacao=item.get("cod_unidade") or None,
+        dre=item.get("cod_dre") or None,
+        source=StagingUsuarioServidor.Source.SE1426,
+        execution_id=execution_id,
+        raw_data={k: str(v) if v is not None else None for k, v in item.items()},
+    )
+
+
+def _extract_se1426_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     from staging.models import StagingUsuarioServidor
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -36,7 +61,7 @@ def _extract_se1426_sql(execution_id: str) -> int:
             s.situacao               AS situacao,
             e.dc_dispositivo         AS email,
             RTRIM(LTRIM(ISNULL(c.dc_cargo, '')))                     AS cargo,
-            RTRIM(LTRIM(ISNULL(f.dc_funcao_atividade, '')))          AS funcao,
+            RTRIM(LTRIM(ISNULL(tf.dc_tipo_funcao, '')))              AS funcao,
             CAST(l.cd_unidade_educacao AS VARCHAR(20))               AS cod_unidade,
             CAST(ue.cd_unidade_administrativa_referencia AS VARCHAR(20)) AS cod_dre
         FROM v_servidor_sme_serap s
@@ -51,11 +76,11 @@ def _extract_se1426_sql(execution_id: str) -> int:
             AND cba.dt_cancelamento IS NULL
         LEFT JOIN cargo c
             ON c.cd_cargo = cba.cd_cargo
-        LEFT JOIN v_funcao_atividade_cotic fa
-            ON fa.cd_servidor = sc.cd_servidor
-            AND fa.dt_fim IS NULL
-        LEFT JOIN funcao_atividade f
-            ON f.cd_funcao_atividade = fa.cd_funcao_atividade
+        LEFT JOIN funcao_atividade_cargo_servidor fa
+            ON fa.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND fa.dt_fim_funcao_atividade IS NULL
+        LEFT JOIN tipo_funcao_atividade tf
+            ON tf.cd_tipo_funcao = fa.cd_tipo_funcao
         LEFT JOIN lotacao_servidor l
             ON l.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
             AND l.dt_fim IS NULL
@@ -66,6 +91,12 @@ def _extract_se1426_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute("SELECT COUNT(*) FROM v_servidor_sme_serap WITH (NOLOCK)")
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] SE1426: %d registros na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -76,28 +107,19 @@ def _extract_se1426_sql(execution_id: str) -> int:
                 break
 
             cols = [d[0] for d in cursor.description]
-            staging_records = []
-            for row in rows:
-                item = dict(zip(cols, row))
-                staging_records.append(
-                    StagingUsuarioServidor(
-                        rf=item.get("rf"),
-                        nome=item.get("nome"),
-                        cpf=item.get("cpf"),
-                        email=item.get("email"),
-                        situacao=item.get("situacao", "").lower() if item.get("situacao") else None,
-                        cargo=item.get("cargo") or None,
-                        funcao=item.get("funcao") or None,
-                        lotacao=item.get("cod_unidade") or None,
-                        dre=item.get("cod_dre") or None,
-                        source=StagingUsuarioServidor.Source.SE1426,
-                        execution_id=execution_id,
-                        raw_data={k: str(v) if v is not None else None for k, v in item.items()},
-                    )
-                )
+            staging_records = [
+                _row_to_servidor_se1426(dict(zip(cols, row)), execution_id)
+                for row in rows
+            ]
 
-            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] SE1426: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     finally:
         conn.close()
@@ -105,10 +127,51 @@ def _extract_se1426_sql(execution_id: str) -> int:
     return total_extracted
 
 
-def _extract_eol_db_sql(execution_id: str) -> int:
+def _accumulate_eol_db_row(row, servidores: dict) -> None:
+    """Acumula dados de um row EOL_DB no dict servidores (rf → dados)."""
+    rf, cpf, nome, situacao, desc_cargo, cod_cargo, cod_unidade, cod_dre = row
+    if rf not in servidores:
+        servidores[rf] = {
+            "rf": rf, "cpf": cpf, "nome": nome, "situacao": situacao,
+            "desc_cargo": desc_cargo or None, "cod_cargo": cod_cargo or None,
+            "unidades": [], "dres": [],
+        }
+    if cod_unidade:
+        servidores[rf]["unidades"].append(cod_unidade)
+    if cod_dre and cod_dre not in servidores[rf]["dres"]:
+        servidores[rf]["dres"].append(cod_dre)
+
+
+def _srv_dict_to_staging(srv: dict, execution_id: str):
+    """Converte um dict de servidor EOL_DB em StagingUsuarioServidor."""
+    from staging.models import StagingUsuarioServidor
+
+    unidades = srv["unidades"]
+    dres = srv["dres"]
+    return StagingUsuarioServidor(
+        rf=srv["rf"],
+        cpf=srv["cpf"],
+        nome=srv["nome"],
+        situacao=srv["situacao"].lower() if srv["situacao"] else None,
+        cargo=srv["desc_cargo"],
+        lotacao=str(unidades[0]) if unidades else None,
+        dre=str(dres[0]) if dres else None,
+        source=StagingUsuarioServidor.Source.EOL_DB,
+        execution_id=execution_id,
+        raw_data={
+            "rf": srv["rf"], "cpf": srv["cpf"],
+            "cod_cargo": srv["cod_cargo"], "desc_cargo": srv["desc_cargo"],
+            "unidades": unidades, "dres": dres, "fonte": "eol_db_sql",
+        },
+    )
+
+
+def _extract_eol_db_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
-    BATCH_SIZE = 500
+    from staging.models import StagingUsuarioServidor
+
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -140,6 +203,14 @@ def _extract_eol_db_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute(
+            "SELECT COUNT(DISTINCT cd_registro_funcional) FROM v_servidor_sme_serap WITH (NOLOCK) WHERE situacao = 'Ativo'"
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] EOL_DB: %d servidores únicos na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -150,60 +221,26 @@ def _extract_eol_db_sql(execution_id: str) -> int:
             if not rows:
                 break
             for row in rows:
-                rf, cpf, nome, situacao, desc_cargo, cod_cargo, cod_unidade, cod_dre = row
-                if rf not in servidores:
-                    servidores[rf] = {
-                        "rf": rf,
-                        "cpf": cpf,
-                        "nome": nome,
-                        "situacao": situacao,
-                        "desc_cargo": desc_cargo or None,
-                        "cod_cargo": cod_cargo or None,
-                        "unidades": [],
-                        "dres": [],
-                    }
-                if cod_unidade:
-                    servidores[rf]["unidades"].append(cod_unidade)
-                if cod_dre and cod_dre not in servidores[rf]["dres"]:
-                    servidores[rf]["dres"].append(cod_dre)
+                _accumulate_eol_db_row(row, servidores)
 
     finally:
         conn.close()
 
-    from staging.models import StagingUsuarioServidor
-
     staging_records = []
     for srv in servidores.values():
-        unidades = srv["unidades"]
-        dres = srv["dres"]
-        staging_records.append(
-            StagingUsuarioServidor(
-                rf=srv["rf"],
-                cpf=srv["cpf"],
-                nome=srv["nome"],
-                situacao=srv["situacao"].lower() if srv["situacao"] else None,
-                cargo=srv["desc_cargo"],
-                lotacao=str(unidades[0]) if unidades else None,
-                dre=str(dres[0]) if dres else None,
-                source=StagingUsuarioServidor.Source.EOL_DB,
-                execution_id=execution_id,
-                raw_data={
-                    "rf": srv["rf"],
-                    "cpf": srv["cpf"],
-                    "cod_cargo": srv["cod_cargo"],
-                    "desc_cargo": srv["desc_cargo"],
-                    "unidades": unidades,
-                    "dres": dres,
-                    "fonte": "eol_db_sql",
-                },
-            )
-        )
-        if len(staging_records) >= 500:
-            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+        staging_records.append(_srv_dict_to_staging(srv, execution_id))
+        if len(staging_records) >= BATCH_SIZE:
+            StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             staging_records = []
+            if max_records and len(servidores) >= max_records:
+                logger.info(
+                    "[%s] EOL_DB: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     if staging_records:
-        StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=500)
+        StagingUsuarioServidor.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
 
     return len(servidores)
 
@@ -212,6 +249,9 @@ def _extract_eol_db_sql(execution_id: str) -> int:
 def extract_se1426(self, execution_id: str):
     """Extrai dados de servidores do banco SE1426 (PRODAM) para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import ExecutionCancelledError, _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -220,6 +260,14 @@ def extract_se1426(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor
+        deleted, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.SE1426
+        ).delete()
+        logger.warning(
+            "[%s] extract_se1426: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -237,7 +285,7 @@ def extract_se1426(self, execution_id: str):
                 "database": settings.SE1426_DB_NAME,
             }
             step.save(update_fields=["metadata"])
-            total_extracted = _extract_se1426_sql(execution_id)
+            total_extracted = _extract_se1426_sql(execution_id, max_records=execution.max_records_extract)
 
         elif settings.SE1426_API_TOKEN:
             logger.info("[%s] SE1426: modo API REST", execution_id)
@@ -267,17 +315,17 @@ def extract_se1426(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1 FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            # Não aborta a execução — chord continua com os demais sources
+            logger.error("[%s] extract_se1426 esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
 def _extract_se1426_api(execution_id: str) -> int:
-    import httpx
-
     yesterday = (timezone.now() - timezone.timedelta(days=1)).strftime("%Y-%m-%d")
     headers = {
         "Authorization": f"Bearer {settings.SE1426_API_TOKEN}",
@@ -338,6 +386,9 @@ def _extract_se1426_api(execution_id: str) -> int:
 def extract_eol_db(self, execution_id: str):
     """Extrai dados de servidores do EOL_DB (SQL Server) para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -346,6 +397,14 @@ def extract_eol_db(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor
+        deleted, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.EOL_DB
+        ).delete()
+        logger.warning(
+            "[%s] extract_eol_db: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -372,7 +431,7 @@ def extract_eol_db(self, execution_id: str):
         }
         step.save(update_fields=["metadata"])
 
-        total_extracted = _extract_eol_db_sql(execution_id)
+        total_extracted = _extract_eol_db_sql(execution_id, max_records=execution.max_records_extract)
 
         step.records_out = total_extracted
         step.status = "success"
@@ -391,20 +450,60 @@ def extract_eol_db(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1b FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_eol_db esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
-def _extract_eol_alunos_sql(execution_id: str) -> int:
+def _parse_date_str(date_str: str | None) -> date | None:
+    """Converte string YYYY-MM-DD em date, retorna None se inválida."""
+    if not date_str:
+        return None
+    try:
+        parts = date_str.split("-")
+        return date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except Exception:
+        return None
+
+
+def _row_to_aluno_sql(row, execution_id: str):
+    """Converte um row EOL alunos em StagingUsuarioAluno."""
+    from staging.models import StagingUsuarioAluno
+
+    matricula = str(row.matricula).strip() if row.matricula else None
+    nome = str(row.nome).strip() if row.nome else None
+    data_nasc_str = str(row.data_nascimento).strip() if row.data_nascimento else None
+    cod_escola = str(row.cod_escola).strip() if row.cod_escola else None
+    turma = str(row.turma).strip() if row.turma else None
+    cod_dre = str(row.cod_dre).strip() if row.cod_dre else None
+    return StagingUsuarioAluno(
+        matricula=matricula,
+        nome=nome,
+        data_nascimento=_parse_date_str(data_nasc_str),
+        cod_escola=cod_escola,
+        turma=turma,
+        dre=cod_dre,
+        ue=cod_escola,
+        situacao="ativo",
+        source=StagingUsuarioAluno.Source.EOL_DB,
+        execution_id=execution_id,
+        raw_data={
+            "matricula": matricula, "cod_escola": cod_escola, "turma": turma,
+            "cod_dre": cod_dre, "data_nascimento": data_nasc_str, "fonte": "eol_db_alunos",
+        },
+    )
+
+
+def _extract_eol_alunos_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
     from staging.models import StagingUsuarioAluno
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
 
     query = """
         SELECT
@@ -440,6 +539,22 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 
     conn = pyodbc.connect(_build_se1426_conn_str(), timeout=settings.SE1426_DB_TIMEOUT)
     try:
+        _cnt = conn.cursor()
+        _cnt.execute(
+            """
+            SELECT COUNT(DISTINCT matr.cd_aluno)
+            FROM v_matricula_cotic matr WITH (NOLOCK)
+            INNER JOIN matricula_turma_escola mte WITH (NOLOCK)
+                ON mte.cd_matricula = matr.cd_matricula
+            WHERE matr.st_matricula IN (1, 6, 10, 13)
+              AND mte.cd_situacao_aluno IN (1, 6, 10, 13)
+              AND matr.an_letivo = YEAR(GETDATE())
+            """
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] EOL alunos: %d alunos únicos na fonte (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -449,48 +564,9 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
             if not rows:
                 break
 
-            staging_records = []
-            for row in rows:
-                matricula = str(row.matricula).strip() if row.matricula else None
-                nome = str(row.nome).strip() if row.nome else None
-                data_nasc_str = str(row.data_nascimento).strip() if row.data_nascimento else None
-                cod_escola = str(row.cod_escola).strip() if row.cod_escola else None
-                turma = str(row.turma).strip() if row.turma else None
-                cod_dre = str(row.cod_dre).strip() if row.cod_dre else None
-
-                # Converte string YYYY-MM-DD para date
-                data_nasc_date = None
-                if data_nasc_str:
-                    try:
-                        from datetime import date
-                        parts = data_nasc_str.split("-")
-                        data_nasc_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
-                    except Exception:
-                        pass
-
-                raw = {
-                    "matricula": matricula,
-                    "cod_escola": cod_escola,
-                    "turma": turma,
-                    "cod_dre": cod_dre,
-                    "data_nascimento": data_nasc_str,
-                    "fonte": "eol_db_alunos",
-                }
-                staging_records.append(
-                    StagingUsuarioAluno(
-                        matricula=matricula,
-                        nome=nome,
-                        data_nascimento=data_nasc_date,
-                        cod_escola=cod_escola,
-                        turma=turma,
-                        dre=cod_dre,
-                        ue=cod_escola,
-                        situacao="ativo",
-                        source=StagingUsuarioAluno.Source.EOL_DB,
-                        execution_id=execution_id,
-                        raw_data=raw,
-                    )
-                )
+            staging_records = [
+                _row_to_aluno_sql(row, execution_id) for row in rows
+            ]
 
             StagingUsuarioAluno.objects.bulk_create(staging_records, batch_size=BATCH_SIZE)
             total_extracted += len(staging_records)
@@ -498,6 +574,12 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
                 "[%s] EOL alunos: %d extraídos (lote de %d)",
                 execution_id, total_extracted, len(staging_records),
             )
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] EOL alunos: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
     finally:
         conn.close()
 
@@ -508,6 +590,9 @@ def _extract_eol_alunos_sql(execution_id: str) -> int:
 def extract_eol_alunos(self, execution_id: str):
     """Extrai dados de alunos do EOL_DB para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -516,6 +601,14 @@ def extract_eol_alunos(self, execution_id: str):
         defaults={"step_order": 1},
     )
     if not _created:
+        from staging.models import StagingUsuarioAluno
+        deleted, _ = StagingUsuarioAluno.objects.filter(
+            execution_id=execution_id
+        ).delete()
+        logger.warning(
+            "[%s] extract_eol_alunos: restart detectado — %d registros de staging removidos antes de re-extrair",
+            execution_id, deleted,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -541,7 +634,7 @@ def extract_eol_alunos(self, execution_id: str):
         }
         step.save(update_fields=["metadata"])
 
-        total_extracted = _extract_eol_alunos_sql(execution_id)
+        total_extracted = _extract_eol_alunos_sql(execution_id, max_records=execution.max_records_extract)
 
         step.records_out = total_extracted
         step.status = "success"
@@ -560,11 +653,12 @@ def extract_eol_alunos(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 1c FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_eol_alunos esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=120)
 
 
@@ -585,34 +679,125 @@ def _build_coresso_conn_str() -> str:
     )
 
 
-def _extract_coresso_sql(execution_id: str) -> int:
+def _row_to_coresso_record(row, execution_id: str):
+    """Converte um row CoreSSO em StagingUsuarioServidor ou StagingUsuarioTerceiro."""
+    rf = str(row.rf).strip() if row.rf else None
+    cpf = str(row.cpf).strip() if row.cpf else None
+    nome = str(row.nome).strip() if row.nome else None
+    email = str(row.email).strip() if row.email else None
+    situacao = "ativo" if row.situacao == 1 else "inativo"
+    raw = {
+        "rf": rf, "cpf": cpf, "nome": nome, "email": email,
+        "situacao": row.situacao,
+        "data_alteracao": str(row.data_alteracao) if row.data_alteracao else None,
+        "fonte": "coresso_sql",
+    }
+    base_kwargs = {
+        "cpf": cpf, "nome": nome, "email": email, "situacao": situacao,
+        "source": "coresso", "execution_id": execution_id, "raw_data": raw,
+    }
+    if rf:
+        from staging.models import StagingUsuarioServidor
+        return StagingUsuarioServidor(rf=rf, **base_kwargs)
+    from staging.models import StagingUsuarioTerceiro
+    return StagingUsuarioTerceiro(tipo_acesso="legado-coresso", **base_kwargs)
+
+
+def _persist_coresso_batch(staging_records: list, batch_size: int) -> None:
+    """Persiste um lote CoreSSO separando servidores de terceiros."""
+    from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
+
+    srvs = [r for r in staging_records if isinstance(r, StagingUsuarioServidor)]
+    tercs = [r for r in staging_records if isinstance(r, StagingUsuarioTerceiro)]
+    if srvs:
+        StagingUsuarioServidor.objects.bulk_create(srvs, batch_size=batch_size)
+    if tercs:
+        StagingUsuarioTerceiro.objects.bulk_create(tercs, batch_size=batch_size)
+
+
+def _extract_coresso_sql(execution_id: str, max_records: int | None = None) -> int:
     import pyodbc
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = settings.ETL_EXTRACT_BATCH_SIZE
+    exclude_ids: list[int] = settings.CORESSO_EXCLUDE_SISTEMA_IDS
+
+    # Cláusula NOT EXISTS: exclui usuários cujo ÚNICO acesso seja a sistemas na lista.
+    # Ou seja, se o usuário tiver acesso a qualquer OUTRO sistema além dos excluídos,
+    # ele continua sendo extraído normalmente.
+    if exclude_ids:
+        ids_placeholder = ",".join(str(i) for i in exclude_ids)
+        exclude_filter = f"""
+        AND EXISTS (
+            SELECT 1
+            FROM SYS_UsuarioGrupo ug2 WITH (NOLOCK)
+            INNER JOIN SYS_Grupo g2 WITH (NOLOCK)
+                ON g2.gru_id = ug2.gru_id AND g2.gru_situacao = 1
+            INNER JOIN SYS_Sistema s2 WITH (NOLOCK)
+                ON s2.sis_id = g2.sis_id AND s2.sis_situacao = 1
+                AND s2.sis_id NOT IN ({ids_placeholder})
+            WHERE ug2.usu_id = u.usu_id AND ug2.usg_situacao = 1
+        )"""
+        logger.info(
+            "[%s] CORESSO: excluindo usuários exclusivos dos sistemas %s",
+            execution_id, ids_placeholder,
+        )
+    else:
+        exclude_filter = ""
 
     conn_str = _build_coresso_conn_str()
+    # Filtra apenas usuários com pelo menos um perfil ativo em um sistema ativo.
+    # Sem este filtro a query retorna TODOS os usuários de toda a prefeitura (~4M),
+    # mas o ETL SME só precisa de quem tem acesso a algum sistema SME cadastrado.
     query = f"""
-        SELECT
-            u.usu_login        AS rf,
-            u.usu_email        AS email,
-            p.pes_nome         AS nome,
-            doc.psd_numero     AS cpf,
-            u.usu_situacao     AS situacao,
+        SELECT DISTINCT
+            u.usu_login         AS rf,
+            u.usu_email         AS email,
+            p.pes_nome          AS nome,
+            doc.psd_numero      AS cpf,
+            u.usu_situacao      AS situacao,
             u.usu_dataAlteracao AS data_alteracao
-        FROM SYS_Usuario u
-        LEFT JOIN PES_Pessoa p
+        FROM SYS_Usuario u WITH (NOLOCK)
+        INNER JOIN SYS_UsuarioGrupo ug WITH (NOLOCK)
+            ON u.usu_id = ug.usu_id
+            AND ug.usg_situacao = 1
+        INNER JOIN SYS_Grupo g WITH (NOLOCK)
+            ON g.gru_id = ug.gru_id
+            AND g.gru_situacao = 1
+        INNER JOIN SYS_Sistema s WITH (NOLOCK)
+            ON s.sis_id = g.sis_id
+            AND s.sis_situacao = 1
+        LEFT JOIN PES_Pessoa p WITH (NOLOCK)
             ON u.pes_id = p.pes_id
-        LEFT JOIN PES_PessoaDocumento doc
+        LEFT JOIN PES_PessoaDocumento doc WITH (NOLOCK)
             ON p.pes_id = doc.pes_id
             AND doc.tdo_id = '{_CORESSO_CPF_TYPE_ID}'
         WHERE u.usu_situacao = 1
-        ORDER BY u.usu_id
+        {exclude_filter}
     """
 
     total_extracted = 0
 
     with pyodbc.connect(conn_str, timeout=settings.CORESSO_DB_TIMEOUT) as conn:
         conn.timeout = settings.CORESSO_DB_TIMEOUT
+        _cnt = conn.cursor()
+        _cnt.execute(
+            f"""
+            SELECT COUNT(DISTINCT u.usu_id)
+            FROM SYS_Usuario u WITH (NOLOCK)
+            INNER JOIN SYS_UsuarioGrupo ug WITH (NOLOCK)
+                ON u.usu_id = ug.usu_id AND ug.usg_situacao = 1
+            INNER JOIN SYS_Grupo g WITH (NOLOCK)
+                ON g.gru_id = ug.gru_id AND g.gru_situacao = 1
+            INNER JOIN SYS_Sistema s WITH (NOLOCK)
+                ON s.sis_id = g.sis_id AND s.sis_situacao = 1
+            WHERE u.usu_situacao = 1
+            {exclude_filter}
+            """
+        )
+        total_fonte = _cnt.fetchone()[0]
+        _cnt.close()
+        logger.info("[%s] CORESSO: %d usuários ativos com perfil em sistema ativo (pré-extração)", execution_id, total_fonte)
+
         cursor = conn.cursor()
         cursor.execute(query)
 
@@ -621,48 +806,8 @@ def _extract_coresso_sql(execution_id: str) -> int:
             if not rows:
                 break
 
-            staging_records = []
-            for row in rows:
-                rf = str(row.rf).strip() if row.rf else None
-                cpf = str(row.cpf).strip() if row.cpf else None
-                nome = str(row.nome).strip() if row.nome else None
-                email = str(row.email).strip() if row.email else None
-                situacao = "ativo" if row.situacao == 1 else "inativo"
-
-                raw = {
-                    "rf": rf,
-                    "cpf": cpf,
-                    "nome": nome,
-                    "email": email,
-                    "situacao": row.situacao,
-                    "data_alteracao": (
-                        str(row.data_alteracao) if row.data_alteracao else None
-                    ),
-                    "fonte": "coresso_sql",
-                }
-                base_kwargs = dict(
-                    cpf=cpf,
-                    nome=nome,
-                    email=email,
-                    situacao=situacao,
-                    source="coresso",
-                    execution_id=execution_id,
-                    raw_data=raw,
-                )
-                if rf:
-                    from staging.models import StagingUsuarioServidor
-                    staging_records.append(StagingUsuarioServidor(rf=rf, **base_kwargs))
-                else:
-                    from staging.models import StagingUsuarioTerceiro
-                    staging_records.append(StagingUsuarioTerceiro(tipo_acesso="legado-coresso", **base_kwargs))
-
-            from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
-            srvs = [r for r in staging_records if isinstance(r, StagingUsuarioServidor)]
-            tercs = [r for r in staging_records if isinstance(r, StagingUsuarioTerceiro)]
-            if srvs:
-                StagingUsuarioServidor.objects.bulk_create(srvs, batch_size=BATCH_SIZE)
-            if tercs:
-                StagingUsuarioTerceiro.objects.bulk_create(tercs, batch_size=BATCH_SIZE)
+            staging_records = [_row_to_coresso_record(row, execution_id) for row in rows]
+            _persist_coresso_batch(staging_records, BATCH_SIZE)
             total_extracted += len(staging_records)
             logger.info(
                 "[%s] CORESSO SQL: %d registros extraídos (lote de %d)",
@@ -670,13 +815,17 @@ def _extract_coresso_sql(execution_id: str) -> int:
                 total_extracted,
                 len(staging_records),
             )
+            if max_records and total_extracted >= max_records:
+                logger.info(
+                    "[%s] CORESSO: limite de %d registros atingido — interrompendo extração",
+                    execution_id, max_records,
+                )
+                break
 
     return total_extracted
 
 
 def _extract_coresso_api(execution_id: str) -> int:
-    import httpx
-
     headers = {"Authorization": f"Token {settings.CORESSO_API_TOKEN}"}
 
     with httpx.Client(timeout=120) as client:
@@ -718,6 +867,9 @@ def _extract_coresso_api(execution_id: str) -> int:
 def extract_coresso(self, execution_id: str):
     """Extrai dados de usuarios terceiros do CoreSSO para staging."""
     from core.models import ETLExecution, ETLStepLog
+    from core.tasks import _check_cancelled
+
+    _check_cancelled(execution_id)
 
     execution = ETLExecution.objects.get(id=execution_id)
     step, _created = ETLStepLog.objects.get_or_create(
@@ -726,6 +878,17 @@ def extract_coresso(self, execution_id: str):
         defaults={"step_order": 2},
     )
     if not _created:
+        from staging.models import StagingUsuarioServidor, StagingUsuarioTerceiro
+        del_srv, _ = StagingUsuarioServidor.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioServidor.Source.CORESSO
+        ).delete()
+        del_terc, _ = StagingUsuarioTerceiro.objects.filter(
+            execution_id=execution_id, source=StagingUsuarioTerceiro.Source.CORESSO
+        ).delete()
+        logger.warning(
+            "[%s] extract_coresso: restart detectado — %d servidores e %d terceiros removidos antes de re-extrair",
+            execution_id, del_srv, del_terc,
+        )
         step.status = ETLStepLog.StepStatus.RUNNING
         step.error_detail = None
         step.finished_at = None
@@ -743,7 +906,7 @@ def extract_coresso(self, execution_id: str):
                 "database": settings.CORESSO_DB_NAME,
             }
             step.save(update_fields=["metadata"])
-            total_extracted = _extract_coresso_sql(execution_id)
+            total_extracted = _extract_coresso_sql(execution_id, max_records=execution.max_records_extract)
 
         elif settings.CORESSO_API_URL:
             logger.info("[%s] CORESSO: modo API REST (fallback)", execution_id)
@@ -780,18 +943,16 @@ def extract_coresso(self, execution_id: str):
     except Exception as e:
         logger.exception("[%s] Step 2 FAILED: %s", execution_id, e)
         step.status = "failed"
-        step.error_detail = str(e)
+        step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
         if self.request.retries >= self.max_retries:
-            execution.mark_finished("failed")
+            logger.error("[%s] extract_coresso esgotou retries — pipeline continua sem esta fonte", execution_id)
+            return 0
         raise self.retry(exc=e, countdown=60)
 
 
 def _slugify_sigla(nome: str) -> str:
-    import re
-    import unicodedata
-
     s = unicodedata.normalize("NFKD", nome or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s or f"sistema-{abs(hash(nome)) % 100000}"
