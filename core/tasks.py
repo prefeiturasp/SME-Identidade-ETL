@@ -1,3 +1,11 @@
+"""Tarefas Celery responsáveis pela execução da pipeline ETL.
+
+Este módulo contém as tarefas de orquestração, transformação,
+sincronização e auditoria utilizadas no processo de integração entre
+as fontes de dados e os sistemas de destino, incluindo Keycloak e
+token-ms.
+"""
+
 import logging
 
 from celery import chain, chord, shared_task
@@ -8,6 +16,18 @@ logger = logging.getLogger(__name__)
 
 @shared_task(name="core.tasks.trigger_scheduled_etl")
 def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
+    """Cria uma execução agendada e dispara a pipeline ETL de forma assíncrona.
+
+    Registra uma nova execução com origem agendada e encaminha o processamento
+    para a tarefa principal da pipeline.
+
+    Args:
+        source: Fonte de dados a ser processada. Padrão: ``"all"``.
+        realm: Realm de destino para a sincronização. Padrão: ``"sme-apps"``.
+
+    Returns:
+        str: Identificador da execução criada.
+    """
     from .models import ETLExecution
 
     execution = ETLExecution.objects.create(
@@ -17,22 +37,48 @@ def trigger_scheduled_etl(source: str = "all", realm: str = "sme-apps"):
         executed_by="celery-beat",
     )
     run_etl_pipeline.delay(str(execution.id))
-    logger.info("Scheduled ETL triggered — execution_id=%s source=%s realm=%s", execution.id, source, realm)
+    logger.info(
+        "Scheduled ETL triggered — execution_id=%s source=%s realm=%s",
+        execution.id,
+        source, realm
+    )
     return str(execution.id)
 
 
 @shared_task(bind=True, name="core.tasks.run_etl_pipeline")
 def run_etl_pipeline(self, execution_id: str):
+    """Orquestra a execução completa da pipeline ETL.
+
+    Seleciona as tarefas de extração de acordo com a fonte configurada e
+    encadeia as etapas de transformação, roteamento, carga e auditoria.
+
+    Args:
+        self: Instância da task Celery responsável pela execução.
+        execution_id: Identificador da execução ETL.
+    """
     from .models import ETLExecution
 
     execution = ETLExecution.objects.get(id=execution_id)
     execution.mark_running()
 
-    logger.info("ETL Pipeline [%s] started — source=%s, realm=%s", execution_id, execution.source, execution.target_realm)
+    logger.info(
+        "ETL Pipeline [%s] started — source=%s, realm=%s",
+        execution_id,
+        execution.source,
+        execution.target_realm
+    )
 
     try:
-        from extract.tasks import extract_coresso, extract_eol_alunos, extract_eol_db, extract_se1426
-        from staging.tasks import crossref_dedup, transform_staging
+        from extract.tasks import (
+            extract_coresso,
+            extract_eol_alunos,
+            extract_eol_db,
+            extract_se1426,
+        )
+        from staging.tasks import (
+            crossref_dedup,
+            transform_staging,
+        )
 
         extract_tasks = []
         source = execution.source
@@ -51,7 +97,7 @@ def run_etl_pipeline(self, execution_id: str):
             logger.error("No extract tasks for source=%s", source)
             return
 
-        pipeline = chord(extract_tasks)(
+        chord(extract_tasks)(
             chain(
                 transform_staging.si(execution_id),
                 crossref_dedup.si(execution_id),
@@ -72,7 +118,23 @@ def run_etl_pipeline(self, execution_id: str):
 
 @shared_task(bind=True, name="core.tasks.decide_target")
 def decide_target(self, execution_id: str):
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+    """Prepara os dados de roteamento para os sistemas de destino.
+
+    Gera os payloads necessários para sincronização com Keycloak e token-ms,
+    armazenando-os nos dados brutos de cada registro de staging.
+
+    Args:
+        self: Instância da task Celery responsável pela execução.
+        execution_id: Identificador da execução ETL.
+
+    Raises:
+        Exception: Repropaga qualquer erro ocorrido durante o processamento.
+    """
+    from staging.models import (
+        StagingUsuarioAluno,
+        StagingUsuarioServidor,
+        StagingUsuarioTerceiro,
+    )
 
     from .keycloak_client import build_kc_payload, build_token_ms_payload
     from .models import ETLExecution, ETLStepLog
@@ -87,8 +149,12 @@ def decide_target(self, execution_id: str):
 
     try:
         total = 0
-        for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-            qs = ModelClass.objects.filter(execution_id=execution_id, status="ready")
+        for model_class in (
+                StagingUsuarioServidor,
+                StagingUsuarioAluno,
+                StagingUsuarioTerceiro
+            ):
+            qs = model_class.objects.filter(execution_id=execution_id, status="ready")
             to_update: list = []
             for u in qs.iterator(chunk_size=1000):
                 raw = u.raw_data or {}
@@ -100,10 +166,14 @@ def decide_target(self, execution_id: str):
                 to_update.append(u)
                 total += 1
                 if len(to_update) >= 500:
-                    ModelClass.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
+                    model_class.objects.bulk_update(
+                        to_update,
+                        ["raw_data"],
+                        batch_size=500
+                    )
                     to_update = []
             if to_update:
-                ModelClass.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
+                model_class.objects.bulk_update(to_update, ["raw_data"], batch_size=500)
 
         step.records_in = total
         step.records_out = total
@@ -122,9 +192,28 @@ def decide_target(self, execution_id: str):
 
 @shared_task(bind=True, name="core.tasks.load_keycloak", max_retries=3)
 def load_keycloak(self, execution_id: str):
+    """Sincroniza usuários elegíveis com o Keycloak.
+
+    Processa os registros de staging marcados como prontos, criando ou
+    atualizando usuários no Keycloak e registrando o resultado da operação.
+
+    Args:
+        self: Instância da task Celery responsável pela execução.
+        execution_id: Identificador da execução ETL.
+
+    Returns:
+        None
+
+    Raises:
+        Exception: Repropaga erros após esgotar ou acionar a política de retry.
+    """
     from django.conf import settings
 
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+    from staging.models import (
+        StagingUsuarioAluno,
+        StagingUsuarioServidor,
+        StagingUsuarioTerceiro,
+    )
 
     from .keycloak_client import get_admin_client, upsert_user_to_keycloak
     from .models import ETLExecution, ETLStepLog
@@ -137,14 +226,21 @@ def load_keycloak(self, execution_id: str):
     )
 
     if not settings.ETL_LOAD_KEYCLOAK_BULK_ENABLED:
-        logger.warning("[%s] Step 6: Load Keycloak desabilitado por política (ETL_LOAD_KEYCLOAK_BULK_ENABLED=false)", execution_id)
+        logger.warning(
+            "[%s] Step 6: Load Keycloak desabilitado por política",
+            execution_id
+        )
         step.status = ETLStepLog.StepStatus.SKIPPED
         step.finished_at = timezone.now()
         step.metadata = {"reason": "ETL_LOAD_KEYCLOAK_BULK_ENABLED=false"}
         step.save()
         return
 
-    logger.info("[%s] Step 6: Load Keycloak — realm=%s", execution_id, execution.target_realm)
+    logger.info(
+        "[%s] Step 6: Load Keycloak — realm=%s",
+        execution_id,
+        execution.target_realm
+    )
 
     try:
         admin = get_admin_client(realm=execution.target_realm)
@@ -154,8 +250,15 @@ def load_keycloak(self, execution_id: str):
         skipped = 0
         total = 0
 
-        for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-            usuarios = ModelClass.objects.filter(execution_id=execution_id, status="ready")
+        for model_class in (
+                StagingUsuarioServidor,
+                StagingUsuarioAluno,
+                StagingUsuarioTerceiro
+            ):
+            usuarios = model_class.objects.filter(
+                execution_id=execution_id,
+                status="ready"
+            )
             total += usuarios.count()
             for usuario in usuarios.iterator(chunk_size=200):
                 try:
@@ -172,7 +275,11 @@ def load_keycloak(self, execution_id: str):
                         loaded += 1
                     usuario.save(update_fields=["status"])
                 except Exception as e:
-                    logger.warning("Load KC error for %s: %s", getattr(usuario, 'rf', None) or usuario.cpf, e)
+                    logger.warning(
+                        "Load KC error for %s: %s",
+                        getattr(usuario, 'rf', None) or usuario.cpf,
+                        e
+                    )
                     usuario.status = "error"
                     usuario.error_detail = str(e)[:1000]
                     usuario.save(update_fields=["status", "error_detail"])
@@ -193,7 +300,13 @@ def load_keycloak(self, execution_id: str):
         execution.total_skipped = (execution.total_skipped or 0) + skipped
         execution.save(update_fields=["total_loaded", "total_skipped", "updated_at"])
 
-        logger.info("[%s] Step 6 concluido: %d loaded, %d skipped, %d errors", execution_id, loaded, skipped, errors)
+        logger.info(
+            "[%s] Step 6 concluido: %d loaded, %d skipped, %d errors",
+            execution_id,
+            loaded,
+            skipped,
+            errors
+        )
 
     except Exception as e:
         logger.exception("[%s] Step 6 FAILED: %s", execution_id, e)
@@ -201,12 +314,27 @@ def load_keycloak(self, execution_id: str):
         step.error_detail = str(e)
         step.finished_at = timezone.now()
         step.save()
-        raise self.retry(exc=e, countdown=60)
-
+        raise self.retry(exc=e, countdown=60) from e
 
 @shared_task(bind=True, name="core.tasks.load_token_ms", max_retries=3)
 def load_token_ms(self, execution_id: str):
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+    """Envia usuários processados para o serviço token-ms.
+
+    Agrupa os registros elegíveis, monta os payloads necessários e realiza
+    o envio em lote para o serviço externo.
+
+    Args:
+        self: Instância da task Celery responsável pela execução.
+        execution_id: Identificador da execução ETL.
+
+    Raises:
+        Exception: Repropaga erros após acionar a política de retry.
+    """
+    from staging.models import (
+        StagingUsuarioAluno,
+        StagingUsuarioServidor,
+        StagingUsuarioTerceiro,
+    )
 
     from .keycloak_client import build_token_ms_payload
     from .models import ETLExecution, ETLStepLog
@@ -222,8 +350,12 @@ def load_token_ms(self, execution_id: str):
 
     try:
         def _payloads():
-            for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-                qs = ModelClass.objects.filter(
+            for model_class in (
+                    StagingUsuarioServidor,
+                    StagingUsuarioAluno,
+                    StagingUsuarioTerceiro
+                ):
+                qs = model_class.objects.filter(
                     execution_id=execution_id,
                     status__in=["ready", "loaded"],
                 )
@@ -241,7 +373,12 @@ def load_token_ms(self, execution_id: str):
         step.finished_at = timezone.now()
         step.save()
 
-        logger.info("[%s] Step 7 concluido: %d usuarios enviados em %d lotes", execution_id, metrics["sent"], metrics["batches"])
+        logger.info(
+            "[%s] Step 7 concluido: %d usuarios enviados em %d lotes",
+            execution_id,
+            metrics["sent"],
+            metrics["batches"]
+        )
 
     except Exception as e:
         logger.exception("[%s] Step 7 FAILED: %s", execution_id, e)
@@ -249,12 +386,22 @@ def load_token_ms(self, execution_id: str):
         step.error_detail = str(e)[:2000]
         step.finished_at = timezone.now()
         step.save()
-        raise self.retry(exc=e, countdown=60)
-
+        raise self.retry(exc=e, countdown=60) from e
 
 @shared_task(bind=True, name="core.tasks.audit_etl")
 def audit_etl(self, execution_id: str):
-    """Etapa 8 — Fecha a execução e agrega métricas finais."""
+    """Finaliza a execução da pipeline e consolida métricas finais.
+
+    Avalia o resultado das etapas executadas, calcula métricas agregadas,
+    define o status final da execução e agenda a limpeza dos dados antigos.
+
+    Args:
+        self: Instância da task Celery responsável pela execução.
+        execution_id: Identificador da execução ETL.
+
+    Returns:
+        None
+    """
     from .models import ETLExecution, ETLStepLog
 
     execution = ETLExecution.objects.get(id=execution_id)
@@ -288,14 +435,18 @@ def audit_etl(self, execution_id: str):
         step.save()
 
         logger.info(
-            "[%s] Pipeline finalizado — status=%s, extracted=%d, loaded=%d, errors=%d, duration=%.1fs",
-            execution_id,
-            execution.status,
-            execution.total_extracted,
-            execution.total_loaded,
-            execution.total_errors,
-            execution.duration_seconds or 0,
-        )
+        (
+            "[%s] Pipeline finalizado — status=%s, "
+            "extracted=%d, loaded=%d, errors=%d, "
+            "duration=%.1fs"
+        ),
+        execution_id,
+        execution.status,
+        execution.total_extracted,
+        execution.total_loaded,
+        execution.total_errors,
+        execution.duration_seconds or 0,
+    )
 
         cleanup_old_staging.apply_async(countdown=30)
 
@@ -307,15 +458,34 @@ def audit_etl(self, execution_id: str):
         step.save()
         execution.mark_finished("failed")
 
-
 @shared_task(name="core.tasks.cleanup_old_staging")
 def cleanup_old_staging(keep_last: int = 2):
-    from staging.models import StagingUsuarioAluno, StagingUsuarioServidor, StagingUsuarioTerceiro
+    """Remove registros antigos de staging que não pertencem às execuções preservadas.
+
+    Mantém os dados associados às execuções mais recentes e exclui registros
+    obsoletos para reduzir o volume armazenado nas tabelas de staging.
+
+    Args:
+        keep_last: Quantidade mínima de execuções recentes a serem preservadas.
+
+    Returns:
+        None
+    """
+    from staging.models import (
+        StagingUsuarioAluno,
+        StagingUsuarioServidor,
+        StagingUsuarioTerceiro,
+    )
 
     from .models import ETLExecution
 
     keep_ids = list(
-        ETLExecution.objects.filter(status__in=["success", "partial", "running", "pending"])
+        ETLExecution.objects.filter(status__in=[
+            "success",
+            "partial",
+            "running",
+            "pending"
+        ])
         .order_by("-finished_at")
         .values_list("id", flat=True)[:keep_last + 5]
     )
@@ -324,8 +494,16 @@ def cleanup_old_staging(keep_last: int = 2):
         return
 
     total_deleted = 0
-    for ModelClass in (StagingUsuarioServidor, StagingUsuarioAluno, StagingUsuarioTerceiro):
-        deleted, _ = ModelClass.objects.exclude(execution_id__in=keep_ids).delete()
+    for model_class in (
+        StagingUsuarioServidor,
+        StagingUsuarioAluno,
+        StagingUsuarioTerceiro
+    ):
+        deleted, _ = model_class.objects.exclude(execution_id__in=keep_ids).delete()
         total_deleted += deleted
     if total_deleted:
-        logger.info("Cleanup: %d staging records removidos (kept %d executions)", total_deleted, len(keep_ids))
+        logger.info(
+            "Cleanup: %d staging records removidos (kept %d executions)",
+            total_deleted,
+            len(keep_ids)
+        )

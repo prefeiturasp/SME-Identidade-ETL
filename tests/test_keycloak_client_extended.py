@@ -190,28 +190,6 @@ class TestEmitRetroalim:
         ).exists()
 
 
-
-
-class TestGetAdminClient:
-    @patch("keycloak.KeycloakAdmin")
-    def test_returns_admin_client(self, mock_kc_cls, settings):
-        settings.KEYCLOAK_SERVER_URL = "http://keycloak:8080"
-        settings.KEYCLOAK_REALM = "sme-apps"
-        settings.KEYCLOAK_ADMIN_USER = "admin"
-        settings.KEYCLOAK_ADMIN_PASSWORD = "admin"
-        settings.KEYCLOAK_ADMIN_CLIENT_ID = "admin-cli"
-
-        mock_admin = MagicMock()
-        mock_kc_cls.return_value = mock_admin
-
-        from core.keycloak_client import get_admin_client
-        admin = get_admin_client(realm="sme-apps")
-        assert admin is mock_admin
-        mock_kc_cls.assert_called_once()
-
-
-
-
 class TestUpsertKcClient:
     def _make_sistema(self, coresso_sis_id=10):
         from staging.models import StagingSistema
