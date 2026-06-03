@@ -150,8 +150,8 @@ class TestStagingUsuarioServidorSerializer:
     def test_readonly_fields_not_writable(self):
         from staging.serializers import StagingUsuarioServidorSerializer
         s = StagingUsuarioServidorSerializer(data={"rf": "123", "status": "loaded"})
-        # read_only_fields = all fields, so is_valid won't use any field
-        # Just ensure it doesn't crash
+        # read_only_fields = todos os campos, entao is_valid nao usa nenhum campo
+        # Apenas garantir que nao quebra
         assert isinstance(s, StagingUsuarioServidorSerializer)
 
 

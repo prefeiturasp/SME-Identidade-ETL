@@ -222,7 +222,7 @@ class TestCrossrefDedup:
             status="transformed",
             source="se1426",
         )
-        # Should not raise
+        # Nao deve levantar excecao
         crossref_dedup(str(execution.id))
 
 

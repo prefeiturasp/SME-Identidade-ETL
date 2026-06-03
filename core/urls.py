@@ -1,5 +1,4 @@
-"""Rotas da aplicacao core do ETL-MS."""
-
+"""Roteamento de URLs para os endpoints da API do core do ETL."""
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 

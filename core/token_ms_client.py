@@ -1,3 +1,4 @@
+"""Cliente HTTP para enviar lotes de usuarios do ETL ao microsservico token-ms."""
 from __future__ import annotations
 
 import logging
@@ -28,6 +29,7 @@ def send_batch(
     max_retries: int = 5,
     base_delay: float = 1.0,
 ) -> dict:
+    """Envia um unico lote de usuarios para o token-ms com retry de backoff exponencial."""
     url = f"{settings.TOKEN_MS_URL.rstrip('/')}/api/v1/etl/push-batch"
     body = {"execution_id": execution_id, "users": users}
 
@@ -61,6 +63,7 @@ def send_all(
     execution_id: str,
     batch_size: int | None = None,
 ) -> dict:
+    """Itera por todos os usuarios e os envia ao token-ms em lotes de tamanho fixo."""
     batch_size = batch_size or settings.TOKEN_MS_BATCH_SIZE
     total = 0
     batches = 0

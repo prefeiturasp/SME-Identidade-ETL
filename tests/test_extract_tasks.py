@@ -166,7 +166,7 @@ class TestExtractCoressoTask:
 
 
 def _make_pyodbc_mock(rows, description):
-    """Build a pyodbc module mock with a cursor returning `rows`."""
+    """Monta um mock do modulo pyodbc com um cursor que retorna `rows`."""
     import sys
     mock_pyodbc = MagicMock()
     mock_cursor = MagicMock()
@@ -244,7 +244,7 @@ class TestExtractSe1426Api:
 
         mock_httpx = MagicMock()
         mock_httpx.Client.return_value = mock_client
-        mock_httpx.HTTPError = Exception  # allow exception isinstance checks
+        mock_httpx.HTTPError = Exception  # permite checagens isinstance de excecao
 
         exec_id = uuid.uuid4()
         with patch.dict(sys.modules, {"httpx": mock_httpx}):

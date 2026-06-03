@@ -1,3 +1,4 @@
+"""Serializers DRF para os modelos de dados de staging."""
 from rest_framework import serializers
 
 from .models import (
@@ -11,7 +12,11 @@ from .models import (
 
 
 class StagingUsuarioServidorSerializer(serializers.ModelSerializer):
+    """Serializer para registros de staging de servidor (funcionario escolar)."""
+
     class Meta:
+        """Metadados do serializer StagingUsuarioServidorSerializer."""
+
         model = StagingUsuarioServidor
         fields = [
             "id", "rf", "cpf", "email", "nome", "data_nascimento",
@@ -23,7 +28,11 @@ class StagingUsuarioServidorSerializer(serializers.ModelSerializer):
 
 
 class StagingUsuarioAlunoSerializer(serializers.ModelSerializer):
+    """Serializer para registros de staging de aluno."""
+
     class Meta:
+        """Metadados do serializer StagingUsuarioAlunoSerializer."""
+
         model = StagingUsuarioAluno
         fields = [
             "id", "cpf", "email", "nome", "data_nascimento",
@@ -35,7 +44,11 @@ class StagingUsuarioAlunoSerializer(serializers.ModelSerializer):
 
 
 class StagingUsuarioTerceiroSerializer(serializers.ModelSerializer):
+    """Serializer para registros de staging de usuario terceiro."""
+
     class Meta:
+        """Metadados do serializer StagingUsuarioTerceiroSerializer."""
+
         model = StagingUsuarioTerceiro
         fields = [
             "id", "cpf", "email", "nome", "data_nascimento",
@@ -46,7 +59,11 @@ class StagingUsuarioTerceiroSerializer(serializers.ModelSerializer):
 
 
 class StagingPerfilSerializer(serializers.ModelSerializer):
+    """Serializer para registros de mapeamento de perfil/role."""
+
     class Meta:
+        """Metadados do serializer StagingPerfilSerializer."""
+
         model = StagingPerfil
         fields = [
             "id",
@@ -62,7 +79,11 @@ class StagingPerfilSerializer(serializers.ModelSerializer):
 
 
 class StagingLotacaoSerializer(serializers.ModelSerializer):
+    """Serializer para registros de lotacao (unidade escolar / DRE)."""
+
     class Meta:
+        """Metadados do serializer StagingLotacaoSerializer."""
+
         model = StagingLotacao
         fields = [
             "id",
@@ -78,12 +99,16 @@ class StagingLotacaoSerializer(serializers.ModelSerializer):
 
 
 class DedupResultSerializer(serializers.ModelSerializer):
+    """Serializer para registros de resultado de deduplicacao com info de vencedor/perdedor."""
+
     winner_nome = serializers.CharField(source="winner.nome", read_only=True)
     winner_source = serializers.CharField(source="winner.source", read_only=True)
     loser_nome = serializers.SerializerMethodField()
     loser_source = serializers.SerializerMethodField()
 
     class Meta:
+        """Metadados do serializer DedupResultSerializer."""
+
         model = DedupResult
         fields = [
             "id",
@@ -113,7 +138,9 @@ class DedupResultSerializer(serializers.ModelSerializer):
         ]
 
     def get_loser_nome(self, obj):
+        """Retorna o nome de exibicao do registro perdedor, ou None se ausente."""
         return obj.loser.nome if obj.loser else None
 
     def get_loser_source(self, obj):
+        """Retorna o identificador do sistema-fonte do registro perdedor, ou None se ausente."""
         return obj.loser.source if obj.loser else None

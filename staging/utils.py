@@ -1,7 +1,9 @@
+"""Funcoes utilitarias para normalizacao e validacao de CPF/RF e geracao de chave de dedup."""
 import re
 
 
 def normalize_cpf(cpf: str | None) -> str | None:
+    """Normaliza uma string de CPF para 11 digitos, retornando None se o tamanho for invalido."""
     if not cpf:
         return None
     digits = re.sub(r"\D", "", cpf)
@@ -11,6 +13,7 @@ def normalize_cpf(cpf: str | None) -> str | None:
 
 
 def validate_cpf(cpf: str | None) -> bool:
+    """Valida uma string de CPF usando o calculo oficial de digitos verificadores mod-11."""
     if not cpf:
         return False
 
@@ -40,6 +43,7 @@ def validate_cpf(cpf: str | None) -> bool:
 
 
 def normalize_rf(rf: str | None) -> str | None:
+    """Normalise a Registro Funcional string, stripping leading zeros."""
     if not rf:
         return None
     cleaned = rf.strip()
@@ -50,6 +54,7 @@ def normalize_rf(rf: str | None) -> str | None:
 
 
 def build_dedup_key(cpf: str | None, rf: str | None) -> str | None:
+    """Monta uma chave canonica de deduplicacao a partir de CPF ou RF, preferindo CPF."""
     cpf_norm = normalize_cpf(cpf)
     if cpf_norm and validate_cpf(cpf_norm):
         return f"cpf:{cpf_norm}"
