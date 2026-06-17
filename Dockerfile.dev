@@ -18,23 +18,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    graphviz \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN echo "[FreeTDS]\nDescription=FreeTDS Driver\nDriver=/usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so\nSetup=/usr/lib/x86_64-linux-gnu/odbc/libtdsS.so" > /tmp/freetds.ini \
     && odbcinst -i -d -f /tmp/freetds.ini \
     && rm /tmp/freetds.ini
 
 WORKDIR /app
 
-COPY requirements/base.txt requirements/base.txt
+COPY requirements/ requirements/
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements/base.txt
+    pip install --no-cache-dir -r requirements/local.txt
 
-COPY . .
-
-RUN python manage.py collectstatic --noinput 2>/dev/null || true
-
-EXPOSE 8001
-
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -sf http://localhost:8001/api/health/ || exit 1
-
-CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8001 --workers 3 --timeout 120"]
+EXPOSE 8001 5668

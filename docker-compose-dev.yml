@@ -1,0 +1,80 @@
+services:
+  postgres_sync_rec:
+    image: postgres:15-alpine
+    container_name: sme_identidade_etl_sync_rec_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${SYNC_REC_DB_NAME:-identidade_sync_rec}
+    ports:
+      - "5440:5432"
+    volumes:
+      - identidade_sync_rec_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${SYNC_REC_DB_NAME:-identidade_sync_rec}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: sme_identidade_etl_keydb
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etl_worker:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sme_identidade_etl_worker_dev
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      SYNC_REC_DB_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres_sync_rec/${SYNC_REC_DB_NAME:-identidade_sync_rec}
+      URL_KEYDB: redis://keydb:6379/0
+    volumes:
+      - .:/app
+    command: python /app/scripts/watch_celery.py
+    restart: unless-stopped
+    depends_on:
+      postgres_sync_rec:
+        condition: service_healthy
+      keydb:
+        condition: service_healthy
+
+  etl_api:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sme_identidade_etl_api_dev
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      SYNC_REC_DB_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres_sync_rec/${SYNC_REC_DB_NAME:-identidade_sync_rec}
+      URL_KEYDB: redis://keydb:6379/0
+    volumes:
+      - .:/app
+    command: >
+      python -Xfrozen_modules=off -m debugpy
+      --listen 0.0.0.0:5668 manage.py runserver 0.0.0.0:8001
+    ports:
+      - "${PORT_WEB:-8001}:8001"
+      - "${PORT_DEBUGPY:-5668}:5668"
+    restart: unless-stopped
+    depends_on:
+      postgres_sync_rec:
+        condition: service_healthy
+      keydb:
+        condition: service_healthy
+
+volumes:
+  identidade_sync_rec_data:

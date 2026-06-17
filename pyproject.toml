@@ -1,32 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "SME-Identidade-ETL"
-version = "0.0.1"
+version = "0.1.0"
+description = "Microsserviço ETL para ingestão, reconciliação e provisionamento de identidades SME-SP"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
 authors = [{ name = "SME" }]
 
-# ==== Coverage ====
-[tool.coverage.run]
-source = ["."]
-omit = [
-    "*/migrations/*",
-    "*/tests/*",
-    "*/templates/*"
-]
+[tool.setuptools]
+include-package-data = true
 
-# ==== Ruff ====
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*", "config*"]
+
+[tool.black]
+line-length = 79
+target-version = ["py312"]
+exclude = "/migrations/"
+
 [tool.ruff]
-line-length = 88
+line-length = 79
 target-version = "py312"
+exclude = ["migrations"]
+
+[tool.isort]
+profile = "black"
+line_length = 79
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "D"]
-ignore = ["D203", "D212", "D104", "D105", "D106", "D107"]
+ignore = ["D203", "D212", "D104", "D105", "D106", "D107", "D102"]
 
-[tool.ruff.lint.per-file-ignores] 
-"**/tests.py" = ["D100"]
+[tool.ruff.lint.per-file-ignores]
+"**/admin.py" = ["D100", "D101"]
+"**/apps.py" = ["D101"]
 "**/tests/**/*.py" = ["D100", "D101"]
+"**/migrations/**/*.py" = ["D100", "D101", "D103"]
 
 [tool.ruff.lint.pydocstyle]
-convention = "google"
+convention = "pep257"
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 120
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=apps --cov-report=term-missing --cov-fail-under=80"
+
+[tool.mypy]
+python_version = "3.12"
+exclude = ".*/migrations/.*"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["apps"]
+omit = ["*/migrations/*", "*/tests/*"]

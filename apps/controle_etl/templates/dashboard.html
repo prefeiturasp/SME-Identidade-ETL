@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+{% load formatadores %}
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETL Monitor — SME-Identidade</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" integrity="sha384-XGj909vG7eRM0p9ZAgq6pCcqH8zVsnTfJ3v/u6U9iIBdOd9rW3Xv6R3C1vT6BIM8" crossorigin="anonymous">
+  <style>
+    :root {
+      --color-success: #22c55e;
+      --color-error:   #ef4444;
+      --color-running: #3b82f6;
+      --color-pending: #94a3b8;
+      --sidebar-width: 220px;
+    }
+
+    body {
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: var(--sidebar-width);
+      height: 100vh;
+      background: #1e293b;
+      border-right: 1px solid #334155;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem 1rem;
+      z-index: 100;
+    }
+    .sidebar-logo {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: .5px;
+      margin-bottom: .25rem;
+    }
+    .sidebar-sub {
+      font-size: .7rem;
+      color: #64748b;
+      margin-bottom: 2rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .sidebar-label {
+      font-size: .65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #475569;
+      margin-bottom: .5rem;
+    }
+    .sidebar-domain {
+      font-size: .8rem;
+      padding: .4rem .75rem;
+      border-radius: 6px;
+      margin-bottom: .25rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      color: #94a3b8;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .sidebar-domain:hover { background: #334155; color: #f1f5f9; }
+    .sidebar-domain .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-sucesso      { background: var(--color-success); }
+    .dot-falha        { background: var(--color-error); }
+    .dot-parcial      { background: #f59e0b; }
+    .dot-executando   { background: var(--color-running); box-shadow: 0 0 6px var(--color-running); }
+    .dot-pendente, .dot-cancelado, .dot-default { background: var(--color-pending); }
+
+    .refresh-badge {
+      margin-top: auto;
+      font-size: .7rem;
+      color: #475569;
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+    }
+    .refresh-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--color-success);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .3; }
+    }
+
+    /* ── Main ── */
+    .main {
+      margin-left: var(--sidebar-width);
+      padding: 2rem;
+      min-height: 100vh;
+    }
+
+    .page-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: .25rem;
+    }
+    .page-sub {
+      font-size: .8rem;
+      color: #64748b;
+      margin-bottom: 2rem;
+    }
+
+    /* ── Domain Cards ── */
+    .section-title {
+      font-size: .7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #475569;
+      margin-bottom: 1rem;
+    }
+
+    .domain-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.1rem 1.25rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform .15s, box-shadow .15s;
+    }
+    .domain-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+    .domain-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 4px; height: 100%;
+    }
+    .domain-card.sucesso::before    { background: var(--color-success); }
+    .domain-card.falha::before      { background: var(--color-error); }
+    .domain-card.parcial::before    { background: #f59e0b; }
+    .domain-card.executando::before { background: var(--color-running); }
+    .domain-card.pendente::before,
+    .domain-card.cancelado::before,
+    .domain-card.default::before    { background: var(--color-pending); }
+
+    .domain-name {
+      font-size: .9rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      word-break: break-all;
+      margin-bottom: .5rem;
+      text-transform: uppercase;
+    }
+    .domain-meta {
+      font-size: .75rem;
+      color: #64748b;
+      line-height: 1.7;
+    }
+    .domain-meta i { margin-right: .3rem; }
+    .domain-error {
+      font-size: .72rem;
+      color: #f87171;
+      margin-top: .4rem;
+      word-break: break-word;
+    }
+
+    /* ── Pill Status ── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: .3rem;
+      font-size: .7rem;
+      font-weight: 600;
+      padding: .2rem .65rem;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .pill.sucesso     { background: #14532d; color: #4ade80; }
+    .pill.falha       { background: #7f1d1d; color: #fca5a5; }
+    .pill.parcial     { background: #78350f; color: #fde68a; }
+    .pill.cancelado   { background: #334155; color: #cbd5e1; }
+    .pill.executando  { background: #1e3a8a; color: #93c5fd; }
+    .pill.pendente    { background: #334155; color: #cbd5e1; }
+
+    /* ── Filter / Run Card ── */
+    .filter-card, .run-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .filter-card .form-control,
+    .filter-card .form-select,
+    .run-card .form-select {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      font-size: .82rem;
+      border-radius: 8px;
+    }
+    .filter-card .form-control:focus,
+    .filter-card .form-select:focus,
+    .run-card .form-select:focus {
+      background: #0f172a;
+      border-color: #3b82f6;
+      color: #f1f5f9;
+      box-shadow: 0 0 0 3px rgba(59,130,246,.2);
+    }
+    .filter-card .form-control::placeholder { color: #475569; }
+    .filter-card option, .run-card option { background: #1e293b; }
+
+    /* ── Table ── */
+    .exec-table-wrap {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .exec-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    .exec-table thead tr {
+      background: #0f172a;
+      border-bottom: 1px solid #334155;
+    }
+    .exec-table thead th {
+      padding: .75rem 1rem;
+      font-size: .68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #475569;
+      white-space: nowrap;
+    }
+    .exec-table tbody tr {
+      border-bottom: 1px solid #1e293b;
+      transition: background .1s;
+    }
+    .exec-table tbody tr:hover { background: #263245; }
+    .exec-table tbody tr:last-child { border-bottom: none; }
+    .exec-table td {
+      padding: .7rem 1rem;
+      color: #cbd5e1;
+      vertical-align: middle;
+    }
+    .exec-table .td-domain { font-weight: 600; color: #f1f5f9; text-transform: uppercase; }
+    .exec-table .td-uuid   { font-size: .7rem; color: #475569; font-family: monospace; }
+    .exec-table .td-error  { color: #f87171; font-size: .75rem; max-width: 200px; }
+    .exec-table .text-muted-dim { color: #475569; }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: #475569;
+    }
+    .empty-state i { font-size: 2rem; display: block; margin-bottom: .75rem; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; padding: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <i class="bi bi-cpu me-1"></i> ETL Monitor
+  </div>
+  <div class="sidebar-sub">SME-Identidade</div>
+
+  <div class="sidebar-label">Navegação</div>
+  <a class="sidebar-domain active" href="/dashboard/" style="color:#f1f5f9;background:#334155">
+    <i class="bi bi-activity" style="width:16px;text-align:center"></i> Execuções
+  </a>
+  <a class="sidebar-domain" href="/dashboard/kanban/">
+    <i class="bi bi-kanban" style="width:16px;text-align:center"></i> Kanban
+  </a>
+
+  {% if ultima_por_fonte %}
+  <div class="sidebar-label" style="margin-top:.75rem">Fontes</div>
+  {% for exec in ultima_por_fonte %}
+  <a class="sidebar-domain"
+     href="?fonte={{ exec.fonte }}">
+    <span class="dot dot-{{ exec.situacao }}"></span>
+    {{ exec.fonte|truncatechars:22 }}
+  </a>
+  {% endfor %}
+  {% endif %}
+
+  <div class="refresh-badge">
+    <span class="refresh-dot"></span>
+    Atualiza manualmente (F5)
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main">
+
+  <div class="page-title"><i class="bi bi-activity me-2"></i>Painel de Execuções ETL — Identidade</div>
+  <div class="page-sub">Monitoramento em tempo real · últimas {{ execucoes|length }} execuções</div>
+
+  <!-- Disparar nova execução -->
+  <div class="section-title">Disparar execução</div>
+  <div class="run-card">
+    <form method="post" action="/dashboard/executar/" class="row g-2 align-items-end" id="form-disparar">
+      {% csrf_token %}
+      <div class="col-12 col-sm-6 col-md-3">
+        <label for="id_fonte_disparo" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Fonte</label>
+        <select id="id_fonte_disparo" name="fonte" class="form-select form-select-sm">
+          {% for f in fontes %}
+          <option value="{{ f }}">{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-success" style="border-radius:8px;font-size:.8rem">
+          <i class="bi bi-play-fill me-1"></i>Executar
+        </button>
+      </div>
+      <div class="col-auto" style="font-size:.72rem;color:#64748b">
+        "todos" executa o pipeline completo (SE1426 + CoreSSO + EOL Alunos).
+      </div>
+    </form>
+  </div>
+
+  <!-- Cards por fonte -->
+  <div class="section-title">Status atual por fonte</div>
+  {% if ultima_por_fonte %}
+  <div class="row g-3 mb-4">
+    {% for exec in ultima_por_fonte %}
+    <div class="col-12 col-sm-6 col-xl-4">
+      <div class="domain-card {{ exec.situacao }}">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+          <div class="domain-name">{{ exec.fonte }}</div>
+          <span class="pill {{ exec.situacao }} ms-2">
+            {% if exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
+            {% elif exec.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
+            {% elif exec.situacao == "parcial" %}<i class="bi bi-exclamation-triangle-fill"></i>
+            {% elif exec.situacao == "executando" %}<i class="bi bi-arrow-repeat"></i>
+            {% else %}<i class="bi bi-clock"></i>{% endif %}
+            {{ exec.situacao }}
+          </span>
+        </div>
+        <div class="domain-meta">
+          {% if exec.iniciado_em %}
+          <div><i class="bi bi-play-fill"></i>{{ exec.iniciado_em|date:"d/m/Y H:i:s" }}</div>
+          {% endif %}
+          {% if exec.finalizado_em %}
+          <div><i class="bi bi-stop-fill"></i>{{ exec.finalizado_em|date:"d/m/Y H:i:s" }}</div>
+          {% endif %}
+          <div class="mt-1" style="font-size:.68rem;color:#334155;font-family:monospace">{{ exec.id_execucao }}</div>
+        </div>
+        <div class="mt-2" style="font-size:.75rem;color:#64748b">
+          <i class="bi bi-database-check me-1"></i>
+          <strong style="color:#f1f5f9">{{ exec.total_carregado|numero_br }}</strong> carregados ·
+          <strong style="color:#f87171">{{ exec.total_erros|numero_br }}</strong> erros
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state mb-4">
+    <i class="bi bi-inbox"></i>
+    Nenhuma execução registrada ainda.
+  </div>
+  {% endif %}
+
+  <!-- Prévia das últimas 10 execuções -->
+  <div class="section-title mt-4">Prévia — últimas 10 execuções</div>
+  {% if ultimas_10 %}
+  <div class="exec-table-wrap mb-4">
+    <table class="exec-table">
+      <thead>
+        <tr>
+          <th><i class="bi bi-diagram-3 me-1"></i>Fonte</th>
+          <th>Situação</th>
+          <th><i class="bi bi-play me-1"></i>Início</th>
+          <th><i class="bi bi-list-task me-1"></i>Etapa</th>
+          <th style="text-align:right"><i class="bi bi-hash me-1"></i>Registros saída</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in ultimas_10 %}
+          {% with etapas=item.etapas.all %}
+          {% if etapas %}
+            {% for etapa in etapas %}
+            <tr>
+              {% if forloop.first %}
+              <td class="td-domain" rowspan="{{ etapas|length }}">{{ item.fonte }}</td>
+              <td rowspan="{{ etapas|length }}">
+                <span class="pill {{ item.situacao }}">
+                  {% if item.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
+                  {% elif item.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
+                  {% elif item.situacao == "parcial" %}<i class="bi bi-exclamation-triangle-fill"></i>
+                  {% elif item.situacao == "executando" %}<i class="bi bi-arrow-repeat"></i>
+                  {% else %}<i class="bi bi-clock"></i>{% endif %}
+                  {{ item.situacao }}
+                </span>
+              </td>
+              <td class="text-nowrap" rowspan="{{ etapas|length }}">{{ item.criado_em|date:"d/m H:i" }}</td>
+              {% endif %}
+              <td style="color:#94a3b8;font-size:.78rem">{{ etapa.get_nome_etapa_display }}</td>
+              <td style="text-align:right;font-weight:600;color:#60a5fa">{{ etapa.registros_saida|numero_br }}</td>
+            </tr>
+            {% endfor %}
+          {% else %}
+          <tr>
+            <td class="td-domain">{{ item.fonte }}</td>
+            <td>
+              <span class="pill {{ item.situacao }}">
+                {% if item.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
+                {% elif item.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
+                {% elif item.situacao == "parcial" %}<i class="bi bi-exclamation-triangle-fill"></i>
+                {% elif item.situacao == "executando" %}<i class="bi bi-arrow-repeat"></i>
+                {% else %}<i class="bi bi-clock"></i>{% endif %}
+                {{ item.situacao }}
+              </span>
+            </td>
+            <td class="text-nowrap">{{ item.criado_em|date:"d/m H:i" }}</td>
+            <td colspan="2" class="text-muted-dim" style="font-size:.78rem">sem etapas registradas</td>
+          </tr>
+          {% endif %}
+          {% endwith %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state mb-4">
+    <i class="bi bi-inbox"></i>
+    Nenhuma execução encontrada.
+  </div>
+  {% endif %}
+
+  <!-- Filtros -->
+  <div class="section-title mt-3">Histórico de execuções</div>
+  <div class="filter-card">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-12 col-sm-6 col-md-3">
+        <label for="id_fonte" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Fonte</label>
+        <select id="id_fonte" name="fonte" class="form-select form-select-sm">
+          <option value="">Todas</option>
+          {% for f in fontes %}
+          <option value="{{ f }}" {% if filtros.fonte == f %}selected{% endif %}>{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <label for="id_data_inicio" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">De</label>
+        <input id="id_data_inicio" type="date" name="data_inicio" class="form-control form-control-sm"
+               value="{{ filtros.data_inicio }}">
+      </div>
+      <div class="col-6 col-md-2">
+        <label for="id_data_fim" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Até</label>
+        <input id="id_data_fim" type="date" name="data_fim" class="form-control form-control-sm"
+               value="{{ filtros.data_fim }}">
+      </div>
+      <div class="col-12 col-sm-6 col-md-2">
+        <label for="id_situacao" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Situação</label>
+        <select id="id_situacao" name="situacao" class="form-select form-select-sm">
+          <option value="">Todas</option>
+          {% for s in situacoes %}
+          <option value="{{ s }}" {% if filtros.situacao == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto d-flex gap-2">
+        <button type="submit" class="btn btn-sm btn-primary" style="border-radius:8px;font-size:.8rem">
+          <i class="bi bi-funnel-fill me-1"></i>Filtrar
+        </button>
+        <a href="/dashboard/" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
+          <i class="bi bi-x-lg me-1"></i>Limpar
+        </a>
+      </div>
+    </form>
+  </div>
+
+  <!-- Tabela -->
+  <div class="exec-table-wrap">
+    <table class="exec-table">
+      <thead>
+        <tr>
+          <th><i class="bi bi-diagram-3 me-1"></i>Fonte</th>
+          <th>Situação</th>
+          <th><i class="bi bi-play me-1"></i>Início</th>
+          <th><i class="bi bi-stop me-1"></i>Fim</th>
+          <th>ID Execução</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for exec in execucoes %}
+        <tr>
+          <td class="td-domain">{{ exec.fonte }}</td>
+          <td>
+            <span class="pill {{ exec.situacao }}">
+              {% if exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
+              {% elif exec.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
+              {% elif exec.situacao == "parcial" %}<i class="bi bi-exclamation-triangle-fill"></i>
+              {% elif exec.situacao == "executando" %}<i class="bi bi-arrow-repeat"></i>
+              {% else %}<i class="bi bi-clock"></i>{% endif %}
+              {{ exec.situacao }}
+            </span>
+          </td>
+          <td class="text-nowrap">
+            {% if exec.iniciado_em %}
+              {{ exec.iniciado_em|date:"d/m/Y H:i:s" }}
+            {% else %}
+              <span class="text-muted-dim">—</span>
+            {% endif %}
+          </td>
+          <td class="text-nowrap">
+            {% if exec.finalizado_em %}
+              {{ exec.finalizado_em|date:"d/m/Y H:i:s" }}
+            {% else %}
+              <span class="text-muted-dim">—</span>
+            {% endif %}
+          </td>
+          <td class="td-uuid">{{ exec.id_execucao }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5">
+            <div class="empty-state">
+              <i class="bi bi-search"></i>
+              Nenhuma execução encontrada com os filtros aplicados.
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</main>
+
+</body>
+</html>

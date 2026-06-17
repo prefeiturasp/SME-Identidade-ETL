@@ -21,7 +21,7 @@ dist/
 build/
 *.egg-info/
 *.egg
-
+docs/_build
 # Testing
 .pytest_cache/
 .coverage
@@ -38,3 +38,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Relatório de validação E2E (contém dados reais extraídos — gerado
+# localmente por `make validar-e2e`, não deve ser versionado)
+validacao.md
