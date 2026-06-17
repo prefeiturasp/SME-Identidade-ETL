@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     graphviz \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "[FreeTDS]\nDescription=FreeTDS Driver\nDriver=/usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so\nSetup=/usr/lib/x86_64-linux-gnu/odbc/libtdsS.so" > /tmp/freetds.ini \
