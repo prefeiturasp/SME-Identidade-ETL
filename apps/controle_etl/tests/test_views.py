@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -536,7 +537,7 @@ class TestResumoExecucoesView:
 
 @pytest.mark.django_db
 class TestDashboardView:
-    URL = "/dashboard/"
+    URL = reverse("dashboard")
 
     def test_renderiza_sem_execucoes(
         self,
@@ -577,7 +578,7 @@ class TestDashboardView:
 
 @pytest.mark.django_db
 class TestKanbanView:
-    URL = "/dashboard/kanban/"
+    URL = reverse("kanban")
 
     def test_renderiza_sem_execucoes(
         self,
@@ -647,7 +648,7 @@ class TestKanbanView:
 
 @pytest.mark.django_db
 class TestDispararExecucaoDashboardView:
-    URL = "/dashboard/executar/"
+    URL = reverse("dashboard-executar")
 
     def test_dispara_e_redireciona(
         self,

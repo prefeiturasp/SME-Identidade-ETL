@@ -145,10 +145,10 @@
   <div class="sidebar-sub">SME-Identidade</div>
 
   <div class="sidebar-label">Navegação</div>
-  <a class="sidebar-nav" href="/dashboard/">
+  <a class="sidebar-nav" href="{% url 'dashboard' %}">
     <i class="bi bi-activity"></i> Execuções
   </a>
-  <a class="sidebar-nav active" href="/dashboard/kanban/">
+  <a class="sidebar-nav active" href="{% url 'kanban' %}">
     <i class="bi bi-kanban"></i> Kanban
   </a>
 
@@ -197,7 +197,7 @@
       <button type="submit" class="btn btn-sm btn-primary" style="border-radius:8px;font-size:.8rem">
         <i class="bi bi-funnel-fill me-1"></i>Filtrar
       </button>
-      <a href="/dashboard/kanban/" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
+      <a href="{% url 'kanban' %}" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
         <i class="bi bi-x-lg me-1"></i>Limpar
       </a>
     </form>

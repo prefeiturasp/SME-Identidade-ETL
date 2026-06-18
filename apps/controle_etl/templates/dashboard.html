@@ -284,10 +284,10 @@
   <div class="sidebar-sub">SME-Identidade</div>
 
   <div class="sidebar-label">Navegação</div>
-  <a class="sidebar-domain active" href="/dashboard/" style="color:#f1f5f9;background:#334155">
+  <a class="sidebar-domain active" href="{% url 'dashboard' %}" style="color:#f1f5f9;background:#334155">
     <i class="bi bi-activity" style="width:16px;text-align:center"></i> Execuções
   </a>
-  <a class="sidebar-domain" href="/dashboard/kanban/">
+  <a class="sidebar-domain" href="{% url 'kanban' %}">
     <i class="bi bi-kanban" style="width:16px;text-align:center"></i> Kanban
   </a>
 
@@ -317,7 +317,7 @@
   <!-- Disparar nova execução -->
   <div class="section-title">Disparar execução</div>
   <div class="run-card">
-    <form method="post" action="/dashboard/executar/" class="row g-2 align-items-end" id="form-disparar">
+    <form method="post" action="{% url 'dashboard-executar' %}" class="row g-2 align-items-end" id="form-disparar">
       {% csrf_token %}
       <div class="col-12 col-sm-6 col-md-3">
         <label for="id_fonte_disparo" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Fonte</label>
@@ -484,7 +484,7 @@
         <button type="submit" class="btn btn-sm btn-primary" style="border-radius:8px;font-size:.8rem">
           <i class="bi bi-funnel-fill me-1"></i>Filtrar
         </button>
-        <a href="/dashboard/" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
+        <a href="{% url 'dashboard' %}" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
           <i class="bi bi-x-lg me-1"></i>Limpar
         </a>
       </div>

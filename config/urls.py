@@ -15,13 +15,14 @@ from apps.controle_etl.views import (
     KanbanView,
 )
 
-_API_V1 = "identidade-etl/api/v1/"
+_PREFIXO = "identidade-etl/"
+_API_V1 = f"{_PREFIXO}api/v1/"
 
 urlpatterns = [
-    path("dashboard/", DashboardView.as_view(), name="dashboard"),
-    path("dashboard/kanban/", KanbanView.as_view(), name="kanban"),
+    path(f"{_PREFIXO}dashboard/", DashboardView.as_view(), name="dashboard"),
+    path(f"{_PREFIXO}dashboard/kanban/", KanbanView.as_view(), name="kanban"),
     path(
-        "dashboard/executar/",
+        f"{_PREFIXO}dashboard/executar/",
         DispararExecucaoDashboardView.as_view(),
         name="dashboard-executar",
     ),

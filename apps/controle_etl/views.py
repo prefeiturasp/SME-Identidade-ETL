@@ -6,6 +6,7 @@ import logging
 from django.db.models import Count, OuterRef, QuerySet, Subquery, Sum
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
+from django.urls import reverse
 from django.utils import timezone
 from django.views import View
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -825,7 +826,7 @@ class DispararExecucaoDashboardView(View):
         usuario = getattr(request, "user", None)
         disparado_por = getattr(usuario, "username", None) or "dashboard"
         _disparar_execucao(fonte=fonte, disparado_por=disparado_por)
-        return HttpResponseRedirect("/dashboard/")
+        return HttpResponseRedirect(reverse("dashboard"))
 
 
 class DashboardView(View):
