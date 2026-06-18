@@ -1,6 +1,9 @@
 """Comando Django para provisionar perfis CoreSSO como roles no Keycloak."""
 
+from __future__ import annotations
+
 import time
+from typing import Any
 
 from django.core.management.base import BaseCommand
 
@@ -19,7 +22,7 @@ class Command(BaseCommand):
         " como client roles no Keycloak."
     )
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: Any) -> None:
         """Define os argumentos do comando."""
         parser.add_argument(
             "--sis-id",
@@ -34,7 +37,33 @@ class Command(BaseCommand):
             help="Realm Keycloak. Omitir = valor de KEYCLOAK_REALM.",
         )
 
-    def handle(self, *args, **options):
+    def _provisionar_perfil(
+        self,
+        admin: Any,
+        perfil: Any,
+        contadores: dict[str, int],
+        erros: list[tuple[str, str]],
+    ) -> None:
+        try:
+            resultado = provisionar_role_client_kc(admin, perfil)
+            acao = resultado["acao"]
+            if acao == "criado":
+                contadores["criados"] += 1
+            elif acao == "atualizado":
+                contadores["atualizados"] += 1
+            else:
+                contadores["ignorados"] += 1
+        except Exception as exc:
+            contadores["erros"] += 1
+            if len(erros) < 10:
+                erros.append(
+                    (
+                        perfil.kc_role_nome or perfil.nome,
+                        str(exc)[:140],
+                    )
+                )
+
+    def handle(self, *args: Any, **options: Any) -> None:
         """Executa o provisionamento de roles."""
         sis_id = options["sis_id"]
         realm = options["realm"]
@@ -49,7 +78,12 @@ class Command(BaseCommand):
         )
 
         admin = obter_admin_keycloak(realm=realm)
-        criados = atualizados = ignorados = erros = 0
+        contadores = {
+            "criados": 0,
+            "atualizados": 0,
+            "ignorados": 0,
+            "erros": 0,
+        }
         primeiros_erros: list[tuple[str, str]] = []
         t0 = time.time()
 
@@ -57,35 +91,24 @@ class Command(BaseCommand):
             if idx and idx % 50 == 0:
                 self.stdout.write(
                     f"  [{idx}/{total}] {time.time() - t0:.1f}s"
-                    f" | criados={criados} atualizados={atualizados}"
-                    f" ignorados={ignorados} erros={erros}"
+                    f" | criados={contadores['criados']}"
+                    f" atualizados={contadores['atualizados']}"
+                    f" ignorados={contadores['ignorados']}"
+                    f" erros={contadores['erros']}"
                 )
                 admin = obter_admin_keycloak(realm=realm)
 
-            try:
-                resultado = provisionar_role_client_kc(admin, perfil)
-                acao = resultado["acao"]
-                if acao == "criado":
-                    criados += 1
-                elif acao == "atualizado":
-                    atualizados += 1
-                else:
-                    ignorados += 1
-            except Exception as exc:
-                erros += 1
-                if len(primeiros_erros) < 10:
-                    primeiros_erros.append(
-                        (
-                            perfil.kc_role_nome or perfil.nome,
-                            str(exc)[:140],
-                        )
-                    )
+            self._provisionar_perfil(
+                admin, perfil, contadores, primeiros_erros
+            )
 
         self.stdout.write(
             self.style.SUCCESS(
                 f"\nConcluído em {time.time() - t0:.1f}s:"
-                f" criados={criados} atualizados={atualizados}"
-                f" ignorados={ignorados} erros={erros}"
+                f" criados={contadores['criados']}"
+                f" atualizados={contadores['atualizados']}"
+                f" ignorados={contadores['ignorados']}"
+                f" erros={contadores['erros']}"
             )
         )
 

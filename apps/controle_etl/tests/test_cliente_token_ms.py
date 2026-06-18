@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -18,7 +19,7 @@ from apps.controle_etl.cliente_token_ms import enviar_lote, enviar_todos
 class TestEnviarLote:
     """Testa o envio de um único lote de usuários ao token-ms."""
 
-    def _mock_ok(self, json_body=None):
+    def _mock_ok(self, json_body: Any = None) -> MagicMock:
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
         resp.content = b'{"situacao":"ok"}'
@@ -26,7 +27,7 @@ class TestEnviarLote:
         resp.raise_for_status.return_value = None
         return resp
 
-    def test_envia_post_com_payload_correto(self, settings):
+    def test_envia_post_com_payload_correto(self, settings: Any) -> None:
         """Verifica que o POST é enviado com id_execucao e usuários."""
         settings.TOKEN_MS_URL = "http://token-ms"
         settings.TOKEN_MS_TOKEN = "tok"
@@ -52,7 +53,10 @@ class TestEnviarLote:
         assert len(body["usuarios"]) == 1
         assert resultado == {"situacao": "ok"}
 
-    def test_retorna_dict_ok_quando_resposta_vazia(self, settings):
+    def test_retorna_dict_ok_quando_resposta_vazia(
+        self,
+        settings: Any,
+    ) -> None:
         """Verifica que uma resposta 204 sem corpo retorna situação ok."""
         settings.TOKEN_MS_URL = "http://token-ms"
         settings.TOKEN_MS_TOKEN = ""
@@ -75,7 +79,10 @@ class TestEnviarLote:
 
         assert resultado == {"situacao": "ok"}
 
-    def test_status_retriavel_levanta_excecao_apos_tentativas(self, settings):
+    def test_status_retriavel_levanta_excecao_apos_tentativas(
+        self,
+        settings: Any,
+    ) -> None:
         """Verifica que erro 503 persistente propaga HTTPStatusError."""
         settings.TOKEN_MS_URL = "http://token-ms"
         settings.TOKEN_MS_TOKEN = ""
@@ -86,7 +93,7 @@ class TestEnviarLote:
         resp.status_code = 503
         resp.request = MagicMock()
 
-        def raise_503(*a, **kw):
+        def raise_503(*a: Any, **kw: Any) -> None:
             raise httpx.HTTPStatusError(
                 "503", request=resp.request, response=resp
             )
@@ -101,7 +108,10 @@ class TestEnviarLote:
             with pytest.raises(httpx.HTTPStatusError):
                 enviar_lote([], id_execucao="exec-3")
 
-    def test_usa_token_interno_se_disponivel(self, settings):
+    def test_usa_token_interno_se_disponivel(
+        self,
+        settings: Any,
+    ) -> None:
         """Verifica que X-Internal-Token é usado quando configurado."""
         settings.TOKEN_MS_URL = "http://token-ms"
         settings.TOKEN_MS_TOKEN = "ext-tok"
@@ -136,7 +146,7 @@ class TestEnviarLote:
 class TestEnviarTodos:
     """Testa o envio de usuários em múltiplos lotes ao token-ms."""
 
-    def test_divide_em_lotes_corretos(self, settings):
+    def test_divide_em_lotes_corretos(self, settings: Any) -> None:
         """Verifica que os usuários são divididos no nº correto de lotes."""
         settings.TOKEN_MS_URL = "http://token-ms"
         settings.TOKEN_MS_TOKEN = ""
@@ -158,7 +168,10 @@ class TestEnviarTodos:
         assert resultado["lotes"] == 3
         assert mock_lote.call_count == 3
 
-    def test_iteravel_vazio_nao_chama_enviar_lote(self, settings):
+    def test_iteravel_vazio_nao_chama_enviar_lote(
+        self,
+        settings: Any,
+    ) -> None:
         """Verifica que lista vazia de usuários não dispara envio."""
         settings.TOKEN_MS_TAMANHO_LOTE = 500
 
@@ -171,7 +184,10 @@ class TestEnviarTodos:
         assert resultado["enviados"] == 0
         assert resultado["lotes"] == 0
 
-    def test_usa_tamanho_lote_do_settings(self, settings):
+    def test_usa_tamanho_lote_do_settings(
+        self,
+        settings: Any,
+    ) -> None:
         """Verifica que o tamanho de lote do settings é respeitado."""
         settings.TOKEN_MS_TAMANHO_LOTE = 3
 

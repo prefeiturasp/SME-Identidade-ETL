@@ -12,6 +12,7 @@ Implementa as tasks definidas na especificação arquitetural:
 
 import logging
 import time
+from typing import Any
 
 from celery import chain, chord, shared_task
 from django.utils import timezone
@@ -32,9 +33,11 @@ def _calcular_atraso(tentativa: int) -> int:
     Returns:
         Segundos de espera antes da próxima tentativa.
     """
-    return min(
-        _ATRASO_BASE_REINTENTO * (2 ** (tentativa - 1)),
-        _ATRASO_MAXIMO_REINTENTO,
+    return int(
+        min(
+            _ATRASO_BASE_REINTENTO * (2 ** (tentativa - 1)),
+            _ATRASO_MAXIMO_REINTENTO,
+        )
     )
 
 
@@ -89,7 +92,7 @@ def _atualizar_checkpoint(
     max_retries=5,
 )
 def task_identidade_extrair_se1426(
-    self,
+    self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
 ) -> dict:
@@ -104,9 +107,7 @@ def task_identidade_extrair_se1426(
         Dicionário com ``total_extraido``.
     """
     from apps.extracao.tasks import extrair_se1426  # noqa: PLC0415
-    from apps.staging.tasks import (  # noqa: PLC0415
-        persistir_extracao_staging,
-    )
+    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_se1426 — início", id_execucao)
@@ -121,7 +122,7 @@ def task_identidade_extrair_se1426(
             duracao=duracao,
         )
         logger.info(
-            "[%s] task_identidade_extrair_se1426 — %d registros" " (%.1fs)",
+            "[%s] SE1426 — %d registros (%.1fs)",
             id_execucao,
             total,
             duracao,
@@ -158,7 +159,7 @@ def task_identidade_extrair_se1426(
     max_retries=5,
 )
 def task_identidade_extrair_coresso(
-    self,
+    self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
 ) -> dict:
@@ -172,9 +173,7 @@ def task_identidade_extrair_coresso(
         Dicionário com ``total_extraido``.
     """
     from apps.extracao.tasks import extrair_coresso  # noqa: PLC0415
-    from apps.staging.tasks import (  # noqa: PLC0415
-        persistir_extracao_staging,
-    )
+    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_coresso — início", id_execucao)
@@ -189,7 +188,7 @@ def task_identidade_extrair_coresso(
             duracao=duracao,
         )
         logger.info(
-            "[%s] task_identidade_extrair_coresso — %d registros" " (%.1fs)",
+            "[%s] CoreSSO — %d registros (%.1fs)",
             id_execucao,
             total,
             duracao,
@@ -217,7 +216,7 @@ def task_identidade_extrair_coresso(
     max_retries=5,
 )
 def task_identidade_extrair_eol_alunos(
-    self,
+    self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
 ) -> dict:
@@ -231,9 +230,7 @@ def task_identidade_extrair_eol_alunos(
         Dicionário com ``total_extraido``.
     """
     from apps.extracao.tasks import extrair_eol_alunos  # noqa: PLC0415
-    from apps.staging.tasks import (  # noqa: PLC0415
-        persistir_extracao_staging,
-    )
+    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
 
     inicio = time.monotonic()
     logger.info(
@@ -280,7 +277,7 @@ def task_identidade_extrair_eol_alunos(
     max_retries=3,
 )
 def task_identidade_resolver_identidade(
-    self, resultados_extracao: list, id_execucao: str
+    self: Any, resultados_extracao: list, id_execucao: str
 ) -> dict:
     """Resolve identidades: merge, reconciliação, dedup e projeções.
 
@@ -369,9 +366,9 @@ def task_identidade_resolver_identidade(
 
 
 def _provisionar_lote_kc(
-    admin: object,
+    admin: Any,
     lote: list,
-    execucao: object,
+    execucao: Any,
     id_execucao: str,
 ) -> tuple[int, int, int]:
     """Provisiona um lote de usuários no Keycloak em paralelo.
@@ -424,7 +421,7 @@ def _provisionar_lote_kc(
     max_retries=3,
 )
 def task_provisionar_identidade_keycloak(
-    self, resultado_resolucao: dict, id_execucao: str
+    self: Any, resultado_resolucao: dict, id_execucao: str
 ) -> dict:
     """Provisiona identidades no Keycloak via upsert idempotente.
 
@@ -569,7 +566,7 @@ def task_provisionar_identidade_keycloak(
     max_retries=3,
 )
 def task_carregar_atributos_token(
-    self, resultado_provisionamento: dict, id_execucao: str
+    self: Any, resultado_provisionamento: dict, id_execucao: str
 ) -> dict:
     """Publica atributos complementares para o token-ms.
 
@@ -607,7 +604,7 @@ def task_carregar_atributos_token(
 
     try:
 
-        def _payloads():
+        def _payloads() -> Any:
             for modelo in (
                 UsuarioServidorStaging,
                 UsuarioAlunoStaging,
@@ -654,7 +651,9 @@ def task_carregar_atributos_token(
 
 
 @shared_task(bind=True, name="task_sync_rec_etl")
-def task_sync_rec_etl(self, resultado_token: dict, id_execucao: str) -> dict:
+def task_sync_rec_etl(
+    self: Any, resultado_token: dict, id_execucao: str
+) -> dict:
     """Registra metadados operacionais e finaliza a execução.
 
     Consolida watermarks, checkpoints e métricas finais no SYNC_REC_DB.
@@ -681,7 +680,7 @@ def task_sync_rec_etl(self, resultado_token: dict, id_execucao: str) -> dict:
     logger.info("[%s] task_sync_rec_etl — início", id_execucao)
 
     try:
-        etapas = execucao.etapas.all()
+        etapas = execucao.etapas.all()  # type: ignore[attr-defined]
         total_erros = sum(e.registros_erro for e in etapas)
         tem_falhas = etapas.filter(
             situacao=LogEtapaETL.Situacao.FALHA
@@ -742,7 +741,7 @@ def task_sync_rec_etl(self, resultado_token: dict, id_execucao: str) -> dict:
 
 @shared_task(bind=True, name="task_identidade_executar_pipeline")
 def task_identidade_executar_pipeline(
-    self,
+    self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
 ) -> None:

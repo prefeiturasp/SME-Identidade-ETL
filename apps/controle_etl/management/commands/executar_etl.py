@@ -1,6 +1,9 @@
 """Comando Django para disparar o pipeline de identidade manualmente."""
 
+from __future__ import annotations
+
 import time
+from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -17,7 +20,7 @@ class Command(BaseCommand):
         "Use --lote-maximo para limitar o volume em testes locais."
     )
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: Any) -> None:
         """Define os argumentos do comando."""
         parser.add_argument(
             "--fonte",
@@ -48,7 +51,7 @@ class Command(BaseCommand):
             ),
         )
 
-    def handle(self, *args, **options):
+    def handle(self, *args: Any, **options: Any) -> None:
         """Cria a execução e dispara o pipeline."""
         if options["lote_maximo"] is not None:
             settings.ETL_LOTE_MAXIMO = options["lote_maximo"]

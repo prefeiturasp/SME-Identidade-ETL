@@ -1,6 +1,9 @@
 """Configuração Celery do SME-Identidade-ETL."""
 
+from __future__ import annotations
+
 import os
+from typing import Any
 
 from celery import Celery
 from celery.schedules import crontab
@@ -25,7 +28,7 @@ app.conf.beat_schedule = {
 
 
 @app.task(bind=True, ignore_result=True)
-def tarefa_debug(self) -> None:  # type: ignore[override]
+def tarefa_debug(self: Any) -> None:
     """Tarefa de debug para verificar o worker Celery."""
     print(f"Requisição: {self.request!r}")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -15,7 +16,7 @@ from apps.controle_etl.models import ExecucaoETL, LogEtapaETL
 class TestExecutarEtl:
     """Testa o management command executar_etl."""
 
-    def _marcar_sucesso(self, execucao, **totais):
+    def _marcar_sucesso(self, execucao: Any, **totais: Any) -> None:
         execucao.situacao = ExecucaoETL.Situacao.SUCESSO
         for campo, valor in totais.items():
             setattr(execucao, campo, valor)
@@ -27,11 +28,14 @@ class TestExecutarEtl:
             situacao=LogEtapaETL.Situacao.SUCESSO,
         )
 
-    def test_modo_eager_reporta_sucesso(self, settings):
+    def test_modo_eager_reporta_sucesso(self, settings: Any) -> None:
         """Verifica que, em modo eager, o comando reporta sucesso."""
         settings.CELERY_TASK_ALWAYS_EAGER = True
 
-        def _fake_pipeline(id_execucao, data_referencia=None):
+        def _fake_pipeline(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> None:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             self._marcar_sucesso(execucao, total_extraido=5, total_carregado=5)
 
@@ -55,12 +59,15 @@ class TestExecutarEtl:
         assert execucao.fonte == "se1426"
         assert execucao.tipo_disparo == ExecucaoETL.TipoDisparo.MANUAL
 
-    def test_lote_maximo_sobrepoe_setting(self, settings):
+    def test_lote_maximo_sobrepoe_setting(self, settings: Any) -> None:
         """Verifica que --lote-maximo sobrepõe o valor de ETL_LOTE_MAXIMO."""
         settings.CELERY_TASK_ALWAYS_EAGER = True
         settings.ETL_LOTE_MAXIMO = 0
 
-        def _fake_pipeline(id_execucao, data_referencia=None):
+        def _fake_pipeline(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> None:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             self._marcar_sucesso(execucao)
 
@@ -74,7 +81,7 @@ class TestExecutarEtl:
         assert settings.ETL_LOTE_MAXIMO == 25
         assert "lote_maximo=25" in saida.getvalue()
 
-    def test_modo_assincrono_apenas_avisa(self, settings):
+    def test_modo_assincrono_apenas_avisa(self, settings: Any) -> None:
         """Verifica que, em modo assíncrono, o comando apenas avisa."""
         settings.CELERY_TASK_ALWAYS_EAGER = False
 
@@ -89,11 +96,16 @@ class TestExecutarEtl:
         assert "assíncrono" in texto
         assert "situacao=" not in texto
 
-    def test_falha_no_pipeline_propaga_command_error(self, settings):
+    def test_falha_no_pipeline_propaga_command_error(
+        self, settings: Any
+    ) -> None:
         """Verifica que falha no pipeline propaga CommandError."""
         settings.CELERY_TASK_ALWAYS_EAGER = True
 
-        def _fake_pipeline(id_execucao, data_referencia=None):
+        def _fake_pipeline(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> None:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             execucao.situacao = ExecucaoETL.Situacao.FALHA
             execucao.save()
@@ -117,11 +129,14 @@ class TestExecutarEtl:
 
         assert "falha simulada" in saida.getvalue()
 
-    def test_sem_etapas_nao_lista_secao_de_etapas(self, settings):
+    def test_sem_etapas_nao_lista_secao_de_etapas(self, settings: Any) -> None:
         """Verifica que "Etapas:" não é exibida sem etapas registradas."""
         settings.CELERY_TASK_ALWAYS_EAGER = True
 
-        def _fake_pipeline(id_execucao, data_referencia=None):
+        def _fake_pipeline(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> None:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             execucao.situacao = ExecucaoETL.Situacao.SUCESSO
             execucao.save()
@@ -135,11 +150,16 @@ class TestExecutarEtl:
 
         assert "Etapas:" not in saida.getvalue()
 
-    def test_data_referencia_repassada_ao_pipeline(self, settings):
+    def test_data_referencia_repassada_ao_pipeline(
+        self, settings: Any
+    ) -> None:
         """Verifica que --data-referencia é repassada ao pipeline."""
         settings.CELERY_TASK_ALWAYS_EAGER = True
 
-        def _fake_pipeline(id_execucao, data_referencia=None):
+        def _fake_pipeline(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> None:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             self._marcar_sucesso(execucao)
 

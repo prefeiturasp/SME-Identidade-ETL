@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ from apps.staging.tasks import (
 
 @pytest.mark.django_db
 class TestTransformarStaging:
-    def test_marca_pronto_quando_tem_nome_e_cpf(self):
+    def test_marca_pronto_quando_tem_nome_e_cpf(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -37,7 +38,7 @@ class TestTransformarStaging:
         usuario = UsuarioServidorStaging.objects.get()
         assert usuario.situacao == "pronto"
 
-    def test_marca_erro_quando_sem_nome_e_sem_cpf(self):
+    def test_marca_erro_quando_sem_nome_e_sem_cpf(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -55,7 +56,7 @@ class TestTransformarStaging:
         assert usuario.situacao == "erro"
         assert usuario.detalhe_erro == "nome e CPF ausentes"
 
-    def test_processa_os_tres_tipos_de_usuario(self):
+    def test_processa_os_tres_tipos_de_usuario(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -89,7 +90,7 @@ class TestTransformarStaging:
             "total": 3,
         }
 
-    def test_ignora_registros_que_nao_estao_extraidos(self):
+    def test_ignora_registros_que_nao_estao_extraidos(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -103,7 +104,7 @@ class TestTransformarStaging:
 
         assert resultado["servidor"] == 0
 
-    def test_nao_afeta_registros_de_outra_execucao(self):
+    def test_nao_afeta_registros_de_outra_execucao(self) -> None:
         id_execucao = uuid.uuid4()
         outra_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
@@ -123,7 +124,7 @@ class TestTransformarStaging:
 
 @pytest.mark.django_db
 class TestDeduplicarIdentidades:
-    def test_mantem_registro_de_fonte_prioritaria_por_cpf(self):
+    def test_mantem_registro_de_fonte_prioritaria_por_cpf(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -149,7 +150,7 @@ class TestDeduplicarIdentidades:
         assert ("se1426", "pronto") in situacoes
         assert ("coresso", "ignorado") in situacoes
 
-    def test_mantem_registro_de_fonte_prioritaria_por_rf(self):
+    def test_mantem_registro_de_fonte_prioritaria_por_rf(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -170,7 +171,7 @@ class TestDeduplicarIdentidades:
 
         assert resultado["ignorados"] == 1
 
-    def test_sem_duplicatas_nao_ignora_nada(self):
+    def test_sem_duplicatas_nao_ignora_nada(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -189,7 +190,7 @@ class TestDeduplicarIdentidades:
 
         assert resultado["ignorados"] == 0
 
-    def test_preserva_chaves_do_resultado_anterior(self):
+    def test_preserva_chaves_do_resultado_anterior(self) -> None:
         id_execucao = uuid.uuid4()
 
         resultado = deduplicar_identidades(
@@ -200,7 +201,7 @@ class TestDeduplicarIdentidades:
         assert resultado["erros"] == 0
         assert resultado["ignorados"] == 0
 
-    def test_total_deduplicado_exclui_ignorados(self):
+    def test_total_deduplicado_exclui_ignorados(self) -> None:
         id_execucao = uuid.uuid4()
         UsuarioServidorStaging.objects.create(
             id_execucao=id_execucao,
@@ -232,14 +233,14 @@ class TestDeduplicarIdentidades:
 
 @pytest.mark.django_db
 class TestPersistirExtracaoStaging:
-    def _registro(self, **kwargs):
+    def _registro(self, **kwargs: Any) -> Any:
         from apps.extracao.tasks import RegistroIdentidade
 
         defaults = {"fonte": "se1426", "tipo": "servidor"}
         defaults.update(kwargs)
-        return RegistroIdentidade(**defaults)
+        return RegistroIdentidade(**defaults)  # type: ignore[arg-type]
 
-    def test_persiste_servidor(self):
+    def test_persiste_servidor(self) -> None:
         id_execucao = uuid.uuid4()
         registros = [
             self._registro(
@@ -263,7 +264,7 @@ class TestPersistirExtracaoStaging:
         assert usuario.situacao == "extraido"
         assert str(usuario.id_execucao) == str(id_execucao)
 
-    def test_persiste_aluno(self):
+    def test_persiste_aluno(self) -> None:
         id_execucao = uuid.uuid4()
         registros = [
             self._registro(
@@ -286,7 +287,7 @@ class TestPersistirExtracaoStaging:
         assert aluno.cod_escola == "123"
         assert aluno.situacao == "extraido"
 
-    def test_persiste_terceiro(self):
+    def test_persiste_terceiro(self) -> None:
         id_execucao = uuid.uuid4()
         registros = [
             self._registro(
@@ -307,7 +308,7 @@ class TestPersistirExtracaoStaging:
         assert terceiro.tipo_acesso == "legado-coresso"
         assert terceiro.situacao == "extraido"
 
-    def test_persiste_multiplos_tipos_em_lote(self):
+    def test_persiste_multiplos_tipos_em_lote(self) -> None:
         id_execucao = uuid.uuid4()
         registros = [
             self._registro(tipo="servidor", nome="Servidor 1"),
@@ -326,13 +327,13 @@ class TestPersistirExtracaoStaging:
         assert UsuarioAlunoStaging.objects.count() == 1
         assert UsuarioTerceiroStaging.objects.count() == 1
 
-    def test_lista_vazia_retorna_zero(self):
+    def test_lista_vazia_retorna_zero(self) -> None:
         id_execucao = uuid.uuid4()
         assert (
             persistir_extracao_staging([], id_execucao=str(id_execucao)) == 0
         )
 
-    def test_tipo_desconhecido_e_ignorado(self):
+    def test_tipo_desconhecido_e_ignorado(self) -> None:
         id_execucao = uuid.uuid4()
         registros = [self._registro(tipo="desconhecido")]
 

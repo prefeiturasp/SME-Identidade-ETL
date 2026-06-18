@@ -31,6 +31,7 @@ _PROVISIONAMENTO_MAX_WORKERS = 8
 
 def _excecoes_retriaveis() -> tuple[type[BaseException], ...]:
     """Retorna as exceções elegíveis para reintento no Keycloak."""
+    base: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError)
     try:
         from keycloak.exceptions import (
             KeycloakConnectionError,
@@ -44,11 +45,10 @@ def _excecoes_retriaveis() -> tuple[type[BaseException], ...]:
             KeycloakGetError,
             KeycloakPostError,
             KeycloakPutError,
-            ConnectionError,
-            TimeoutError,
+            *base,
         )
     except ImportError:
-        return (ConnectionError, TimeoutError)
+        return base
 
 
 _RETRIAVEIS = _excecoes_retriaveis()
@@ -320,7 +320,7 @@ def _localizar_usuario_kc(
         return None
     existente = candidatos[0]
     if existente.get("username") == username_novo:
-        return existente["id"]
+        return str(existente["id"])
     try:
         admin.delete_user(existente["id"])
     except Exception as exc:
@@ -330,6 +330,42 @@ def _localizar_usuario_kc(
             exc,
         )
     return None
+
+
+def _criar_usuario_kc(
+    admin: Any, usuario: Any, payload: dict, controle: Any
+) -> tuple[str, str]:
+    kc_existente = _localizar_usuario_kc(admin, usuario, payload)
+    if kc_existente:
+        _com_reintento(admin.update_user, kc_existente, payload)
+        controle.id_destino = kc_existente
+        return kc_existente, "atualizado"
+
+    kc_user_id = _com_reintento(admin.create_user, payload, exist_ok=True)
+    controle.id_destino = kc_user_id
+    try:
+        senha_inicial = _resolver_username(usuario)
+        _com_reintento(
+            admin.set_user_password,
+            kc_user_id,
+            senha_inicial,
+            temporary=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "KC: senha inicial não definida para %s: %s",
+            kc_user_id,
+            exc,
+        )
+    return kc_user_id, "criado"
+
+
+def _atualizar_usuario_kc(
+    admin: Any, payload: dict, controle: Any
+) -> tuple[str, str]:
+    _com_reintento(admin.update_user, controle.id_destino, payload)
+    controle.versao = (controle.versao or 1) + 1
+    return controle.id_destino, "atualizado"
 
 
 def provisionar_usuario_kc(
@@ -386,37 +422,9 @@ def provisionar_usuario_kc(
         }
 
     if criado or not controle.id_destino:
-        kc_existente = _localizar_usuario_kc(admin, usuario, payload)
-        if kc_existente:
-            _com_reintento(admin.update_user, kc_existente, payload)
-            kc_user_id = kc_existente
-            controle.id_destino = kc_user_id
-            acao = "atualizado"
-        else:
-            kc_user_id = _com_reintento(
-                admin.create_user, payload, exist_ok=True
-            )
-            controle.id_destino = kc_user_id
-            acao = "criado"
-            try:
-                senha_inicial = _resolver_username(usuario)
-                _com_reintento(
-                    admin.set_user_password,
-                    kc_user_id,
-                    senha_inicial,
-                    temporary=True,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "KC: senha inicial não definida para %s: %s",
-                    kc_user_id,
-                    exc,
-                )
+        kc_user_id, acao = _criar_usuario_kc(admin, usuario, payload, controle)
     else:
-        _com_reintento(admin.update_user, controle.id_destino, payload)
-        kc_user_id = controle.id_destino
-        controle.versao = (controle.versao or 1) + 1
-        acao = "atualizado"
+        kc_user_id, acao = _atualizar_usuario_kc(admin, payload, controle)
 
     _atribuir_roles_e_grupos(admin, kc_user_id, roles_realm, grupos)
 
@@ -600,7 +608,7 @@ def provisionar_role_client_kc(admin: Any, perfil: Any) -> dict[str, Any]:
             PerfilCoressoStaging.SituacaoProvisionamento.ERRO
         )
         perfil.detalhe_erro = (
-            "Sistema sem kc_client_uuid" " (provisione os sistemas primeiro)"
+            "Sistema sem kc_client_uuid" + " (provisione os sistemas primeiro)"
         )
         perfil.save(
             update_fields=[

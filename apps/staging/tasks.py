@@ -148,7 +148,9 @@ def transformar_staging(id_execucao: str) -> dict:
 
         if atualizacoes:
             modelo.objects.bulk_update(
-                atualizacoes, ["situacao", "detalhe_erro"], batch_size=500
+                atualizacoes,  # type: ignore[arg-type]
+                ["situacao", "detalhe_erro"],
+                batch_size=500,
             )
 
         totais[chave] = prontos
@@ -162,6 +164,51 @@ def transformar_staging(id_execucao: str) -> dict:
         totais,
     )
     return totais
+
+
+_PRIORIDADE_FONTE = {"se1426": 1, "eol_db": 2, "coresso": 3}
+
+
+def _resolver_vencedores(usuarios: list) -> set[int]:
+    vencedor_cpf: dict = {}
+    vencedor_rf: dict = {}
+
+    for usuario in usuarios:
+        usuario.prioridade = _PRIORIDADE_FONTE.get(usuario.fonte, 99)
+        chave_cpf = (usuario.cpf or "").strip()
+        chave_rf = (usuario.rf or "").strip()
+
+        for chave, vencedores in (
+            (chave_cpf, vencedor_cpf),
+            (chave_rf, vencedor_rf),
+        ):
+            if not chave:
+                continue
+            atual = vencedores.get(chave)
+            if atual is None or usuario.prioridade < atual.prioridade:
+                vencedores[chave] = usuario
+
+    return {u.id for u in {**vencedor_cpf, **vencedor_rf}.values()}
+
+
+def _marcar_duplicatas(usuarios: list, vencedores_ids: set[int]) -> int:
+    atualizacoes = []
+    for usuario in usuarios:
+        cpf = (usuario.cpf or "").strip()
+        rf = (usuario.rf or "").strip()
+        if not cpf and not rf:
+            continue
+        if usuario.id not in vencedores_ids:
+            usuario.situacao = "ignorado"
+            atualizacoes.append(usuario)
+
+    if atualizacoes:
+        from apps.staging.models import UsuarioServidorStaging
+
+        UsuarioServidorStaging.objects.bulk_update(
+            atualizacoes, ["situacao"], batch_size=500
+        )
+    return len(atualizacoes)
 
 
 @shared_task(name="staging.tasks.deduplicar_identidades")
@@ -180,11 +227,7 @@ def deduplicar_identidades(
     Returns:
         Dicionário com totais de deduplicação.
     """
-    from apps.staging.models import (  # noqa: PLC0415
-        UsuarioServidorStaging,
-    )
-
-    source_priority = {"se1426": 1, "eol_db": 2, "coresso": 3}
+    from apps.staging.models import UsuarioServidorStaging  # noqa: PLC0415
 
     usuarios = list(
         UsuarioServidorStaging.objects.filter(
@@ -192,43 +235,8 @@ def deduplicar_identidades(
         ).order_by("id")
     )
 
-    vencedor_cpf: dict[str, UsuarioServidorStaging] = {}
-    vencedor_rf: dict[str, UsuarioServidorStaging] = {}
-
-    for usuario in usuarios:
-        usuario.prioridade = source_priority.get(usuario.fonte, 99)
-        chave_cpf = (usuario.cpf or "").strip()
-        chave_rf = (usuario.rf or "").strip()
-
-        for chave, vencedores in (
-            (chave_cpf, vencedor_cpf),
-            (chave_rf, vencedor_rf),
-        ):
-            if not chave:
-                continue
-            atual = vencedores.get(chave)
-            if atual is None or usuario.prioridade < atual.prioridade:
-                vencedores[chave] = usuario
-
-    vencedores_ids = {u.id for u in {**vencedor_cpf, **vencedor_rf}.values()}
-    ignorados = 0
-    atualizacoes = []
-    for usuario in usuarios:
-        sem_chave = (
-            not (usuario.cpf or "").strip() and not (usuario.rf or "").strip()
-        )
-        if sem_chave:
-            continue
-        if usuario.id not in vencedores_ids:
-            usuario.situacao = "ignorado"
-            ignorados += 1
-            atualizacoes.append(usuario)
-
-    if atualizacoes:
-        UsuarioServidorStaging.objects.bulk_update(
-            atualizacoes, ["situacao"], batch_size=500
-        )
-
+    vencedores_ids = _resolver_vencedores(usuarios)
+    ignorados = _marcar_duplicatas(usuarios, vencedores_ids)
     total_deduplicado = len(usuarios) - ignorados
 
     logger.info(

@@ -241,6 +241,15 @@
             {% if item.etapas %}
             <div class="ktable-wrap">
               <table class="ktable">
+                <thead>
+                <tr>
+                  <th>Etapa</th>
+                  <th>Entrada</th>
+                  <th>Saída</th>
+                  <th>Erros</th>
+                </tr>
+                </thead>
+                <tbody>
                 {% for etapa in item.etapas %}
                 <tr>
                   <td class="td-name">
@@ -252,6 +261,7 @@
                   <td class="td-val erro-color">{{ etapa.registros_erro|numero_br }}</td>
                 </tr>
                 {% endfor %}
+                </tbody>
               </table>
             </div>
             {% else %}

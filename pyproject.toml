@@ -65,11 +65,15 @@ addopts = "--cov=apps --cov-report=term-missing --cov-fail-under=80"
 
 [tool.mypy]
 python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
 exclude = ".*/migrations/.*"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
 
 [tool.coverage.run]
 source = ["apps"]

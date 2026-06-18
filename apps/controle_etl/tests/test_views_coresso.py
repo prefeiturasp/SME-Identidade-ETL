@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -12,7 +13,7 @@ from apps.staging.models import PerfilCoressoStaging, SistemaStaging
 
 
 @pytest.fixture()
-def cliente(settings):
+def cliente(settings: Any) -> APIClient:
     """Retorna APIClient autenticado com chave de teste."""
     settings.API_KEY = "chave-teste"
     settings.API_KEY_HEADER = "X-API-Key"
@@ -21,13 +22,13 @@ def cliente(settings):
     return c
 
 
-def _sistema(**kwargs):
+def _sistema(**kwargs: Any) -> SistemaStaging:
     defaults = {"coresso_sis_id": 1, "nome": "Sistema X", "sigla": "sisx"}
     defaults.update(kwargs)
     return SistemaStaging.objects.create(**defaults)
 
 
-def _perfil(sistema=None, **kwargs):
+def _perfil(sistema: Any = None, **kwargs: Any) -> PerfilCoressoStaging:
     defaults = {
         "coresso_gru_id": "g1",
         "coresso_sis_id": 1,
@@ -47,7 +48,7 @@ def _perfil(sistema=None, **kwargs):
 class TestExtrairSistemas:
     URL = "/identidade-etl/api/v1/etl/sistemas/extrair/"
 
-    def test_extrai_com_sucesso(self, cliente):
+    def test_extrai_com_sucesso(self, cliente: APIClient) -> None:
         with patch(
             "apps.extracao.tasks.extrair_sistemas_coresso",
             return_value=3,
@@ -56,9 +57,9 @@ class TestExtrairSistemas:
 
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == {"total_extraido": 3}
-        mock_extrair.assert_called_once_with(id_execucao=None)
+        mock_extrair.assert_called_once_with()
 
-    def test_falha_retorna_502(self, cliente):
+    def test_falha_retorna_502(self, cliente: APIClient) -> None:
         with patch(
             "apps.extracao.tasks.extrair_sistemas_coresso",
             side_effect=ConnectionError("coresso indisponível"),
@@ -78,7 +79,7 @@ class TestExtrairSistemas:
 class TestProvisionarSistemas:
     URL = "/identidade-etl/api/v1/etl/sistemas/provisionar/"
 
-    def test_provisiona_sistemas_pendentes(self, cliente):
+    def test_provisiona_sistemas_pendentes(self, cliente: APIClient) -> None:
         _sistema(situacao=1)
 
         with (
@@ -96,7 +97,7 @@ class TestProvisionarSistemas:
         assert data["atualizados"] == 0
         assert data["erros"] == []
 
-    def test_filtra_por_sigla(self, cliente):
+    def test_filtra_por_sigla(self, cliente: APIClient) -> None:
         _sistema(coresso_sis_id=1, sigla="aaa", situacao=1)
         _sistema(coresso_sis_id=2, sigla="bbb", situacao=1)
 
@@ -113,8 +114,8 @@ class TestProvisionarSistemas:
         mock_provisionar.assert_called_once()
 
     def test_erro_ao_provisionar_marca_sistema_e_retorna_no_corpo(
-        self, cliente
-    ):
+        self, cliente: APIClient
+    ) -> None:
         sistema = _sistema(situacao=1)
 
         with (
@@ -143,12 +144,12 @@ class TestProvisionarSistemas:
 class TestListarSistemas:
     URL = "/identidade-etl/api/v1/etl/sistemas/"
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_lista_sistemas_existentes(self, cliente):
+    def test_lista_sistemas_existentes(self, cliente: APIClient) -> None:
         _sistema(coresso_sis_id=1, nome="Sistema A")
         _sistema(coresso_sis_id=2, nome="Sistema B")
         resp = cliente.get(self.URL)
@@ -166,7 +167,7 @@ class TestListarSistemas:
 class TestExtrairPerfis:
     URL = "/identidade-etl/api/v1/etl/perfis/extrair/"
 
-    def test_extrai_com_sucesso(self, cliente):
+    def test_extrai_com_sucesso(self, cliente: APIClient) -> None:
         with patch(
             "apps.extracao.tasks.extrair_perfis_coresso",
             return_value=5,
@@ -175,9 +176,9 @@ class TestExtrairPerfis:
 
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == {"total_extraido": 5}
-        mock_extrair.assert_called_once_with(id_execucao=None)
+        mock_extrair.assert_called_once_with()
 
-    def test_falha_retorna_502(self, cliente):
+    def test_falha_retorna_502(self, cliente: APIClient) -> None:
         with patch(
             "apps.extracao.tasks.extrair_perfis_coresso",
             side_effect=ConnectionError("coresso indisponível"),
@@ -196,7 +197,7 @@ class TestExtrairPerfis:
 class TestProvisionarPerfis:
     URL = "/identidade-etl/api/v1/etl/perfis/provisionar/"
 
-    def test_provisiona_perfis_existentes(self, cliente):
+    def test_provisiona_perfis_existentes(self, cliente: APIClient) -> None:
         sistema = _sistema()
         _perfil(sistema=sistema)
 
@@ -216,7 +217,7 @@ class TestProvisionarPerfis:
         assert data["ignorados"] == 0
         assert data["erros"] == 0
 
-    def test_filtra_por_coresso_sis_id(self, cliente):
+    def test_filtra_por_coresso_sis_id(self, cliente: APIClient) -> None:
         sistema = _sistema()
         _perfil(sistema=sistema, coresso_gru_id="g1", coresso_sis_id=1)
         _perfil(sistema=sistema, coresso_gru_id="g2", coresso_sis_id=2)
@@ -233,7 +234,7 @@ class TestProvisionarPerfis:
         assert resp.status_code == status.HTTP_200_OK
         mock_provisionar.assert_called_once()
 
-    def test_acao_ignorado_e_contabilizada(self, cliente):
+    def test_acao_ignorado_e_contabilizada(self, cliente: APIClient) -> None:
         sistema = _sistema()
         _perfil(sistema=sistema)
 
@@ -248,7 +249,9 @@ class TestProvisionarPerfis:
 
         assert resp.json()["ignorados"] == 1
 
-    def test_erro_ao_provisionar_marca_perfil_e_retorna_detalhe(self, cliente):
+    def test_erro_ao_provisionar_marca_perfil_e_retorna_detalhe(
+        self, cliente: APIClient
+    ) -> None:
         sistema = _sistema()
         perfil = _perfil(sistema=sistema)
 
@@ -268,7 +271,7 @@ class TestProvisionarPerfis:
         assert perfil.situacao_provisionamento == "erro"
         assert perfil.detalhe_erro == "falha role"
 
-    def test_renova_admin_a_cada_50_perfis(self, cliente):
+    def test_renova_admin_a_cada_50_perfis(self, cliente: APIClient) -> None:
         sistema = _sistema()
         for i in range(51):
             _perfil(
@@ -291,7 +294,9 @@ class TestProvisionarPerfis:
         assert resp.status_code == status.HTTP_200_OK
         assert mock_admin.call_count == 2
 
-    def test_falha_ao_renovar_admin_nao_propaga(self, cliente):
+    def test_falha_ao_renovar_admin_nao_propaga(
+        self, cliente: APIClient
+    ) -> None:
         sistema = _sistema()
         for i in range(51):
             _perfil(
@@ -324,12 +329,12 @@ class TestProvisionarPerfis:
 class TestListarPerfis:
     URL = "/identidade-etl/api/v1/etl/perfis/"
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_lista_perfis_existentes(self, cliente):
+    def test_lista_perfis_existentes(self, cliente: APIClient) -> None:
         sistema = _sistema()
         _perfil(sistema=sistema, coresso_gru_id="g1", nome="Perfil A")
         resp = cliente.get(self.URL)
@@ -337,7 +342,7 @@ class TestListarPerfis:
         assert len(data) == 1
         assert data[0]["nome"] == "Perfil A"
 
-    def test_filtra_por_coresso_sis_id(self, cliente):
+    def test_filtra_por_coresso_sis_id(self, cliente: APIClient) -> None:
         sistema = _sistema()
         _perfil(sistema=sistema, coresso_gru_id="g1", coresso_sis_id=1)
         _perfil(sistema=sistema, coresso_gru_id="g2", coresso_sis_id=2)

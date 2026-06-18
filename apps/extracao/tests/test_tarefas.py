@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,14 +30,14 @@ from apps.extracao.tasks import (
 
 
 class TestRegistroIdentidade:
-    def test_campos_obrigatorios(self):
+    def test_campos_obrigatorios(self) -> None:
         reg = RegistroIdentidade(fonte="se1426", tipo="servidor")
         assert reg.fonte == "se1426"
         assert reg.tipo == "servidor"
         assert reg.rf is None
         assert reg.dados_extras == {}
 
-    def test_campos_completos(self):
+    def test_campos_completos(self) -> None:
         reg = RegistroIdentidade(
             fonte="coresso",
             tipo="terceiro",
@@ -50,7 +51,7 @@ class TestRegistroIdentidade:
         assert reg.cpf == "12345678901"
         assert reg.dados_extras["login"] == "joao"
 
-    def test_defaults_isolados(self):
+    def test_defaults_isolados(self) -> None:
         r1 = RegistroIdentidade(fonte="a", tipo="b")
         r2 = RegistroIdentidade(fonte="c", tipo="d")
         r1.dados_extras["x"] = 1
@@ -64,7 +65,7 @@ class TestRegistroIdentidade:
 
 @pytest.mark.django_db
 class TestStringConexao:
-    def test_se1426_contem_driver(self, settings):
+    def test_se1426_contem_driver(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = "srv-se"
         settings.SE1426_DB_NOME = "se1426"
         settings.SE1426_DB_USUARIO = "usr"
@@ -74,7 +75,7 @@ class TestStringConexao:
         assert "srv-se" in conn
         assert "se1426" in conn
 
-    def test_coresso_contem_driver(self, settings):
+    def test_coresso_contem_driver(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv-core"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -91,38 +92,38 @@ class TestStringConexao:
 
 @pytest.mark.django_db
 class TestWatermark:
-    def test_obter_watermark_sem_registro_retorna_none(self):
+    def test_obter_watermark_sem_registro_retorna_none(self) -> None:
         resultado = _obter_watermark("fonte_inexistente")
         assert resultado is None
 
-    def test_atualizar_e_obter_watermark(self):
-        agora = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    def test_atualizar_e_obter_watermark(self) -> None:
+        agora = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
         _atualizar_watermark("se1426", agora, total_processado=100)
         recuperado = _obter_watermark("se1426")
         assert recuperado is not None
 
-    def test_atualizar_watermark_acumula_total(self):
+    def test_atualizar_watermark_acumula_total(self) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         _atualizar_watermark(
             "coresso",
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, tzinfo=UTC),
             total_processado=50,
         )
         _atualizar_watermark(
             "coresso",
-            datetime(2026, 1, 2, tzinfo=timezone.utc),
+            datetime(2026, 1, 2, tzinfo=UTC),
             total_processado=30,
         )
         marca = MarcaDaguaExtracao.objects.get(fonte="coresso")
         assert marca.total_processado == 80
 
-    def test_atualizar_watermark_salva_pagina(self):
+    def test_atualizar_watermark_salva_pagina(self) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         _atualizar_watermark(
             "eol_alunos",
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, tzinfo=UTC),
             total_processado=200,
             ultima_pagina=4,
         )
@@ -137,12 +138,12 @@ class TestWatermark:
 
 @pytest.mark.django_db
 class TestIterarComWatermark:
-    def test_repassa_registros_sem_consumir_tudo_antecipadamente(self):
+    def test_repassa_registros_sem_consumir_tudo_antecipadamente(self) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         consumidos: list[int] = []
 
-        def _fonte():
+        def _fonte() -> Any:
             for n in range(3):
                 consumidos.append(n)
                 yield RegistroIdentidade(fonte="se1426", tipo="servidor")
@@ -161,7 +162,7 @@ class TestIterarComWatermark:
         marca = MarcaDaguaExtracao.objects.get(fonte="se1426")
         assert marca.total_processado == 3
 
-    def test_nao_atualiza_watermark_quando_fonte_vazia(self):
+    def test_nao_atualiza_watermark_quando_fonte_vazia(self) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         list(_iterar_com_watermark("coresso", iter([])))
@@ -176,7 +177,7 @@ class TestIterarComWatermark:
 
 @pytest.mark.django_db
 class TestExtrairSe1426:
-    def test_sem_configuracao_chama_api(self, settings):
+    def test_sem_configuracao_chama_api(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
         settings.SE1426_API_TOKEN = "tok"
@@ -213,7 +214,7 @@ class TestExtrairSe1426:
         assert registros[0].fonte == "se1426"
         assert registros[0].tipo == "servidor"
 
-    def test_retorna_lista_vazia_quando_api_falha(self, settings):
+    def test_retorna_lista_vazia_quando_api_falha(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
         settings.SE1426_API_TOKEN = "tok"
@@ -230,7 +231,7 @@ class TestExtrairSe1426:
 
         assert registros == []
 
-    def test_data_referencia_sobrepoe_watermark(self, settings):
+    def test_data_referencia_sobrepoe_watermark(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
         settings.SE1426_API_TOKEN = "tok"
@@ -253,7 +254,10 @@ class TestExtrairSe1426:
         call_kwargs = mock_client.get.call_args
         assert "data_alteracao_apos" in call_kwargs.kwargs.get("params", {})
 
-    def test_api_paginacao_avanca_para_proxima_pagina(self, settings):
+    def test_api_paginacao_avanca_para_proxima_pagina(
+        self,
+        settings: Any,
+    ) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
         settings.SE1426_API_TOKEN = "tok"
@@ -285,7 +289,7 @@ class TestExtrairSe1426:
 
         assert len(registros) == 2
 
-    def test_com_sql_server_extrai_servidores(self, settings):
+    def test_com_sql_server_extrai_servidores(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = "srv-se"
         settings.SE1426_DB_NOME = "se1426"
         settings.SE1426_DB_USUARIO = "usr"
@@ -319,7 +323,7 @@ class TestExtrairSe1426:
         assert registros[0].situacao == "ativo"
         mock_conn.close.assert_called_once()
 
-    def test_sql_nao_aplica_filtro_de_data(self, settings):
+    def test_sql_nao_aplica_filtro_de_data(self, settings: Any) -> None:
         """Confirma a ausência de filtro incremental no SE1426.
 
         A view v_servidor_sme_serap não expõe data de atualização —
@@ -345,7 +349,7 @@ class TestExtrairSe1426:
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE" not in consulta_executada
 
-    def test_atualiza_watermark_apos_extracao(self, settings):
+    def test_atualiza_watermark_apos_extracao(self, settings: Any) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         settings.SE1426_DB_SERVIDOR = ""
@@ -380,13 +384,13 @@ class TestExtrairSe1426:
 
 @pytest.mark.django_db
 class TestExtrairCoresso:
-    def test_sem_configuracao_retorna_lista_vazia(self, settings):
+    def test_sem_configuracao_retorna_lista_vazia(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = ""
         registros = list(extrair_coresso())
         assert registros == []
 
-    def test_com_api_retorna_registros(self, settings):
+    def test_com_api_retorna_registros(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = "https://coresso.test"
         settings.CORESSO_API_TOKEN = "tok"
@@ -420,7 +424,10 @@ class TestExtrairCoresso:
         assert registros[0].situacao == "ativo"
         assert registros[0].tipo_acesso == "legado-coresso"
 
-    def test_situacao_inativo_quando_valor_diferente_de_1(self, settings):
+    def test_situacao_inativo_quando_valor_diferente_de_1(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = "https://coresso.test"
         settings.CORESSO_API_TOKEN = "tok"
@@ -445,7 +452,10 @@ class TestExtrairCoresso:
 
         assert registros[0].situacao == "inativo"
 
-    def test_api_paginacao_para_quando_sem_next(self, settings):
+    def test_api_paginacao_para_quando_sem_next(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = "https://coresso.test"
         settings.CORESSO_API_TOKEN = "tok"
@@ -478,7 +488,7 @@ class TestExtrairCoresso:
 
         assert len(registros) == 2
 
-    def test_api_erro_interrompe_paginacao(self, settings):
+    def test_api_erro_interrompe_paginacao(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = "https://coresso.test"
         settings.CORESSO_API_TOKEN = "tok"
@@ -495,7 +505,7 @@ class TestExtrairCoresso:
 
         assert registros == []
 
-    def test_data_referencia_repassada_para_api(self, settings):
+    def test_data_referencia_repassada_para_api(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         settings.CORESSO_API_URL = "https://coresso.test"
         settings.CORESSO_API_TOKEN = "tok"
@@ -517,7 +527,7 @@ class TestExtrairCoresso:
         call_kwargs = mock_client.get.call_args
         assert "data_alteracao_apos" in call_kwargs.kwargs.get("params", {})
 
-    def test_com_sql_server_extrai_terceiros(self, settings):
+    def test_com_sql_server_extrai_terceiros(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv-core"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -553,7 +563,10 @@ class TestExtrairCoresso:
         assert registros[0].tipo_acesso == "legado-coresso"
         mock_conn.close.assert_called_once()
 
-    def test_sql_aplica_filtro_de_data_quando_ha_watermark(self, settings):
+    def test_sql_aplica_filtro_de_data_quando_ha_watermark(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv-core"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -580,13 +593,13 @@ class TestExtrairCoresso:
 
 @pytest.mark.django_db
 class TestExtrairEolAlunos:
-    def test_sem_configuracao_retorna_lista_vazia(self, settings):
+    def test_sem_configuracao_retorna_lista_vazia(self, settings: Any) -> None:
         settings.EOL_DB_STRING_CONEXAO = ""
         settings.SE1426_DB_SERVIDOR = ""
         registros = list(extrair_eol_alunos())
         assert registros == []
 
-    def test_com_sql_server_extrai_alunos(self, settings):
+    def test_com_sql_server_extrai_alunos(self, settings: Any) -> None:
         settings.EOL_DB_STRING_CONEXAO = ""
         settings.SE1426_DB_SERVIDOR = "srv-eol"
         settings.SE1426_DB_USUARIO = "usr"
@@ -625,7 +638,10 @@ class TestExtrairEolAlunos:
         assert registros[0].tipo == "aluno"
         assert registros[0].matricula == "MAT001"
 
-    def test_data_referencia_nao_aplica_filtro_de_data(self, settings):
+    def test_data_referencia_nao_aplica_filtro_de_data(
+        self,
+        settings: Any,
+    ) -> None:
         """Confirma a ausência de filtro incremental no EOL_DB.
 
         As tabelas aluno/v_matricula_cotic/matricula_turma_escola não
@@ -651,7 +667,7 @@ class TestExtrairEolAlunos:
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE" not in consulta_executada
 
-    def test_etl_lote_maximo_interrompe_extracao(self, settings):
+    def test_etl_lote_maximo_interrompe_extracao(self, settings: Any) -> None:
         settings.EOL_DB_STRING_CONEXAO = ""
         settings.SE1426_DB_SERVIDOR = "srv-eol"
         settings.SE1426_DB_USUARIO = "usr"
@@ -709,15 +725,15 @@ class TestExtrairEolAlunos:
 
 @pytest.mark.django_db
 class TestBuscarGruposCoresso:
-    def test_sem_login_retorna_lista_vazia(self, settings):
+    def test_sem_login_retorna_lista_vazia(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         assert buscar_grupos_coresso_por_login("") == []
 
-    def test_sem_servidor_retorna_lista_vazia(self, settings):
+    def test_sem_servidor_retorna_lista_vazia(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
         assert buscar_grupos_coresso_por_login("1234567") == []
 
-    def test_retorna_grupos(self, settings):
+    def test_retorna_grupos(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -739,7 +755,7 @@ class TestBuscarGruposCoresso:
         assert grupos[0]["gru_id"] == 1
         assert grupos[1]["nome"] == "Diretores"
 
-    def test_erro_de_conexao_retorna_lista_vazia(self, settings):
+    def test_erro_de_conexao_retorna_lista_vazia(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -759,12 +775,12 @@ class TestBuscarGruposCoresso:
 
 @pytest.mark.django_db
 class TestExtrairSistemasCoresso:
-    def test_sem_servidor_retorna_zero(self, settings):
+    def test_sem_servidor_retorna_zero(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
-        total = extrair_sistemas_coresso(id_execucao=None)
+        total = extrair_sistemas_coresso()
         assert total == 0
 
-    def test_persiste_sistemas(self, settings):
+    def test_persiste_sistemas(self, settings: Any) -> None:
         from apps.staging.models import SistemaStaging
 
         settings.CORESSO_DB_SERVIDOR = "srv"
@@ -799,14 +815,17 @@ class TestExtrairSistemasCoresso:
         mock_conn.cursor.return_value = mock_cursor
 
         with patch("pyodbc.connect", return_value=mock_conn):
-            total = extrair_sistemas_coresso(id_execucao=None)
+            total = extrair_sistemas_coresso()
 
         assert total == 1
         sistema = SistemaStaging.objects.get(coresso_sis_id=42)
         assert sistema.nome == "Sistema Escolar"
         assert sistema.sigla == "SE"
 
-    def test_aplica_filtro_de_exclusao_quando_configurado(self, settings):
+    def test_aplica_filtro_de_exclusao_quando_configurado(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -830,12 +849,15 @@ class TestExtrairSistemasCoresso:
         mock_conn.cursor.return_value = mock_cursor
 
         with patch("pyodbc.connect", return_value=mock_conn):
-            extrair_sistemas_coresso(id_execucao=None)
+            extrair_sistemas_coresso()
 
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE sis_id NOT IN (174)" in consulta_executada
 
-    def test_sem_filtro_quando_lista_de_exclusao_vazia(self, settings):
+    def test_sem_filtro_quando_lista_de_exclusao_vazia(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -859,7 +881,7 @@ class TestExtrairSistemasCoresso:
         mock_conn.cursor.return_value = mock_cursor
 
         with patch("pyodbc.connect", return_value=mock_conn):
-            extrair_sistemas_coresso(id_execucao=None)
+            extrair_sistemas_coresso()
 
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE" not in consulta_executada
@@ -872,12 +894,12 @@ class TestExtrairSistemasCoresso:
 
 @pytest.mark.django_db
 class TestExtrairPerfisCoresso:
-    def test_sem_servidor_retorna_zero(self, settings):
+    def test_sem_servidor_retorna_zero(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""
-        total = extrair_perfis_coresso(id_execucao=None)
+        total = extrair_perfis_coresso()
         assert total == 0
 
-    def test_persiste_perfis(self, settings):
+    def test_persiste_perfis(self, settings: Any) -> None:
         from apps.staging.models import PerfilCoressoStaging
 
         settings.CORESSO_DB_SERVIDOR = "srv"
@@ -900,13 +922,16 @@ class TestExtrairPerfisCoresso:
         mock_conn.cursor.return_value = mock_cursor
 
         with patch("pyodbc.connect", return_value=mock_conn):
-            total = extrair_perfis_coresso(id_execucao=None)
+            total = extrair_perfis_coresso()
 
         assert total == 1
         perfil = PerfilCoressoStaging.objects.get(coresso_gru_id="101")
         assert perfil.nome == "Professores"
 
-    def test_aplica_filtro_de_exclusao_quando_configurado(self, settings):
+    def test_aplica_filtro_de_exclusao_quando_configurado(
+        self,
+        settings: Any,
+    ) -> None:
         settings.CORESSO_DB_SERVIDOR = "srv"
         settings.CORESSO_DB_NOME = "CoreSSO"
         settings.CORESSO_DB_USUARIO = "usr"
@@ -927,7 +952,7 @@ class TestExtrairPerfisCoresso:
         mock_conn.cursor.return_value = mock_cursor
 
         with patch("pyodbc.connect", return_value=mock_conn):
-            extrair_perfis_coresso(id_execucao=None)
+            extrair_perfis_coresso()
 
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE gru_sis_id NOT IN (174)" in consulta_executada
@@ -939,21 +964,21 @@ class TestExtrairPerfisCoresso:
 
 
 class TestSlugificarRole:
-    def test_nome_simples(self):
+    def test_nome_simples(self) -> None:
         assert _slugificar_role("Professores") == "Professores"
 
-    def test_remove_acentos(self):
+    def test_remove_acentos(self) -> None:
         slug = _slugificar_role("Direção")
         assert "ã" not in slug
         assert "o" in slug.lower()
 
-    def test_substitui_espacos_por_underscore(self):
+    def test_substitui_espacos_por_underscore(self) -> None:
         assert _slugificar_role("Coord Pedagogico") == "Coord_Pedagogico"
 
-    def test_string_vazia_retorna_fallback(self):
+    def test_string_vazia_retorna_fallback(self) -> None:
         assert _slugificar_role("") == "perfil_sem_nome"
 
-    def test_caracteres_especiais(self):
+    def test_caracteres_especiais(self) -> None:
         slug = _slugificar_role("Aux. Técnico (Educ.)")
         assert "(" not in slug
         assert "." not in slug

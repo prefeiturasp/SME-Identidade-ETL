@@ -45,4 +45,4 @@ class AutenticacaoApiKey(BaseAuthentication):
 
     def authenticate_header(self, request: Request) -> str:
         """Retorna o nome do header de autenticação esperado."""
-        return settings.API_KEY_HEADER
+        return settings.API_KEY_HEADER  # type: ignore[no-any-return]

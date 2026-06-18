@@ -10,6 +10,8 @@ import uuid
 from django.db import models
 from django.utils import timezone
 
+_Seconds = float
+
 
 class ExecucaoETL(models.Model):
     """Registro de uma execução do pipeline ETL."""
@@ -83,7 +85,9 @@ class ExecucaoETL(models.Model):
     def duracao_segundos(self) -> float | None:
         """Duração da execução em segundos."""
         if self.iniciado_em and self.finalizado_em:
-            return (self.finalizado_em - self.iniciado_em).total_seconds()
+            delta = self.finalizado_em - self.iniciado_em
+            resultado: _Seconds = delta.total_seconds()
+            return resultado
         return None
 
     def marcar_executando(self) -> None:

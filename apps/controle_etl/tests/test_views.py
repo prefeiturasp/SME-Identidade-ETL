@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +19,7 @@ from apps.controle_etl.models import (
 
 
 @pytest.fixture()
-def cliente(settings):
+def cliente(settings: Any) -> APIClient:
     """Retorna APIClient autenticado com chave de teste."""
     settings.API_KEY = "chave-teste"
     settings.API_KEY_HEADER = "X-API-Key"
@@ -28,7 +29,7 @@ def cliente(settings):
 
 
 @pytest.fixture()
-def cliente_anonimo():
+def cliente_anonimo() -> APIClient:
     """Retorna APIClient sem autenticação."""
     return APIClient()
 
@@ -42,40 +43,46 @@ def cliente_anonimo():
 class TestExecucoesView:
     URL = "/identidade-etl/api/v1/etl/execucoes/"
 
-    def test_lista_execucoes_vazia(self, cliente):
+    def test_lista_execucoes_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_lista_execucoes_com_registros(self, cliente):
+    def test_lista_execucoes_com_registros(self, cliente: APIClient) -> None:
         ExecucaoETL.objects.create(fonte="se1426")
         ExecucaoETL.objects.create(fonte="coresso")
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert len(resp.json()) == 2
 
-    def test_filtra_por_situacao(self, cliente):
+    def test_filtra_por_situacao(self, cliente: APIClient) -> None:
         ExecucaoETL.objects.create(situacao="pendente")
         ExecucaoETL.objects.create(situacao="sucesso")
         resp = cliente.get(self.URL + "?situacao=pendente")
         data = resp.json()
         assert all(e["situacao"] == "pendente" for e in data)
 
-    def test_filtra_por_fonte(self, cliente):
+    def test_filtra_por_fonte(self, cliente: APIClient) -> None:
         ExecucaoETL.objects.create(fonte="se1426")
         ExecucaoETL.objects.create(fonte="coresso")
         resp = cliente.get(self.URL + "?fonte=se1426")
         data = resp.json()
         assert all(e["fonte"] == "se1426" for e in data)
 
-    def test_sem_autenticacao_retorna_403_ou_401(self, cliente_anonimo):
+    def test_sem_autenticacao_retorna_403_ou_401(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code in (
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
         )
 
-    def test_criar_execucao_dispara_pipeline_completo(self, cliente):
+    def test_criar_execucao_dispara_pipeline_completo(
+        self,
+        cliente: APIClient,
+    ) -> None:
         with patch(
             "apps.controle_etl.tasks"
             ".task_identidade_executar_pipeline.apply_async"
@@ -94,7 +101,10 @@ class TestExecucoesView:
         _, kwargs = mock_apply_async.call_args
         assert kwargs["kwargs"]["id_execucao"] == data["id_execucao"]
 
-    def test_criar_execucao_fonte_default_todos(self, cliente):
+    def test_criar_execucao_fonte_default_todos(
+        self,
+        cliente: APIClient,
+    ) -> None:
         with patch(
             "apps.controle_etl.tasks"
             ".task_identidade_executar_pipeline.apply_async"
@@ -112,13 +122,14 @@ class TestExecucoesView:
 
 @pytest.mark.django_db
 class TestDetalheExecucaoView:
-    def test_retorna_execucao_existente(self, cliente):
+    def test_retorna_execucao_existente(self, cliente: APIClient) -> None:
         execucao = ExecucaoETL.objects.create(fonte="coresso")
-        resp = cliente.get(f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/")
+        url = f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/"
+        resp = cliente.get(url)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["fonte"] == "coresso"
 
-    def test_retorna_404_para_inexistente(self, cliente):
+    def test_retorna_404_para_inexistente(self, cliente: APIClient) -> None:
         resp = cliente.get("/identidade-etl/api/v1/etl/execucoes/99999/")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
@@ -130,7 +141,7 @@ class TestDetalheExecucaoView:
 
 @pytest.mark.django_db
 class TestCancelarExecucaoView:
-    def test_cancela_execucao_pendente(self, cliente):
+    def test_cancela_execucao_pendente(self, cliente: APIClient) -> None:
         execucao = ExecucaoETL.objects.create(situacao="pendente")
         with patch("config.celery.app.control.revoke"):
             resp = cliente.post(
@@ -139,7 +150,7 @@ class TestCancelarExecucaoView:
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["situacao"] == "cancelado"
 
-    def test_cancela_execucao_executando(self, cliente):
+    def test_cancela_execucao_executando(self, cliente: APIClient) -> None:
         execucao = ExecucaoETL.objects.create(situacao="executando")
         execucao.id_tarefa_celery = "some-task-id"
         execucao.save(update_fields=["id_tarefa_celery"])
@@ -150,13 +161,18 @@ class TestCancelarExecucaoView:
         assert resp.status_code == status.HTTP_200_OK
         mock_revoke.assert_called_once_with("some-task-id", terminate=True)
 
-    def test_nao_cancela_execucao_finalizada(self, cliente):
+    def test_nao_cancela_execucao_finalizada(
+        self,
+        cliente: APIClient,
+    ) -> None:
         execucao = ExecucaoETL.objects.create(situacao="sucesso")
-        resp = cliente.post(f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/")
+        base = "/identidade-etl/api/v1/etl/execucoes"
+        resp = cliente.post(f"{base}/{execucao.pk}/cancelar/")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_404_para_inexistente(self, cliente):
-        resp = cliente.post("/identidade-etl/api/v1/etl/execucoes/99999/cancelar/")
+    def test_404_para_inexistente(self, cliente: APIClient) -> None:
+        base = "/identidade-etl/api/v1/etl/execucoes"
+        resp = cliente.post(f"{base}/99999/cancelar/")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
 
@@ -169,30 +185,37 @@ class TestCancelarExecucaoView:
 class TestMarcaDaguaView:
     URL = "/identidade-etl/api/v1/etl/watermark/"
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_lista_marcas_existentes(self, cliente):
+    def test_lista_marcas_existentes(self, cliente: APIClient) -> None:
         MarcaDaguaExtracao.objects.create(fonte="se1426")
         MarcaDaguaExtracao.objects.create(fonte="coresso")
         resp = cliente.get(self.URL)
         assert len(resp.json()) == 2
 
-    def test_resetar_marca(self, cliente):
+    def test_resetar_marca(self, cliente: APIClient) -> None:
         MarcaDaguaExtracao.objects.create(
             fonte="se1426",
             ultima_pagina=5,
         )
-        resp = cliente.post("/identidade-etl/api/v1/etl/watermark/se1426/resetar/")
+        base = "/identidade-etl/api/v1/etl/watermark"
+        url = f"{base}/se1426/resetar/"
+        resp = cliente.post(url)
         assert resp.status_code == status.HTTP_200_OK
         data = resp.json()
         assert data["ultima_pagina"] == 0
         assert data["ultimo_processado_em"] is None
 
-    def test_resetar_cria_marca_se_nao_existe(self, cliente):
-        resp = cliente.post("/identidade-etl/api/v1/etl/watermark/fonte_nova/resetar/")
+    def test_resetar_cria_marca_se_nao_existe(
+        self,
+        cliente: APIClient,
+    ) -> None:
+        base = "/identidade-etl/api/v1/etl/watermark"
+        url = f"{base}/fonte_nova/resetar/"
+        resp = cliente.post(url)
         assert resp.status_code == status.HTTP_200_OK
         assert MarcaDaguaExtracao.objects.filter(fonte="fonte_nova").exists()
 
@@ -206,7 +229,7 @@ class TestMarcaDaguaView:
 class TestEstatisticas:
     URL = "/identidade-etl/api/v1/etl/estatisticas/"
 
-    def test_retorna_estrutura_esperada(self, cliente):
+    def test_retorna_estrutura_esperada(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         data = resp.json()
@@ -214,7 +237,7 @@ class TestEstatisticas:
         assert "provisionamento" in data
         assert "periodo" in data
 
-    def test_conta_execucoes_recentes(self, cliente):
+    def test_conta_execucoes_recentes(self, cliente: APIClient) -> None:
         ExecucaoETL.objects.create(situacao="sucesso")
         ExecucaoETL.objects.create(situacao="falha")
         resp = cliente.get(self.URL)
@@ -230,12 +253,12 @@ class TestEstatisticas:
 class TestTentativasView:
     URL = "/identidade-etl/api/v1/etl/tentativas/"
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_filtra_por_id_execucao(self, cliente):
+    def test_filtra_por_id_execucao(self, cliente: APIClient) -> None:
         import uuid
 
         uid1 = uuid.uuid4()
@@ -255,7 +278,7 @@ class TestTentativasView:
         assert len(data) == 1
         assert data[0]["nome_tarefa"] == "task_a"
 
-    def test_filtra_por_nome_tarefa(self, cliente):
+    def test_filtra_por_nome_tarefa(self, cliente: APIClient) -> None:
         import uuid
 
         RastreioTentativa.objects.create(
@@ -283,7 +306,7 @@ class TestTentativasView:
 class TestControleProvisionamentoView:
     URL = "/identidade-etl/api/v1/etl/provisionamento/"
 
-    def _registro(self, **kwargs):
+    def _registro(self, **kwargs: Any) -> ControleProvisionamento:
         defaults = {
             "tipo_entidade": "usuario",
             "sistema_origem": "se1426",
@@ -293,12 +316,12 @@ class TestControleProvisionamentoView:
         defaults.update(kwargs)
         return ControleProvisionamento.objects.create(**defaults)
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_filtra_por_tipo_entidade(self, cliente):
+    def test_filtra_por_tipo_entidade(self, cliente: APIClient) -> None:
         self._registro(tipo_entidade="usuario")
         self._registro(tipo_entidade="role", id_origem="outro")
         resp = cliente.get(self.URL + "?tipo_entidade=role")
@@ -306,7 +329,7 @@ class TestControleProvisionamentoView:
         assert len(data) == 1
         assert data[0]["tipo_entidade"] == "role"
 
-    def test_filtra_por_sistema_origem(self, cliente):
+    def test_filtra_por_sistema_origem(self, cliente: APIClient) -> None:
         self._registro(sistema_origem="se1426")
         self._registro(sistema_origem="coresso", id_origem="outro")
         resp = cliente.get(self.URL + "?sistema_origem=coresso")
@@ -314,7 +337,7 @@ class TestControleProvisionamentoView:
         assert len(data) == 1
         assert data[0]["sistema_origem"] == "coresso"
 
-    def test_filtra_por_ativo(self, cliente):
+    def test_filtra_por_ativo(self, cliente: APIClient) -> None:
         self._registro(ativo=True)
         self._registro(ativo=False, id_origem="outro")
         resp = cliente.get(self.URL + "?ativo=false")
@@ -332,12 +355,12 @@ class TestControleProvisionamentoView:
 class TestCheckpointsView:
     URL = "/identidade-etl/api/v1/etl/checkpoints/"
 
-    def test_lista_vazia(self, cliente):
+    def test_lista_vazia(self, cliente: APIClient) -> None:
         resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_filtra_por_id_execucao(self, cliente):
+    def test_filtra_por_id_execucao(self, cliente: APIClient) -> None:
         import uuid
 
         uid1 = uuid.uuid4()
@@ -359,11 +382,17 @@ class TestCheckpointsView:
 class TestConsultaIdentidadeView:
     URL = "/identidade-etl/api/v1/etl/identidades/consultar/"
 
-    def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
+    def test_endpoint_publico_sem_autenticacao(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL + "?cpf=12345678901")
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_busca_por_cpf_encontrado(self, cliente_anonimo):
+    def test_busca_por_cpf_encontrado(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ControleProvisionamento.objects.create(
             tipo_entidade="usuario",
             sistema_origem="se1426",
@@ -375,7 +404,10 @@ class TestConsultaIdentidadeView:
         assert len(data) == 1
         assert data[0]["id_origem"] == "12345678901"
 
-    def test_busca_por_rf_encontrado(self, cliente_anonimo):
+    def test_busca_por_rf_encontrado(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ControleProvisionamento.objects.create(
             tipo_entidade="usuario",
             sistema_origem="coresso",
@@ -387,7 +419,10 @@ class TestConsultaIdentidadeView:
         assert len(data) == 1
         assert data[0]["sistema_origem"] == "coresso"
 
-    def test_filtra_por_sistema_origem(self, cliente_anonimo):
+    def test_filtra_por_sistema_origem(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ControleProvisionamento.objects.create(
             tipo_entidade="usuario",
             sistema_origem="se1426",
@@ -405,16 +440,25 @@ class TestConsultaIdentidadeView:
         assert len(data) == 1
         assert data[0]["sistema_origem"] == "coresso"
 
-    def test_nao_encontrado_retorna_lista_vazia(self, cliente_anonimo):
+    def test_nao_encontrado_retorna_lista_vazia(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL + "?cpf=00000000000")
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_busca_por_email_retorna_400(self, cliente_anonimo):
+    def test_busca_por_email_retorna_400(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL + "?email=alguem@sme.sp")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_sem_identificador_retorna_400(self, cliente_anonimo):
+    def test_sem_identificador_retorna_400(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
@@ -428,12 +472,18 @@ class TestConsultaIdentidadeView:
 class TestHealthCheckView:
     URL = "/identidade-etl/api/v1/etl/health/"
 
-    def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
+    def test_endpoint_publico_sem_autenticacao(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["status"] == "healthy"
 
-    def test_banco_indisponivel_retorna_503(self, cliente_anonimo):
+    def test_banco_indisponivel_retorna_503(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         with patch(
             "apps.controle_etl.views.HealthCheckView._check_database",
             return_value={"status": "unhealthy"},
@@ -452,11 +502,17 @@ class TestHealthCheckView:
 class TestResumoExecucoesView:
     URL = "/identidade-etl/api/v1/etl/monitoramento/resumo/"
 
-    def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
+    def test_endpoint_publico_sem_autenticacao(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_retorna_apenas_ultima_execucao_por_fonte(self, cliente_anonimo):
+    def test_retorna_apenas_ultima_execucao_por_fonte(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         import datetime
 
         from django.utils import timezone as dj_timezone
@@ -482,22 +538,34 @@ class TestResumoExecucoesView:
 class TestDashboardView:
     URL = "/dashboard/"
 
-    def test_renderiza_sem_execucoes(self, cliente_anonimo):
+    def test_renderiza_sem_execucoes(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_renderiza_com_execucoes(self, cliente_anonimo):
+    def test_renderiza_com_execucoes(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ExecucaoETL.objects.create(fonte="coresso", situacao="sucesso")
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
         assert b"coresso" in resp.content
 
-    def test_filtro_por_fonte(self, cliente_anonimo):
+    def test_filtro_por_fonte(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ExecucaoETL.objects.create(fonte="se1426")
         resp = cliente_anonimo.get(self.URL + "?fonte=se1426")
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_filtro_por_datas_e_situacao(self, cliente_anonimo):
+    def test_filtro_por_datas_e_situacao(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ExecucaoETL.objects.create(fonte="se1426", situacao="sucesso")
         resp = cliente_anonimo.get(
             self.URL
@@ -511,11 +579,17 @@ class TestDashboardView:
 class TestKanbanView:
     URL = "/dashboard/kanban/"
 
-    def test_renderiza_sem_execucoes(self, cliente_anonimo):
+    def test_renderiza_sem_execucoes(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(self.URL)
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_renderiza_com_etapas(self, cliente_anonimo):
+    def test_renderiza_com_etapas(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         from apps.controle_etl.models import LogEtapaETL
 
         execucao = ExecucaoETL.objects.create(fonte="coresso")
@@ -530,20 +604,29 @@ class TestKanbanView:
         assert resp.status_code == status.HTTP_200_OK
         assert b"coresso" in resp.content
 
-    def test_filtro_por_id_execucao_inexistente(self, cliente_anonimo):
+    def test_filtro_por_id_execucao_inexistente(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         resp = cliente_anonimo.get(
             self.URL + "?id_execucao=00000000-0000-0000-0000-000000000000"
         )
         assert resp.status_code == status.HTTP_200_OK
 
-    def test_filtro_por_fonte_restringe_resultado(self, cliente_anonimo):
+    def test_filtro_por_fonte_restringe_resultado(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         ExecucaoETL.objects.create(fonte="se1426")
         ExecucaoETL.objects.create(fonte="coresso")
         resp = cliente_anonimo.get(self.URL + "?fonte=coresso")
         assert resp.status_code == status.HTTP_200_OK
         assert b"coresso" in resp.content
 
-    def test_filtro_por_id_execucao_existente(self, cliente_anonimo):
+    def test_filtro_por_id_execucao_existente(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         execucao = ExecucaoETL.objects.create(fonte="coresso")
         resp = cliente_anonimo.get(
             self.URL + f"?id_execucao={execucao.id_execucao}"
@@ -552,8 +635,9 @@ class TestKanbanView:
         assert str(execucao.id_execucao).encode() in resp.content
 
     def test_filtro_por_id_execucao_e_fonte_diferente_inclui_na_lista(
-        self, cliente_anonimo
-    ):
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         execucao = ExecucaoETL.objects.create(fonte="coresso")
         resp = cliente_anonimo.get(
             self.URL + f"?fonte=se1426&id_execucao={execucao.id_execucao}"
@@ -565,7 +649,10 @@ class TestKanbanView:
 class TestDispararExecucaoDashboardView:
     URL = "/dashboard/executar/"
 
-    def test_dispara_e_redireciona(self, cliente_anonimo):
+    def test_dispara_e_redireciona(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         with patch(
             "apps.controle_etl.tasks"
             ".task_identidade_executar_pipeline.apply_async"
@@ -575,7 +662,10 @@ class TestDispararExecucaoDashboardView:
         assert resp.status_code == status.HTTP_302_FOUND
         assert ExecucaoETL.objects.filter(fonte="coresso").exists()
 
-    def test_fonte_invalida_usa_todos(self, cliente_anonimo):
+    def test_fonte_invalida_usa_todos(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
         with patch(
             "apps.controle_etl.tasks"
             ".task_identidade_executar_pipeline.apply_async"

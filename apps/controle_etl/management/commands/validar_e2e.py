@@ -1,7 +1,10 @@
 """Comando Django para validar o pipeline ponta a ponta em ambiente real."""
 
+from __future__ import annotations
+
 import time
 from pathlib import Path
+from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -32,7 +35,7 @@ _FONTES_MODELO = (
 )
 
 
-def _identificador_exibicao(usuario) -> str:
+def _identificador_exibicao(usuario: Any) -> str:
     """Retorna o identificador mais legível do usuário para relatório.
 
     Não é necessariamente o username usado no Keycloak — para isso
@@ -73,7 +76,7 @@ class Command(BaseCommand):
         "Markdown para conferência manual."
     )
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: Any) -> None:
         """Define os argumentos do comando."""
         parser.add_argument(
             "--lote-maximo",
@@ -104,7 +107,7 @@ class Command(BaseCommand):
             ),
         )
 
-    def handle(self, *args, **options):
+    def handle(self, *args: Any, **options: Any) -> None:
         """Executa o pipeline reduzido e grava o relatório."""
         lote_maximo = options["lote_maximo"]
         realm = options["realm"]
@@ -203,7 +206,9 @@ class Command(BaseCommand):
                     query={"username": username, "exact": True}
                 )
                 encontrado = bool(usuarios_kc)
-                confirmados_por_id[usuario.id] = encontrado
+                confirmados_por_id[
+                    usuario.id  # type: ignore[attr-defined]
+                ] = encontrado
                 confirmados += int(encontrado)
 
             self.stdout.write(
@@ -242,7 +247,8 @@ class Command(BaseCommand):
             "| Etapa | Entrada | Saída | Erros |",
             "|---|---|---|---|",
         ]
-        for etapa in execucao.etapas.order_by("ordem_etapa"):
+        etapas = execucao.etapas  # type: ignore[attr-defined]
+        for etapa in etapas.order_by("ordem_etapa"):
             linhas.append(
                 f"| {etapa.nome_etapa} | {etapa.registros_entrada} "
                 f"| {etapa.registros_saida} | {etapa.registros_erro} |"
@@ -278,7 +284,8 @@ class Command(BaseCommand):
                 "id"
             ):
                 identificador = _identificador_exibicao(usuario)
-                confirmado = confirmados_por_id.get(usuario.id, False)
+                uid = usuario.id  # type: ignore[union-attr]
+                confirmado = confirmados_por_id.get(uid, False)
                 marca = "✅" if confirmado else "❌"
                 linhas.append(
                     f"| {identificador} | {usuario.nome or '—'} "

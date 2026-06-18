@@ -220,18 +220,12 @@ def _iterar_com_watermark(
 # ---------------------------------------------------------------------------
 
 
-def _extrair_se1426_sql(
-    desde: datetime | None = None,
-) -> Iterator[RegistroIdentidade]:
+def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
     """Extrai servidores do SE1426 via SQL Server (read-only).
 
     A view ``v_servidor_sme_serap`` não expõe coluna de data de
     atualização — sem suporte a filtro incremental por enquanto;
-    a extração sempre traz a base completa (``desde`` é ignorado).
-
-    Args:
-        desde: Não utilizado nesta fonte (mantido por
-            compatibilidade com a assinatura comum de extração).
+    a extração sempre traz a base completa.
 
     Yields:
         RegistroIdentidade para cada servidor encontrado.
@@ -283,20 +277,16 @@ def _extrair_se1426_sql(
         conn.close()
 
 
-def _extrair_se1426_api(
-    desde: datetime | None = None,
-) -> Iterator[RegistroIdentidade]:
-    """Extrai servidores do SE1426 via API REST (fallback).
-
-    Yields:
-        RegistroIdentidade para cada servidor encontrado.
-    """
+def _paginar_api(
+    url: str,
+    cabecalhos: dict,
+    timeout: int,
+    desde: datetime | None,
+    rotulo: str,
+) -> Iterator[dict]:
     import httpx
 
-    url_base = settings.SE1426_API_URL.rstrip("/")
-    cabecalhos = {"Authorization": f"Bearer {settings.SE1426_API_TOKEN}"}
     pagina = 1
-
     while True:
         params: dict = {
             "page": pagina,
@@ -306,15 +296,11 @@ def _extrair_se1426_api(
             params["data_alteracao_apos"] = desde.strftime("%Y-%m-%d")
 
         try:
-            with httpx.Client(timeout=settings.SE1426_API_TIMEOUT) as cliente:
-                resposta = cliente.get(
-                    f"{url_base}/servidores/",
-                    headers=cabecalhos,
-                    params=params,
-                )
+            with httpx.Client(timeout=timeout) as cliente:
+                resposta = cliente.get(url, headers=cabecalhos, params=params)
             resposta.raise_for_status()
         except Exception as exc:
-            logger.error("SE1426 API: erro na página %d: %s", pagina, exc)
+            logger.error("%s API: erro na página %d: %s", rotulo, pagina, exc)
             break
 
         dados = resposta.json()
@@ -324,21 +310,41 @@ def _extrair_se1426_api(
         if not itens:
             break
 
-        for item in itens:
-            yield RegistroIdentidade(
-                fonte="se1426",
-                tipo="servidor",
-                rf=item.get("rf") or item.get("cd_registro_funcional"),
-                nome=item.get("nome") or item.get("nm_pessoa"),
-                cpf=item.get("cpf") or item.get("cd_cpf_pessoa"),
-                email=item.get("email"),
-                situacao=(item.get("situacao") or "").lower() or None,
-                dados_extras=item,
-            )
+        yield from itens
 
         if not dados.get("next"):
             break
         pagina += 1
+
+
+def _extrair_se1426_api(
+    desde: datetime | None = None,
+) -> Iterator[RegistroIdentidade]:
+    """Extrai servidores do SE1426 via API REST (fallback).
+
+    Yields:
+        RegistroIdentidade para cada servidor encontrado.
+    """
+    url_base = settings.SE1426_API_URL.rstrip("/")
+    cabecalhos = {"Authorization": f"Bearer {settings.SE1426_API_TOKEN}"}
+
+    for item in _paginar_api(
+        f"{url_base}/servidores/",
+        cabecalhos,
+        settings.SE1426_API_TIMEOUT,
+        desde,
+        "SE1426",
+    ):
+        yield RegistroIdentidade(
+            fonte="se1426",
+            tipo="servidor",
+            rf=item.get("rf") or item.get("cd_registro_funcional"),
+            nome=item.get("nome") or item.get("nm_pessoa"),
+            cpf=item.get("cpf") or item.get("cd_cpf_pessoa"),
+            email=item.get("email"),
+            situacao=(item.get("situacao") or "").lower() or None,
+            dados_extras=item,
+        )
 
 
 def extrair_se1426(
@@ -368,7 +374,7 @@ def extrair_se1426(
     logger.info("extrair_se1426 — desde=%s", desde)
 
     if settings.SE1426_DB_SERVIDOR:
-        fonte_iter = _extrair_se1426_sql(desde=desde)
+        fonte_iter = _extrair_se1426_sql()
     else:
         fonte_iter = _extrair_se1426_api(desde=desde)
 
@@ -399,9 +405,8 @@ def _extrair_coresso_sql(
 
     filtro_data = ""
     if desde:
-        filtro_data = (
-            f"WHERE u.usu_dataAlteracao" f" >= '{desde.strftime('%Y-%m-%d')}'"
-        )
+        dt = desde.strftime("%Y-%m-%d")
+        filtro_data = f"WHERE u.usu_dataAlteracao >= '{dt}'"
 
     consulta = f"""
         SELECT
@@ -463,58 +468,30 @@ def _extrair_coresso_api(
     Yields:
         RegistroIdentidade para cada usuário encontrado.
     """
-    import httpx
-
     url_base = settings.CORESSO_API_URL.rstrip("/")
     cabecalhos = {"Authorization": f"Bearer {settings.CORESSO_API_TOKEN}"}
-    pagina = 1
 
-    while True:
-        params: dict = {
-            "page": pagina,
-            "page_size": settings.ETL_CHUNK_SIZE,
-        }
-        if desde:
-            params["data_alteracao_apos"] = desde.strftime("%Y-%m-%d")
-
-        try:
-            with httpx.Client(timeout=settings.CORESSO_DB_TIMEOUT) as cliente:
-                resposta = cliente.get(
-                    f"{url_base}/usuarios/",
-                    headers=cabecalhos,
-                    params=params,
-                )
-            resposta.raise_for_status()
-        except Exception as exc:
-            logger.error("CoreSSO API: erro na página %d: %s", pagina, exc)
-            break
-
-        dados = resposta.json()
-        itens = dados.get("results") or (
-            dados if isinstance(dados, list) else []
+    for item in _paginar_api(
+        f"{url_base}/usuarios/",
+        cabecalhos,
+        settings.CORESSO_DB_TIMEOUT,
+        desde,
+        "CoreSSO",
+    ):
+        yield RegistroIdentidade(
+            fonte="coresso",
+            tipo="terceiro",
+            cpf=(item.get("cpf") or "").strip() or None,
+            nome=item.get("nome") or item.get("pes_nome"),
+            email=item.get("email") or item.get("pes_email"),
+            situacao=(
+                "ativo"
+                if str(item.get("situacao", "")).strip() in ("1", "ativo")
+                else "inativo"
+            ),
+            tipo_acesso="legado-coresso",
+            dados_extras=item,
         )
-        if not itens:
-            break
-
-        for item in itens:
-            yield RegistroIdentidade(
-                fonte="coresso",
-                tipo="terceiro",
-                cpf=(item.get("cpf") or "").strip() or None,
-                nome=item.get("nome") or item.get("pes_nome"),
-                email=item.get("email") or item.get("pes_email"),
-                situacao=(
-                    "ativo"
-                    if str(item.get("situacao", "")).strip() in ("1", "ativo")
-                    else "inativo"
-                ),
-                tipo_acesso="legado-coresso",
-                dados_extras=item,
-            )
-
-        if not dados.get("next"):
-            break
-        pagina += 1
 
 
 def extrair_coresso(
@@ -556,19 +533,13 @@ def extrair_coresso(
 # ---------------------------------------------------------------------------
 
 
-def _extrair_eol_alunos_sql(
-    desde: datetime | None = None,
-) -> Iterator[RegistroIdentidade]:
+def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
     """Extrai alunos do EOL_DB via SQL Server (read-only).
 
     As tabelas aluno/v_matricula_cotic/matricula_turma_escola não
     expõem uma coluna de data de atualização utilizável para filtro
     incremental — sem suporte a watermark por enquanto; a extração
-    sempre traz a base completa (``desde`` é ignorado).
-
-    Args:
-        desde: Não utilizado nesta fonte (mantido por
-            compatibilidade com a assinatura comum de extração).
+    sempre traz a base completa.
 
     Yields:
         RegistroIdentidade para cada aluno encontrado.
@@ -653,9 +624,7 @@ def extrair_eol_alunos(
         logger.warning("EOL_DB: sem configuração de conexão — skipping.")
         return
 
-    yield from _iterar_com_watermark(
-        "eol_alunos", _extrair_eol_alunos_sql(desde=desde)
-    )
+    yield from _iterar_com_watermark("eol_alunos", _extrair_eol_alunos_sql())
 
 
 # ---------------------------------------------------------------------------
@@ -707,14 +676,11 @@ def buscar_grupos_coresso_por_login(login: str) -> list[dict]:
         return []
 
 
-def extrair_sistemas_coresso(id_execucao: str | None) -> int:
+def extrair_sistemas_coresso() -> int:
     """Extrai sistemas (SYS_Sistema) do CoreSSO.
 
     Persiste no SYNC_REC_DB apenas os metadados de provisionamento
     (client IDs Keycloak), não dados de negócio.
-
-    Args:
-        id_execucao: UUID da execução (None para extração avulsa).
 
     Returns:
         Total de sistemas processados.
@@ -769,14 +735,11 @@ def extrair_sistemas_coresso(id_execucao: str | None) -> int:
     return total
 
 
-def extrair_perfis_coresso(id_execucao: str | None) -> int:
+def extrair_perfis_coresso() -> int:
     """Extrai perfis/grupos (GRU_Grupo) do CoreSSO.
 
     Persiste no SYNC_REC_DB apenas os metadados de mapeamento
     para roles Keycloak.
-
-    Args:
-        id_execucao: UUID da execução (None para extração avulsa).
 
     Returns:
         Total de perfis processados.

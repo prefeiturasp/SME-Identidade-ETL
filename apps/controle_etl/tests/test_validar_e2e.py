@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,12 +17,16 @@ from apps.staging.models import (
 )
 
 
-def _fake_admin_kc(encontrados: set[str] | None = None) -> MagicMock:
+def _fake_admin_kc(
+    encontrados: set[str] | None = None,
+) -> MagicMock:
     """Cria um KeycloakAdmin fake que confirma os usernames informados."""
     admin = MagicMock()
     encontrados = encontrados or set()
 
-    def _get_users(query):
+    def _get_users(
+        query: dict[str, Any],
+    ) -> list[dict[str, str]]:
         username = query["username"]
         return [{"username": username}] if username in encontrados else []
 
@@ -31,10 +36,13 @@ def _fake_admin_kc(encontrados: set[str] | None = None) -> MagicMock:
 
 @pytest.mark.django_db
 class TestValidarE2e:
-    def _patch_pipeline(self, *, total_erros: int = 0):
+    def _patch_pipeline(self, *, total_erros: int = 0) -> Any:
         """Substitui as tasks reais por fakes que populam o staging."""
 
-        def _fake_se1426(id_execucao, data_referencia=None):
+        def _fake_se1426(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> dict[str, int]:
             UsuarioServidorStaging.objects.create(
                 id_execucao=id_execucao,
                 fonte="se1426",
@@ -44,7 +52,10 @@ class TestValidarE2e:
             )
             return {"total_extraido": 1}
 
-        def _fake_coresso(id_execucao, data_referencia=None):
+        def _fake_coresso(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> dict[str, int]:
             UsuarioTerceiroStaging.objects.create(
                 id_execucao=id_execucao,
                 fonte="coresso",
@@ -54,7 +65,10 @@ class TestValidarE2e:
             )
             return {"total_extraido": 1}
 
-        def _fake_eol(id_execucao, data_referencia=None):
+        def _fake_eol(
+            id_execucao: str,
+            data_referencia: str | None = None,
+        ) -> dict[str, int]:
             UsuarioAlunoStaging.objects.create(
                 id_execucao=id_execucao,
                 fonte="eol_alunos",
@@ -64,7 +78,9 @@ class TestValidarE2e:
             )
             return {"total_extraido": 1}
 
-        def _fake_resolver(resultados_extracao, id_execucao):
+        def _fake_resolver(
+            resultados_extracao: Any, id_execucao: str
+        ) -> dict[str, int]:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             LogEtapaETL.objects.create(
                 execucao=execucao,
@@ -78,7 +94,10 @@ class TestValidarE2e:
             execucao.save(update_fields=["total_transformado"])
             return {"total_transformado": 3, "total_deduplicado": 3}
 
-        def _fake_provisionar(resultado_resolucao, id_execucao):
+        def _fake_provisionar(
+            resultado_resolucao: Any,
+            id_execucao: str,
+        ) -> dict[str, int]:
             execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
             LogEtapaETL.objects.create(
                 execucao=execucao,
@@ -103,7 +122,7 @@ class TestValidarE2e:
             task_provisionar_identidade_keycloak=_fake_provisionar,
         )
 
-    def test_gera_relatorio_com_todos_confirmados(self, tmp_path):
+    def test_gera_relatorio_com_todos_confirmados(self, tmp_path: Any) -> None:
         saida_md = tmp_path / "validacao.md"
         admin = _fake_admin_kc({"1111111", "11122233344", "9999"})
 
@@ -140,7 +159,9 @@ class TestValidarE2e:
         assert conteudo_md.count("✅") == 3
         assert "❌" not in conteudo_md
 
-    def test_marca_nao_confirmado_quando_ausente_no_keycloak(self, tmp_path):
+    def test_marca_nao_confirmado_quando_ausente_no_keycloak(
+        self, tmp_path: Any
+    ) -> None:
         saida_md = tmp_path / "validacao.md"
         admin = _fake_admin_kc(set())  # nenhum usuário confirmado
 
@@ -163,7 +184,7 @@ class TestValidarE2e:
         assert conteudo_md.count("❌") == 3
         assert "✅" not in conteudo_md
 
-    def test_situacao_falha_quando_ha_erros(self, tmp_path):
+    def test_situacao_falha_quando_ha_erros(self, tmp_path: Any) -> None:
         saida_md = tmp_path / "validacao.md"
         admin = _fake_admin_kc(set())
 
@@ -185,7 +206,9 @@ class TestValidarE2e:
         execucao = ExecucaoETL.objects.get()
         assert execucao.situacao == ExecucaoETL.Situacao.FALHA
 
-    def test_chunk_size_sobrepoe_setting(self, settings, tmp_path):
+    def test_chunk_size_sobrepoe_setting(
+        self, settings: Any, tmp_path: Any
+    ) -> None:
         saida_md = tmp_path / "validacao.md"
         admin = _fake_admin_kc(set())
         settings.ETL_CHUNK_SIZE = 50000
@@ -207,7 +230,9 @@ class TestValidarE2e:
 
         assert settings.ETL_CHUNK_SIZE == 20
 
-    def test_realm_e_lote_maximo_repassados(self, settings, tmp_path):
+    def test_realm_e_lote_maximo_repassados(
+        self, settings: Any, tmp_path: Any
+    ) -> None:
         saida_md = tmp_path / "validacao.md"
         admin = _fake_admin_kc(set())
 

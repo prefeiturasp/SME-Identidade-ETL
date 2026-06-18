@@ -573,7 +573,9 @@ class HealthCheckView(APIView):
 @api_view(["GET"])
 def estatisticas(request: Request) -> Response:
     """Retorna estatísticas agregadas das últimas 30 execuções."""
-    ultimos_30_dias = timezone.now() - timezone.timedelta(days=30)
+    from datetime import timedelta  # noqa: PLC0415
+
+    ultimos_30_dias = timezone.now() - timedelta(days=30)
     execucoes = ExecucaoETL.objects.filter(criado_em__gte=ultimos_30_dias)
     totais = execucoes.aggregate(
         total_execucoes=Count("id"),
@@ -617,7 +619,7 @@ def extrair_sistemas(request: Request) -> Response:
     from apps.extracao.tasks import extrair_sistemas_coresso  # noqa: PLC0415
 
     try:
-        total = extrair_sistemas_coresso(id_execucao=None)
+        total = extrair_sistemas_coresso()
     except Exception as exc:
         logger.exception("Falha na extração de sistemas: %s", exc)
         return Response(
@@ -645,7 +647,9 @@ def provisionar_sistemas(request: Request) -> Response:
         qs = qs.filter(sigla=sigla)
 
     admin = obter_admin_keycloak(realm=realm)
-    criados, atualizados, erros = [], [], []
+    criados: list[dict] = []
+    atualizados: list[dict] = []
+    erros: list[dict] = []
     for sistema in qs:
         try:
             resultado = provisionar_client_kc(admin, sistema, realm=realm)
@@ -704,7 +708,7 @@ def extrair_perfis(request: Request) -> Response:
     from apps.extracao.tasks import extrair_perfis_coresso  # noqa: PLC0415
 
     try:
-        total = extrair_perfis_coresso(id_execucao=None)
+        total = extrair_perfis_coresso()
     except Exception as exc:
         logger.exception("Falha na extração de perfis: %s", exc)
         return Response(
@@ -930,7 +934,7 @@ class KanbanView(View):
         )
 
         ids_execucao = [e.id_execucao for e in ultima_por_fonte]
-        etapas_por_execucao = {}
+        etapas_por_execucao: dict[str, list[LogEtapaETL]] = {}
         for etapa in LogEtapaETL.objects.filter(
             execucao__id_execucao__in=ids_execucao
         ).order_by("ordem_etapa"):

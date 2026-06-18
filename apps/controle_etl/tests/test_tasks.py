@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -34,16 +35,16 @@ from apps.controle_etl.tasks import (
 class TestCalcularAtraso:
     """Testa o cálculo de atraso (backoff) entre tentativas."""
 
-    def test_primeira_tentativa(self):
+    def test_primeira_tentativa(self) -> None:
         """Verifica o atraso de 60s na primeira tentativa."""
         assert _calcular_atraso(1) == 60
 
-    def test_backoff_exponencial(self):
+    def test_backoff_exponencial(self) -> None:
         """Verifica que o atraso dobra exponencialmente entre tentativas."""
         assert _calcular_atraso(2) == 120
         assert _calcular_atraso(3) == 240
 
-    def test_respeita_atraso_maximo(self):
+    def test_respeita_atraso_maximo(self) -> None:
         """Verifica que o atraso é limitado ao valor máximo de 600s."""
         assert _calcular_atraso(10) == 600
 
@@ -57,7 +58,7 @@ class TestCalcularAtraso:
 class TestTaskIdentidadeExtrairSe1426:
     """Testa a task de extração e persistência do SE1426."""
 
-    def test_extrai_e_persiste_com_sucesso(self):
+    def test_extrai_e_persiste_com_sucesso(self) -> None:
         """Verifica extração, persistência e registro da tentativa."""
         id_execucao = str(uuid.uuid4())
         registros = [object(), object()]
@@ -82,7 +83,7 @@ class TestTaskIdentidadeExtrairSe1426:
         assert tentativa.nome_tarefa == "task_identidade_extrair_se1426"
         assert tentativa.erro is None
 
-    def test_repassa_data_referencia(self):
+    def test_repassa_data_referencia(self) -> None:
         """Verifica que data_referencia é repassada à extração."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -100,7 +101,7 @@ class TestTaskIdentidadeExtrairSe1426:
 
         mock_extrair.assert_called_once_with(data_referencia="2026-01-01")
 
-    def test_erro_registra_tentativa_e_reagenda(self):
+    def test_erro_registra_tentativa_e_reagenda(self) -> None:
         """Verifica que erro registra a tentativa com falha e chama retry."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -125,7 +126,7 @@ class TestTaskIdentidadeExtrairSe1426:
 class TestTaskIdentidadeExtrairCoresso:
     """Testa a task de extração e persistência do CoreSSO."""
 
-    def test_extrai_e_persiste_com_sucesso(self):
+    def test_extrai_e_persiste_com_sucesso(self) -> None:
         """Verifica extração e persistência com sucesso."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -141,7 +142,7 @@ class TestTaskIdentidadeExtrairCoresso:
 
         assert resultado == {"total_extraido": 3}
 
-    def test_erro_reagenda(self):
+    def test_erro_reagenda(self) -> None:
         """Verifica que erro na extração dispara retentativa."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -150,7 +151,8 @@ class TestTaskIdentidadeExtrairCoresso:
                 side_effect=TimeoutError("timeout"),
             ),
             patch(
-                "apps.controle_etl.tasks.task_identidade_extrair_coresso.retry",
+                "apps.controle_etl.tasks"
+                ".task_identidade_extrair_coresso.retry",
                 side_effect=Exception("retry-chamado"),
             ) as mock_retry,
             pytest.raises(Exception, match="retry-chamado"),
@@ -164,7 +166,7 @@ class TestTaskIdentidadeExtrairCoresso:
 class TestTaskIdentidadeExtrairEolAlunos:
     """Testa a task de extração e persistência do EOL Alunos."""
 
-    def test_extrai_e_persiste_com_sucesso(self):
+    def test_extrai_e_persiste_com_sucesso(self) -> None:
         """Verifica extração e persistência com sucesso."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -178,7 +180,7 @@ class TestTaskIdentidadeExtrairEolAlunos:
 
         assert resultado == {"total_extraido": 1}
 
-    def test_erro_reagenda(self):
+    def test_erro_reagenda(self) -> None:
         """Verifica que erro na extração dispara retentativa."""
         id_execucao = str(uuid.uuid4())
         with (
@@ -207,10 +209,10 @@ class TestTaskIdentidadeExtrairEolAlunos:
 class TestTaskIdentidadeResolverIdentidade:
     """Testa a task de resolução de identidade."""
 
-    def _execucao(self):
+    def _execucao(self) -> ExecucaoETL:
         return ExecucaoETL.objects.create(fonte="todos")
 
-    def test_resolve_com_sucesso(self):
+    def test_resolve_com_sucesso(self) -> None:
         """Verifica transformação e deduplicação com sucesso."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -246,7 +248,7 @@ class TestTaskIdentidadeResolverIdentidade:
         assert etapa.registros_entrada == 5
         assert etapa.registros_saida == 5
 
-    def test_atualiza_checkpoint(self):
+    def test_atualiza_checkpoint(self) -> None:
         """Verifica que o checkpoint é atualizado ao resolver identidade."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -268,7 +270,7 @@ class TestTaskIdentidadeResolverIdentidade:
         )
         assert checkpoint.etapa == "task_identidade_resolver_identidade"
 
-    def test_erro_marca_etapa_como_falha_e_reagenda(self):
+    def test_erro_marca_etapa_como_falha_e_reagenda(self) -> None:
         """Verifica que erro marca a etapa como falha e dispara retentativa."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -302,12 +304,14 @@ class TestTaskIdentidadeResolverIdentidade:
 class TestTaskProvisionarIdentidadeKeycloak:
     """Testa a task de provisionamento de identidades no Keycloak."""
 
-    def _execucao(self):
+    def _execucao(self) -> ExecucaoETL:
         return ExecucaoETL.objects.create(
             fonte="todos", realm_destino="sme-apps"
         )
 
-    def test_ignorado_quando_carga_bulk_desabilitada(self, settings):
+    def test_ignorado_quando_carga_bulk_desabilitada(
+        self, settings: Any
+    ) -> None:
         """Verifica que a etapa é ignorada com a carga bulk desligada."""
         settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = False
         execucao = self._execucao()
@@ -319,7 +323,7 @@ class TestTaskProvisionarIdentidadeKeycloak:
         etapa = LogEtapaETL.objects.get()
         assert etapa.situacao == LogEtapaETL.Situacao.IGNORADO
 
-    def test_provisiona_usuarios_pendentes(self, settings):
+    def test_provisiona_usuarios_pendentes(self, settings: Any) -> None:
         """Verifica que usuários prontos são provisionados e marcados."""
         from apps.staging.models import UsuarioServidorStaging
 
@@ -348,7 +352,9 @@ class TestTaskProvisionarIdentidadeKeycloak:
         usuario = UsuarioServidorStaging.objects.get()
         assert usuario.situacao == "carregado"
 
-    def test_usuario_ignorado_pelo_provisionamento(self, settings):
+    def test_usuario_ignorado_pelo_provisionamento(
+        self, settings: Any
+    ) -> None:
         """Verifica que usuário ignorado no provisionamento fica ignorado."""
         from apps.staging.models import UsuarioServidorStaging
 
@@ -375,7 +381,9 @@ class TestTaskProvisionarIdentidadeKeycloak:
         usuario = UsuarioServidorStaging.objects.get()
         assert usuario.situacao == "ignorado"
 
-    def test_erro_no_provisionamento_marca_usuario_com_erro(self, settings):
+    def test_erro_no_provisionamento_marca_usuario_com_erro(
+        self, settings: Any
+    ) -> None:
         """Verifica que erro no provisionamento marca o usuário com erro."""
         from apps.staging.models import UsuarioServidorStaging
 
@@ -404,7 +412,7 @@ class TestTaskProvisionarIdentidadeKeycloak:
         assert usuario.situacao == "erro"
         assert usuario.detalhe_erro == "falha kc"
 
-    def test_erro_geral_reagenda(self, settings):
+    def test_erro_geral_reagenda(self, settings: Any) -> None:
         """Verifica que erro geral (KC indisponível) dispara retentativa."""
         settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
         execucao = self._execucao()
@@ -427,12 +435,10 @@ class TestTaskProvisionarIdentidadeKeycloak:
         mock_retry.assert_called_once()
 
     def test_processa_mais_de_um_lote_quando_volume_excede_tamanho(
-        self, settings
-    ):
+        self, settings: Any
+    ) -> None:
         """Verifica que o provisionamento processa múltiplos lotes."""
-        from apps.controle_etl.tasks import (
-            _TAMANHO_LOTE_PROVISIONAMENTO,
-        )
+        from apps.controle_etl.tasks import _TAMANHO_LOTE_PROVISIONAMENTO
         from apps.staging.models import UsuarioServidorStaging
 
         settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
@@ -474,10 +480,10 @@ class TestTaskProvisionarIdentidadeKeycloak:
 class TestTaskCarregarAtributosToken:
     """Testa a task de carga de atributos no token-ms."""
 
-    def _execucao(self):
+    def _execucao(self) -> ExecucaoETL:
         return ExecucaoETL.objects.create(fonte="todos")
 
-    def test_envia_usuarios_pendentes(self):
+    def test_envia_usuarios_pendentes(self) -> None:
         """Verifica que usuários pendentes dos três tipos são enviados."""
         from apps.staging.models import (
             UsuarioAlunoStaging,
@@ -509,7 +515,9 @@ class TestTaskCarregarAtributosToken:
             situacao="carregado",
         )
 
-        def _consome_payloads(payloads, id_execucao):
+        def _consome_payloads(
+            payloads: Any, id_execucao: Any
+        ) -> dict[str, int]:
             quantidade = len(list(payloads))
             return {"enviados": quantidade, "lotes": 1}
 
@@ -524,7 +532,7 @@ class TestTaskCarregarAtributosToken:
         etapa = LogEtapaETL.objects.get()
         assert etapa.situacao == LogEtapaETL.Situacao.SUCESSO
 
-    def test_erro_reagenda(self):
+    def test_erro_reagenda(self) -> None:
         """Verifica que erro no envio marca a etapa como falha e reagenda."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -557,10 +565,10 @@ class TestTaskCarregarAtributosToken:
 class TestTaskSyncRecEtl:
     """Testa a task final de registro operacional (sync_rec)."""
 
-    def _execucao(self):
+    def _execucao(self) -> ExecucaoETL:
         return ExecucaoETL.objects.create(fonte="todos")
 
-    def test_finaliza_com_sucesso_sem_falhas(self):
+    def test_finaliza_com_sucesso_sem_falhas(self) -> None:
         """Verifica que a execução finaliza como sucesso sem falhas."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -583,7 +591,7 @@ class TestTaskSyncRecEtl:
         execucao.refresh_from_db()
         assert execucao.situacao == "sucesso"
 
-    def test_finaliza_parcial_quando_ha_falha(self):
+    def test_finaliza_parcial_quando_ha_falha(self) -> None:
         """Verifica que a execução finaliza parcial com etapa em falha."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -603,7 +611,7 @@ class TestTaskSyncRecEtl:
 
         assert resultado["situacao"] == "parcial"
 
-    def test_remove_checkpoint_apos_finalizar(self):
+    def test_remove_checkpoint_apos_finalizar(self) -> None:
         """Verifica que o checkpoint é removido após finalizar."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -621,7 +629,7 @@ class TestTaskSyncRecEtl:
             id_execucao=execucao.id_execucao
         ).exists()
 
-    def test_erro_marca_execucao_como_falha_sem_levantar(self):
+    def test_erro_marca_execucao_como_falha_sem_levantar(self) -> None:
         """Verifica que erro ao finalizar marca a execução como falha."""
         execucao = self._execucao()
         id_execucao = str(execucao.id_execucao)
@@ -644,7 +652,7 @@ class TestTaskSyncRecEtl:
 class TestTaskIdentidadeLimparStaging:
     """Testa a task de limpeza de registros antigos do staging."""
 
-    def test_sem_execucoes_nao_remove_nada(self):
+    def test_sem_execucoes_nao_remove_nada(self) -> None:
         """Verifica que registros recentes não são removidos."""
         from apps.staging.models import UsuarioServidorStaging
 
@@ -657,7 +665,7 @@ class TestTaskIdentidadeLimparStaging:
 
         assert UsuarioServidorStaging.objects.count() == 1
 
-    def test_remove_registros_de_execucoes_antigas(self):
+    def test_remove_registros_de_execucoes_antigas(self) -> None:
         """Verifica que registros de execuções antigas são removidos."""
         from apps.staging.models import UsuarioServidorStaging
 
@@ -695,10 +703,10 @@ class TestTaskIdentidadeLimparStaging:
 class TestTaskIdentidadeExecutarPipeline:
     """Testa a task orquestradora do pipeline completo de identidade."""
 
-    def _execucao(self, fonte="todos"):
+    def _execucao(self, fonte: str = "todos") -> ExecucaoETL:
         return ExecucaoETL.objects.create(fonte=fonte)
 
-    def test_dispara_chord_para_fonte_todos(self):
+    def test_dispara_chord_para_fonte_todos(self) -> None:
         """Verifica que fonte "todos" dispara chord com 3 extrações."""
         execucao = self._execucao(fonte="todos")
         id_execucao = str(execucao.id_execucao)
@@ -720,7 +728,7 @@ class TestTaskIdentidadeExecutarPipeline:
         execucao.refresh_from_db()
         assert execucao.situacao == "executando"
 
-    def test_repassa_data_referencia(self):
+    def test_repassa_data_referencia(self) -> None:
         """Verifica que data_referencia é repassada à task de extração."""
         execucao = self._execucao(fonte="se1426")
         id_execucao = str(execucao.id_execucao)
@@ -740,7 +748,7 @@ class TestTaskIdentidadeExecutarPipeline:
             id_execucao=id_execucao, data_referencia="2026-01-01"
         )
 
-    def test_fonte_unica_dispara_apenas_a_tarefa_correspondente(self):
+    def test_fonte_unica_dispara_apenas_a_tarefa_correspondente(self) -> None:
         """Verifica que fonte única dispara só a tarefa correspondente."""
         execucao = self._execucao(fonte="coresso")
         id_execucao = str(execucao.id_execucao)
@@ -754,7 +762,7 @@ class TestTaskIdentidadeExecutarPipeline:
         tarefas_extracao = mock_chord.call_args[0][0]
         assert len(tarefas_extracao) == 1
 
-    def test_fonte_sem_tarefa_correspondente_marca_falha(self):
+    def test_fonte_sem_tarefa_correspondente_marca_falha(self) -> None:
         """Verifica que fonte sem tarefa marca a execução como falha."""
         execucao = self._execucao(fonte="fonte_invalida")
         id_execucao = str(execucao.id_execucao)

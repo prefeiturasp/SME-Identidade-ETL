@@ -22,7 +22,7 @@ from apps.controle_etl.models import (
 class TestExecucaoETL:
     """Testa o modelo ExecucaoETL."""
 
-    def test_criacao_com_defaults(self):
+    def test_criacao_com_defaults(self) -> None:
         """Verifica os valores padrão na criação de uma execução."""
         execucao = ExecucaoETL.objects.create()
         assert execucao.situacao == ExecucaoETL.Situacao.PENDENTE
@@ -31,7 +31,7 @@ class TestExecucaoETL:
         assert execucao.total_extraido == 0
         assert execucao.id_execucao is not None
 
-    def test_marcar_executando(self):
+    def test_marcar_executando(self) -> None:
         """Verifica que marcar_executando atualiza situação e iniciado_em."""
         execucao = ExecucaoETL.objects.create()
         execucao.marcar_executando()
@@ -39,7 +39,7 @@ class TestExecucaoETL:
         assert execucao.situacao == ExecucaoETL.Situacao.EXECUTANDO
         assert execucao.iniciado_em is not None
 
-    def test_marcar_finalizada_sucesso(self):
+    def test_marcar_finalizada_sucesso(self) -> None:
         """Verifica que marcar_finalizada(sucesso) atualiza os campos."""
         execucao = ExecucaoETL.objects.create()
         execucao.marcar_executando()
@@ -48,32 +48,32 @@ class TestExecucaoETL:
         assert execucao.situacao == ExecucaoETL.Situacao.SUCESSO
         assert execucao.finalizado_em is not None
 
-    def test_marcar_finalizada_falha(self):
+    def test_marcar_finalizada_falha(self) -> None:
         """Verifica que marcar_finalizada aceita a situação falha."""
         execucao = ExecucaoETL.objects.create()
         execucao.marcar_finalizada("falha")
         assert execucao.situacao == ExecucaoETL.Situacao.FALHA
 
-    def test_duracao_segundos_nula_sem_inicio(self):
+    def test_duracao_segundos_nula_sem_inicio(self) -> None:
         """Verifica que duracao_segundos é None sem início/fim."""
         execucao = ExecucaoETL.objects.create()
         assert execucao.duracao_segundos is None
 
-    def test_duracao_segundos_calculada(self):
+    def test_duracao_segundos_calculada(self) -> None:
         """Verifica o cálculo de duracao_segundos a partir do início/fim."""
         execucao = ExecucaoETL.objects.create()
         execucao.iniciado_em = timezone.now()
         execucao.finalizado_em = execucao.iniciado_em + timedelta(seconds=42)
         assert execucao.duracao_segundos == pytest.approx(42.0)
 
-    def test_str_contem_fonte_e_situacao(self):
+    def test_str_contem_fonte_e_situacao(self) -> None:
         """Verifica que __str__ contém fonte e situação da execução."""
         execucao = ExecucaoETL.objects.create(fonte="se1426")
         s = str(execucao)
         assert "se1426" in s
         assert "pendente" in s
 
-    def test_id_execucao_unico_por_instancia(self):
+    def test_id_execucao_unico_por_instancia(self) -> None:
         """Verifica que cada execução recebe um id_execucao distinto."""
         e1 = ExecucaoETL.objects.create()
         e2 = ExecucaoETL.objects.create()
@@ -84,10 +84,10 @@ class TestExecucaoETL:
 class TestLogEtapaETL:
     """Testa o modelo LogEtapaETL."""
 
-    def _execucao(self):
+    def _execucao(self) -> ExecucaoETL:
         return ExecucaoETL.objects.create()
 
-    def test_criacao_com_defaults(self):
+    def test_criacao_com_defaults(self) -> None:
         """Verifica os valores padrão na criação de uma etapa."""
         execucao = self._execucao()
         etapa = LogEtapaETL.objects.create(
@@ -98,7 +98,7 @@ class TestLogEtapaETL:
         assert etapa.situacao == LogEtapaETL.Situacao.EXECUTANDO
         assert etapa.registros_entrada == 0
 
-    def test_str_contem_etapa_e_situacao(self):
+    def test_str_contem_etapa_e_situacao(self) -> None:
         """Verifica que __str__ contém o nome da etapa."""
         execucao = self._execucao()
         etapa = LogEtapaETL.objects.create(
@@ -109,7 +109,7 @@ class TestLogEtapaETL:
         s = str(etapa)
         assert "task_sync_rec_etl" in s
 
-    def test_unique_together_execucao_etapa(self):
+    def test_unique_together_execucao_etapa(self) -> None:
         """Verifica que execução+etapa duplicada viola unique_together."""
         from django.db import IntegrityError
 
@@ -126,7 +126,7 @@ class TestLogEtapaETL:
                 ordem_etapa=2,
             )
 
-    def test_relacionamento_com_execucao(self):
+    def test_relacionamento_com_execucao(self) -> None:
         """Verifica que a etapa é acessível via related_name etapas."""
         execucao = self._execucao()
         LogEtapaETL.objects.create(
@@ -141,7 +141,7 @@ class TestLogEtapaETL:
 class TestMarcaDaguaExtracao:
     """Testa o modelo MarcaDaguaExtracao."""
 
-    def test_get_or_create_por_fonte(self):
+    def test_get_or_create_por_fonte(self) -> None:
         """Verifica que get_or_create cria a marca com total zerado."""
         marca, criada = MarcaDaguaExtracao.objects.get_or_create(
             fonte="se1426"
@@ -149,7 +149,7 @@ class TestMarcaDaguaExtracao:
         assert criada is True
         assert marca.total_processado == 0
 
-    def test_str_contem_fonte(self):
+    def test_str_contem_fonte(self) -> None:
         """Verifica que __str__ contém a fonte da marca."""
         marca = MarcaDaguaExtracao.objects.create(fonte="coresso")
         assert "coresso" in str(marca)
@@ -159,7 +159,7 @@ class TestMarcaDaguaExtracao:
 class TestCheckpointEtl:
     """Testa o modelo CheckpointEtl."""
 
-    def test_criacao_e_str(self):
+    def test_criacao_e_str(self) -> None:
         """Verifica criação do checkpoint e __str__ com etapa e página."""
         uid = uuid.uuid4()
         cp = CheckpointEtl.objects.create(
@@ -171,7 +171,7 @@ class TestCheckpointEtl:
         assert "task_identidade_resolver_identidade" in s
         assert "pág 3" in s
 
-    def test_estado_json_default_vazio(self):
+    def test_estado_json_default_vazio(self) -> None:
         """Verifica que estado_json tem dict vazio como valor padrão."""
         cp = CheckpointEtl.objects.create(
             id_execucao=uuid.uuid4(),
@@ -184,7 +184,7 @@ class TestCheckpointEtl:
 class TestRastreioTentativa:
     """Testa o modelo RastreioTentativa."""
 
-    def test_criacao(self):
+    def test_criacao(self) -> None:
         """Verifica a criação de uma tentativa sem erro."""
         uid = uuid.uuid4()
         rt = RastreioTentativa.objects.create(
@@ -196,7 +196,7 @@ class TestRastreioTentativa:
         assert rt.erro is None
         assert rt.duracao_segundos == pytest.approx(1.5)
 
-    def test_criacao_com_erro(self):
+    def test_criacao_com_erro(self) -> None:
         """Verifica a criação de uma tentativa com erro registrado."""
         rt = RastreioTentativa.objects.create(
             id_execucao=uuid.uuid4(),
@@ -204,9 +204,9 @@ class TestRastreioTentativa:
             numero_tentativa=2,
             erro="Connection timeout",
         )
-        assert "timeout" in rt.erro.lower()
+        assert rt.erro is not None and "timeout" in rt.erro.lower()
 
-    def test_str_contem_nome_tarefa(self):
+    def test_str_contem_nome_tarefa(self) -> None:
         """Verifica que __str__ contém o nome da tarefa."""
         rt = RastreioTentativa.objects.create(
             id_execucao=uuid.uuid4(),
@@ -220,7 +220,7 @@ class TestRastreioTentativa:
 class TestControleProvisionamento:
     """Testa o modelo ControleProvisionamento."""
 
-    def test_criacao_e_unique_together(self):
+    def test_criacao_e_unique_together(self) -> None:
         """Verifica que a combinação tipo+sistema+origem+realm é única."""
         from django.db import IntegrityError
 
@@ -240,7 +240,7 @@ class TestControleProvisionamento:
                 hash_conteudo="xyz789",
             )
 
-    def test_str_contem_tipo_e_origem(self):
+    def test_str_contem_tipo_e_origem(self) -> None:
         """Verifica que __str__ contém tipo de entidade e sistema origem."""
         cp = ControleProvisionamento.objects.create(
             tipo_entidade=ControleProvisionamento.TipoEntidade.GRUPO,

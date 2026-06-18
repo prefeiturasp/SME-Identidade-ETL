@@ -1,6 +1,9 @@
 """Fixtures pytest para a app extracao."""
 
+from __future__ import annotations
+
 import os
+from typing import Any
 
 import pytest
 
@@ -11,7 +14,7 @@ os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "1")
 
 
 @pytest.fixture(autouse=True)
-def celery_eager(settings):
+def celery_eager(settings: Any) -> None:
     """Configura Celery para execução síncrona nos testes."""
     settings.CELERY_TASK_ALWAYS_EAGER = True
     settings.CELERY_TASK_EAGER_PROPAGATES = True
