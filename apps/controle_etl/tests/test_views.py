@@ -40,7 +40,7 @@ def cliente_anonimo():
 
 @pytest.mark.django_db
 class TestExecucoesView:
-    URL = "/api/v1/etl/execucoes/"
+    URL = "/identidade-etl/api/v1/etl/execucoes/"
 
     def test_lista_execucoes_vazia(self, cliente):
         resp = cliente.get(self.URL)
@@ -114,12 +114,12 @@ class TestExecucoesView:
 class TestDetalheExecucaoView:
     def test_retorna_execucao_existente(self, cliente):
         execucao = ExecucaoETL.objects.create(fonte="coresso")
-        resp = cliente.get(f"/api/v1/etl/execucoes/{execucao.pk}/")
+        resp = cliente.get(f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/")
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["fonte"] == "coresso"
 
     def test_retorna_404_para_inexistente(self, cliente):
-        resp = cliente.get("/api/v1/etl/execucoes/99999/")
+        resp = cliente.get("/identidade-etl/api/v1/etl/execucoes/99999/")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
 
@@ -134,7 +134,7 @@ class TestCancelarExecucaoView:
         execucao = ExecucaoETL.objects.create(situacao="pendente")
         with patch("config.celery.app.control.revoke"):
             resp = cliente.post(
-                f"/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
+                f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
             )
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["situacao"] == "cancelado"
@@ -145,18 +145,18 @@ class TestCancelarExecucaoView:
         execucao.save(update_fields=["id_tarefa_celery"])
         with patch("config.celery.app.control.revoke") as mock_revoke:
             resp = cliente.post(
-                f"/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
+                f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
             )
         assert resp.status_code == status.HTTP_200_OK
         mock_revoke.assert_called_once_with("some-task-id", terminate=True)
 
     def test_nao_cancela_execucao_finalizada(self, cliente):
         execucao = ExecucaoETL.objects.create(situacao="sucesso")
-        resp = cliente.post(f"/api/v1/etl/execucoes/{execucao.pk}/cancelar/")
+        resp = cliente.post(f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
     def test_404_para_inexistente(self, cliente):
-        resp = cliente.post("/api/v1/etl/execucoes/99999/cancelar/")
+        resp = cliente.post("/identidade-etl/api/v1/etl/execucoes/99999/cancelar/")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
 
@@ -167,7 +167,7 @@ class TestCancelarExecucaoView:
 
 @pytest.mark.django_db
 class TestMarcaDaguaView:
-    URL = "/api/v1/etl/watermark/"
+    URL = "/identidade-etl/api/v1/etl/watermark/"
 
     def test_lista_vazia(self, cliente):
         resp = cliente.get(self.URL)
@@ -185,14 +185,14 @@ class TestMarcaDaguaView:
             fonte="se1426",
             ultima_pagina=5,
         )
-        resp = cliente.post("/api/v1/etl/watermark/se1426/resetar/")
+        resp = cliente.post("/identidade-etl/api/v1/etl/watermark/se1426/resetar/")
         assert resp.status_code == status.HTTP_200_OK
         data = resp.json()
         assert data["ultima_pagina"] == 0
         assert data["ultimo_processado_em"] is None
 
     def test_resetar_cria_marca_se_nao_existe(self, cliente):
-        resp = cliente.post("/api/v1/etl/watermark/fonte_nova/resetar/")
+        resp = cliente.post("/identidade-etl/api/v1/etl/watermark/fonte_nova/resetar/")
         assert resp.status_code == status.HTTP_200_OK
         assert MarcaDaguaExtracao.objects.filter(fonte="fonte_nova").exists()
 
@@ -204,7 +204,7 @@ class TestMarcaDaguaView:
 
 @pytest.mark.django_db
 class TestEstatisticas:
-    URL = "/api/v1/etl/estatisticas/"
+    URL = "/identidade-etl/api/v1/etl/estatisticas/"
 
     def test_retorna_estrutura_esperada(self, cliente):
         resp = cliente.get(self.URL)
@@ -228,7 +228,7 @@ class TestEstatisticas:
 
 @pytest.mark.django_db
 class TestTentativasView:
-    URL = "/api/v1/etl/tentativas/"
+    URL = "/identidade-etl/api/v1/etl/tentativas/"
 
     def test_lista_vazia(self, cliente):
         resp = cliente.get(self.URL)
@@ -281,7 +281,7 @@ class TestTentativasView:
 
 @pytest.mark.django_db
 class TestControleProvisionamentoView:
-    URL = "/api/v1/etl/provisionamento/"
+    URL = "/identidade-etl/api/v1/etl/provisionamento/"
 
     def _registro(self, **kwargs):
         defaults = {
@@ -330,7 +330,7 @@ class TestControleProvisionamentoView:
 
 @pytest.mark.django_db
 class TestCheckpointsView:
-    URL = "/api/v1/etl/checkpoints/"
+    URL = "/identidade-etl/api/v1/etl/checkpoints/"
 
     def test_lista_vazia(self, cliente):
         resp = cliente.get(self.URL)
@@ -357,7 +357,7 @@ class TestCheckpointsView:
 
 @pytest.mark.django_db
 class TestConsultaIdentidadeView:
-    URL = "/api/v1/etl/identidades/consultar/"
+    URL = "/identidade-etl/api/v1/etl/identidades/consultar/"
 
     def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
         resp = cliente_anonimo.get(self.URL + "?cpf=12345678901")
@@ -426,7 +426,7 @@ class TestConsultaIdentidadeView:
 
 @pytest.mark.django_db
 class TestHealthCheckView:
-    URL = "/api/v1/etl/health/"
+    URL = "/identidade-etl/api/v1/etl/health/"
 
     def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
         resp = cliente_anonimo.get(self.URL)
@@ -450,7 +450,7 @@ class TestHealthCheckView:
 
 @pytest.mark.django_db
 class TestResumoExecucoesView:
-    URL = "/api/v1/etl/monitoramento/resumo/"
+    URL = "/identidade-etl/api/v1/etl/monitoramento/resumo/"
 
     def test_endpoint_publico_sem_autenticacao(self, cliente_anonimo):
         resp = cliente_anonimo.get(self.URL)

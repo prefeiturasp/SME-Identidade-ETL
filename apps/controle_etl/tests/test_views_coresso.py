@@ -45,7 +45,7 @@ def _perfil(sistema=None, **kwargs):
 
 @pytest.mark.django_db
 class TestExtrairSistemas:
-    URL = "/api/v1/etl/sistemas/extrair/"
+    URL = "/identidade-etl/api/v1/etl/sistemas/extrair/"
 
     def test_extrai_com_sucesso(self, cliente):
         with patch(
@@ -76,7 +76,7 @@ class TestExtrairSistemas:
 
 @pytest.mark.django_db
 class TestProvisionarSistemas:
-    URL = "/api/v1/etl/sistemas/provisionar/"
+    URL = "/identidade-etl/api/v1/etl/sistemas/provisionar/"
 
     def test_provisiona_sistemas_pendentes(self, cliente):
         _sistema(situacao=1)
@@ -141,7 +141,7 @@ class TestProvisionarSistemas:
 
 @pytest.mark.django_db
 class TestListarSistemas:
-    URL = "/api/v1/etl/sistemas/"
+    URL = "/identidade-etl/api/v1/etl/sistemas/"
 
     def test_lista_vazia(self, cliente):
         resp = cliente.get(self.URL)
@@ -164,7 +164,7 @@ class TestListarSistemas:
 
 @pytest.mark.django_db
 class TestExtrairPerfis:
-    URL = "/api/v1/etl/perfis/extrair/"
+    URL = "/identidade-etl/api/v1/etl/perfis/extrair/"
 
     def test_extrai_com_sucesso(self, cliente):
         with patch(
@@ -194,7 +194,7 @@ class TestExtrairPerfis:
 
 @pytest.mark.django_db
 class TestProvisionarPerfis:
-    URL = "/api/v1/etl/perfis/provisionar/"
+    URL = "/identidade-etl/api/v1/etl/perfis/provisionar/"
 
     def test_provisiona_perfis_existentes(self, cliente):
         sistema = _sistema()
@@ -322,7 +322,7 @@ class TestProvisionarPerfis:
 
 @pytest.mark.django_db
 class TestListarPerfis:
-    URL = "/api/v1/etl/perfis/"
+    URL = "/identidade-etl/api/v1/etl/perfis/"
 
     def test_lista_vazia(self, cliente):
         resp = cliente.get(self.URL)
