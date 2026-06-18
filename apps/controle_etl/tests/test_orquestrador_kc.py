@@ -577,7 +577,7 @@ class TestProvisionarUsuariosKcEmParalelo:
         admin.create_user.side_effect = [f"kc-{n}" for n in range(10)]
 
         resultados = provisionar_usuarios_kc_em_paralelo(
-            admin, usuarios, realm="sme-apps"
+            admin, usuarios, realm="sme-apps", max_workers=1
         )
 
         assert len(resultados) == 10
@@ -601,7 +601,7 @@ class TestProvisionarUsuariosKcEmParalelo:
         admin.create_user.side_effect = _create_user
 
         resultados = provisionar_usuarios_kc_em_paralelo(
-            admin, usuarios, realm="sme-apps"
+            admin, usuarios, realm="sme-apps", max_workers=1
         )
 
         assert len(resultados) == 5
