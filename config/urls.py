@@ -15,7 +15,7 @@ from apps.controle_etl.views import (
     KanbanView,
 )
 
-_API_V1 = "api/v1/"
+_API_V1 = "identidade-etl/api/v1/"
 
 urlpatterns = [
     path("dashboard/", DashboardView.as_view(), name="dashboard"),
