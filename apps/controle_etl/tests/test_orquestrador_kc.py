@@ -1,0 +1,1020 @@
+"""Testes para apps.controle_etl.orquestrador_kc."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from apps.controle_etl.orquestrador_kc import (
+    _atribuir_roles_e_grupos,
+    _com_reintento,
+    _derivar_grupos,
+    _derivar_roles_realm,
+    _excecoes_retriaveis,
+    _inferir_tipo_usuario,
+    _localizar_usuario_kc,
+    _resolver_username,
+    _slugificar_client_id,
+    calcular_hash_conteudo,
+    construir_payload_kc,
+    construir_payload_token_ms,
+    provisionar_usuarios_kc_em_paralelo,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers de dados
+# ---------------------------------------------------------------------------
+
+
+def _usuario(
+    *,
+    cpf: str = "12345678901",
+    rf: str = "1234567",
+    nome: str = "Ana Lima",
+    email: str = "ana@sme.sp.gov.br",
+    situacao: str = "ativo",
+    cargo: str | None = None,
+    funcao: str | None = None,
+    dre: str | None = None,
+    ue: str | None = None,
+    lotacao: str | None = None,
+    lotacao_nome: str | None = None,
+    matricula: str | None = None,
+    cod_escola: str | None = None,
+    turma: str | None = None,
+    tipo_acesso: str | None = None,
+    fonte: str = "se1426",
+    id: int = 1,
+) -> MagicMock:
+    u = MagicMock()
+    u.cpf = cpf
+    u.rf = rf
+    u.nome = nome
+    u.email = email
+    u.situacao = situacao
+    u.cargo = cargo
+    u.funcao = funcao
+    u.dre = dre
+    u.ue = ue
+    u.lotacao = lotacao
+    u.lotacao_nome = lotacao_nome
+    u.matricula = matricula
+    u.cod_escola = cod_escola
+    u.turma = turma
+    u.tipo_acesso = tipo_acesso
+    u.fonte = fonte
+    u.id = id
+    return u
+
+
+# ---------------------------------------------------------------------------
+# _resolver_username
+# ---------------------------------------------------------------------------
+
+
+class TestResolverUsername:
+    """Testa a resolução do username de destino no Keycloak."""
+
+    def test_prefere_cpf_apenas_digitos(self) -> None:
+        """Verifica que o CPF, sem máscara, é preferido como username."""
+        u = _usuario(cpf="123.456.789-01", rf="")
+        assert _resolver_username(u) == "12345678901"
+
+    def test_usa_rf_quando_sem_cpf(self) -> None:
+        """Verifica que o RF é usado como username quando não há CPF."""
+        u = _usuario(cpf="", rf="9876543")
+        assert _resolver_username(u) == "9876543"
+
+    def test_usa_matricula_quando_sem_cpf_e_rf(self) -> None:
+        """Verifica que a matrícula é usada quando não há CPF nem RF."""
+        u = _usuario(cpf="", rf="", matricula="M001")
+        assert _resolver_username(u) == "M001"
+
+    def test_fallback_fonte_id(self) -> None:
+        """Verifica o fallback para "fonte-id" sem nenhum identificador."""
+        u = _usuario(cpf="", rf="", matricula="")
+        u.fonte = "eol_alunos"
+        u.id = 99
+        assert _resolver_username(u) == "eol_alunos-99"
+
+
+# ---------------------------------------------------------------------------
+# _excecoes_retriaveis
+# ---------------------------------------------------------------------------
+
+
+class TestExcecoesRetriaveis:
+    """Testa a composição da tupla de exceções consideradas retriáveis."""
+
+    def test_inclui_excecoes_do_keycloak_quando_lib_disponivel(self) -> None:
+        """Verifica exceções do Keycloak incluídas com a lib disponível."""
+        excecoes = _excecoes_retriaveis()
+        assert ConnectionError in excecoes
+        assert TimeoutError in excecoes
+        assert len(excecoes) == 6
+
+    def test_fallback_quando_lib_keycloak_indisponivel(self) -> None:
+        """Verifica fallback p/ ConnectionError/TimeoutError sem keycloak."""
+        import builtins
+
+        import_original = builtins.__import__
+
+        def import_falho(nome: str, *args: Any, **kwargs: Any) -> Any:
+            if nome == "keycloak.exceptions":
+                raise ImportError("keycloak não instalado")
+            return import_original(nome, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_falho):
+            excecoes = _excecoes_retriaveis()
+
+        assert excecoes == (ConnectionError, TimeoutError)
+
+
+# ---------------------------------------------------------------------------
+# _inferir_tipo_usuario
+# ---------------------------------------------------------------------------
+
+
+class TestInferirTipoUsuario:
+    """Testa a inferência do tipo de usuário a partir do modelo staging."""
+
+    def test_servidor(self) -> None:
+        """Verifica que UsuarioServidorStaging é inferido como "servidor"."""
+        from apps.staging.models import UsuarioServidorStaging
+
+        u = UsuarioServidorStaging(fonte="se1426")
+        assert _inferir_tipo_usuario(u) == "servidor"
+
+    def test_aluno(self) -> None:
+        """Verifica que UsuarioAlunoStaging é inferido como "aluno"."""
+        from apps.staging.models import UsuarioAlunoStaging
+
+        u = UsuarioAlunoStaging(fonte="eol_alunos")
+        assert _inferir_tipo_usuario(u) == "aluno"
+
+    def test_terceiro_usa_tipo_acesso(self) -> None:
+        """Verifica que terceiro usa tipo_acesso quando informado."""
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        u = UsuarioTerceiroStaging(
+            fonte="coresso", tipo_acesso="legado-coresso"
+        )
+        assert _inferir_tipo_usuario(u) == "legado-coresso"
+
+    def test_terceiro_sem_tipo_acesso_usa_fallback(self) -> None:
+        """Verifica o fallback para "terceiro" quando tipo_acesso é None."""
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        u = UsuarioTerceiroStaging(fonte="coresso", tipo_acesso=None)
+        assert _inferir_tipo_usuario(u) == "terceiro"
+
+    def test_tipo_desconhecido_retorna_outro(self) -> None:
+        """Verifica que um objeto de tipo desconhecido retorna "outro"."""
+        assert _inferir_tipo_usuario(object()) == "outro"
+
+
+# ---------------------------------------------------------------------------
+# _derivar_roles_realm
+# ---------------------------------------------------------------------------
+
+
+class TestDerivarRolesRealm:
+    """Testa a derivação de roles de realm a partir de cargo/função."""
+
+    def test_cargo_conhecido_mapeia_role(self) -> None:
+        """Verifica que um cargo conhecido é mapeado para a role Professor."""
+        u = _usuario(
+            cargo="PROFESSOR DE EDUCACAO INFANTIL E ENSINO FUNDAMENTAL I"
+        )
+        roles = _derivar_roles_realm(u)
+        assert "Professor" in roles
+
+    def test_funcao_conhecida_mapeia_role(self) -> None:
+        """Verifica que função conhecida é mapeada para a role Diretor."""
+        u = _usuario(funcao="DIRETOR DE ESCOLA")
+        roles = _derivar_roles_realm(u)
+        assert "Diretor" in roles
+
+    def test_cargo_e_funcao_combinam_roles(self) -> None:
+        """Verifica que cargo e função juntos combinam as roles."""
+        u = _usuario(
+            cargo="PROFESSOR DE ENSINO FUNDAMENTAL II E MEDIO",
+            funcao="COORDENADOR PEDAGOGICO",
+        )
+        roles = _derivar_roles_realm(u)
+        assert "Professor" in roles
+        assert "CoordenadorPedagogico" in roles
+
+    def test_cargo_desconhecido_retorna_lista_vazia(self) -> None:
+        """Verifica que um cargo sem mapeamento retorna lista vazia."""
+        u = _usuario(cargo="CARGO INEXISTENTE")
+        assert _derivar_roles_realm(u) == []
+
+    def test_sem_cargo_e_funcao_retorna_lista_vazia(self) -> None:
+        """Verifica que a ausência de cargo e função retorna lista vazia."""
+        u = _usuario(cargo=None, funcao=None)
+        assert _derivar_roles_realm(u) == []
+
+    def test_resultado_ordenado(self) -> None:
+        """Verifica que as roles vêm em ordem alfabética."""
+        u = _usuario(
+            cargo="DIRETOR DE ESCOLA",
+            funcao="COORDENADOR PEDAGOGICO",
+        )
+        roles = _derivar_roles_realm(u)
+        assert roles == sorted(roles)
+
+
+# ---------------------------------------------------------------------------
+# _derivar_grupos
+# ---------------------------------------------------------------------------
+
+
+class TestDerivarGrupos:
+    """Testa a derivação dos caminhos de grupos do Keycloak."""
+
+    def test_dre_e_ue_gera_caminho_completo(self) -> None:
+        """Verifica que DRE e UE geram o caminho completo /SME/DRE-x/UE-y."""
+        u = _usuario(dre="1", ue="200")
+        grupos = _derivar_grupos(u)
+        assert "/SME/DRE-1/UE-200" in grupos
+
+    def test_apenas_dre_gera_caminho_parcial(self) -> None:
+        """Verifica que apenas a DRE gera o caminho parcial /SME/DRE-x."""
+        u = _usuario(dre="2", ue=None)
+        grupos = _derivar_grupos(u)
+        assert "/SME/DRE-2" in grupos
+
+    def test_lotacao_sem_dre(self) -> None:
+        """Verifica que a lotação gera /SME/LOTACAO-x quando não há DRE."""
+        u = _usuario(dre=None, ue=None, lotacao="LOT001")
+        grupos = _derivar_grupos(u)
+        assert "/SME/LOTACAO-LOT001" in grupos
+
+    def test_sem_dados_retorna_lista_vazia(self) -> None:
+        """Verifica que sem DRE, UE e lotação retorna lista vazia."""
+        u = _usuario(dre=None, ue=None, lotacao=None)
+        assert _derivar_grupos(u) == []
+
+
+# ---------------------------------------------------------------------------
+# construir_payload_kc
+# ---------------------------------------------------------------------------
+
+
+class TestConstruirPayloadKc:
+    """Testa a construção do payload de usuário para a API do Keycloak."""
+
+    def test_campos_obrigatorios_presentes(self) -> None:
+        """Verifica que os campos obrigatórios estão no payload."""
+        u = _usuario()
+        payload = construir_payload_kc(u)
+        for campo in (
+            "username",
+            "email",
+            "firstName",
+            "lastName",
+            "enabled",
+            "emailVerified",
+            "attributes",
+        ):
+            assert campo in payload
+
+    def test_situacao_inativo_desabilita_usuario(self) -> None:
+        """Verifica que situação inativa define enabled como False."""
+        u = _usuario(situacao="inativo")
+        assert construir_payload_kc(u)["enabled"] is False
+
+    def test_situacao_ativo_habilita_usuario(self) -> None:
+        """Verifica que situação ativa define enabled como True."""
+        u = _usuario(situacao="ativo")
+        assert construir_payload_kc(u)["enabled"] is True
+
+    def test_nome_partido_em_primeiro_e_ultimo(self) -> None:
+        """Verifica que o nome completo é dividido em firstName e lastName."""
+        u = _usuario(nome="Maria Clara Santos")
+        payload = construir_payload_kc(u)
+        assert payload["firstName"] == "Maria"
+        assert payload["lastName"] == "Clara Santos"
+
+    def test_nome_unico(self) -> None:
+        """Verifica que nome de uma palavra preenche só firstName."""
+        u = _usuario(nome="Teste")
+        payload = construir_payload_kc(u)
+        assert payload["firstName"] == "Teste"
+        assert payload["lastName"] == ""
+
+    def test_atributos_contem_campos_etl(self) -> None:
+        """Verifica que attributes tem cpf, rf, fonte e tipo_usuario."""
+        u = _usuario(cpf="11122233344", rf="9876543")
+        attrs = construir_payload_kc(u)["attributes"]
+        assert "cpf" in attrs
+        assert "rf" in attrs
+        assert "fonte" in attrs
+        assert "tipo_usuario" in attrs
+
+
+# ---------------------------------------------------------------------------
+# construir_payload_token_ms
+# ---------------------------------------------------------------------------
+
+
+class TestConstruirPayloadTokenMs:
+    """Testa a construção do payload de usuário para o token-ms."""
+
+    def test_campos_essenciais(self) -> None:
+        """Verifica que os campos essenciais estão no payload."""
+        u = _usuario()
+        payload = construir_payload_token_ms(u)
+        for campo in (
+            "rf",
+            "cpf",
+            "nome",
+            "email",
+            "tipo_usuario",
+            "situacao",
+            "fonte",
+            "id_execucao",
+        ):
+            assert campo in payload
+
+    def test_id_execucao_como_string(self) -> None:
+        """Verifica que id_execucao é convertido para string no payload."""
+        u = _usuario()
+        u.id_execucao = "abc-123"
+        payload = construir_payload_token_ms(u)
+        assert isinstance(payload["id_execucao"], str)
+
+
+# ---------------------------------------------------------------------------
+# calcular_hash_conteudo
+# ---------------------------------------------------------------------------
+
+
+class TestCalcularHashConteudo:
+    """Testa o cálculo do hash de conteúdo usado na idempotência."""
+
+    def test_retorna_string_hex_64_chars(self) -> None:
+        """Verifica que o hash é hexadecimal com 64 caracteres."""
+        h = calcular_hash_conteudo({"a": 1})
+        assert isinstance(h, str)
+        assert len(h) == 64
+
+    def test_mesmo_payload_mesmo_hash(self) -> None:
+        """Verifica que o mesmo payload produz sempre o mesmo hash."""
+        p = {"b": 2, "a": 1}
+        assert calcular_hash_conteudo(p) == calcular_hash_conteudo(p)
+
+    def test_payloads_diferentes_hashes_diferentes(self) -> None:
+        """Verifica que payloads diferentes produzem hashes diferentes."""
+        assert calcular_hash_conteudo({"x": 1}) != calcular_hash_conteudo(
+            {"x": 2}
+        )
+
+    def test_ordem_das_chaves_nao_importa(self) -> None:
+        """Verifica que a ordem das chaves no dict não altera o hash."""
+        assert calcular_hash_conteudo(
+            {"a": 1, "b": 2}
+        ) == calcular_hash_conteudo({"b": 2, "a": 1})
+
+
+# ---------------------------------------------------------------------------
+# _slugificar_client_id
+# ---------------------------------------------------------------------------
+
+
+class TestSlugificarClientId:
+    """Testa a geração de slugs para client_id no Keycloak."""
+
+    def test_lowercase_e_hifen(self) -> None:
+        """Verifica que o nome é convertido para lowercase com hífens."""
+        assert _slugificar_client_id("Sistema Escolar") == "sistema-escolar"
+
+    def test_remove_acentos(self) -> None:
+        """Verifica que acentos são removidos do slug gerado."""
+        slug = _slugificar_client_id("Gestão Pedagógica")
+        assert "ã" not in slug
+        assert "ó" not in slug
+
+    def test_string_vazia_retorna_fallback(self) -> None:
+        """Verifica fallback para "sistema-sem-nome" com nome vazio."""
+        assert _slugificar_client_id("") == "sistema-sem-nome"
+
+
+# ---------------------------------------------------------------------------
+# provisionar_usuario_kc — idempotência
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestProvisionarUsuarioKcIdempotencia:
+    def test_usuario_sem_mudanca_retorna_ignorado(self, settings: Any) -> None:
+        from apps.controle_etl.models import ControleProvisionamento
+        from apps.controle_etl.orquestrador_kc import (
+            calcular_hash_conteudo,
+            construir_payload_kc,
+            provisionar_usuario_kc,
+        )
+
+        u = _usuario()
+
+        payload = construir_payload_kc(u)
+        payload.pop("realmRoles", None)
+        payload.pop("groups", None)
+        hash_atual = calcular_hash_conteudo(payload)
+
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem=u.fonte,
+            id_origem="12345678901",
+            realm_destino="sme-apps",
+            hash_conteudo=hash_atual,
+            id_destino="kc-uuid-existente",
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+        assert resultado["acao"] == "ignorado"
+        admin.create_user.assert_not_called()
+        admin.update_user.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# provisionar_usuario_kc — criação / atualização
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestProvisionarUsuarioKcCriacaoAtualizacao:
+    def test_cria_usuario_novo(self) -> None:
+        from apps.controle_etl.models import ControleProvisionamento
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(cpf="11122233344", rf="")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-novo-id"
+
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "criado"
+        assert resultado["kc_user_id"] == "kc-novo-id"
+        admin.create_user.assert_called_once()
+        admin.set_user_password.assert_called_once()
+        controle = ControleProvisionamento.objects.get(id_origem="11122233344")
+        assert controle.id_destino == "kc-novo-id"
+
+    def test_falha_ao_definir_senha_inicial_nao_propaga(self) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(cpf="55566677788", rf="")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-novo-id-2"
+        admin.set_user_password.side_effect = Exception("falha senha")
+
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "criado"
+
+    def test_atualiza_usuario_existente_por_email(self) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(cpf="22233344455", rf="", email="ana@sme.sp.gov.br")
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {"id": "kc-existente", "username": "22233344455"}
+        ]
+
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        assert resultado["kc_user_id"] == "kc-existente"
+        admin.update_user.assert_called_once()
+        admin.create_user.assert_not_called()
+
+    def test_atualiza_quando_controle_ja_possui_destino_e_hash_mudou(
+        self,
+    ) -> None:
+        from apps.controle_etl.models import ControleProvisionamento
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(cpf="33344455566", rf="", nome="Nome Antigo")
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem=u.fonte,
+            id_origem="33344455566",
+            realm_destino="sme-apps",
+            hash_conteudo="hash-desatualizado",
+            id_destino="kc-uuid-velho",
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        assert resultado["kc_user_id"] == "kc-uuid-velho"
+        admin.update_user.assert_called_once_with(
+            "kc-uuid-velho", admin.update_user.call_args[0][1]
+        )
+        admin.create_user.assert_not_called()
+
+    def test_atribui_roles_e_grupos_apos_provisionar(self) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(
+            cpf="44455566677",
+            rf="",
+            cargo="DIRETOR DE ESCOLA",
+            dre="1",
+            ue="100",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-id-roles"
+        admin.get_realm_role.return_value = {"name": "Diretor"}
+        admin.get_group_by_path.return_value = {"id": "grupo-1"}
+
+        provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        admin.assign_realm_roles.assert_called_once_with(
+            "kc-id-roles", [{"name": "Diretor"}]
+        )
+        admin.group_user_add.assert_called_once_with("kc-id-roles", "grupo-1")
+
+    def test_associa_execucao_ao_controle_quando_informada(self) -> None:
+        from apps.controle_etl.models import (
+            ControleProvisionamento,
+            ExecucaoETL,
+        )
+        from apps.controle_etl.orquestrador_kc import provisionar_usuario_kc
+
+        u = _usuario(cpf="66677788899", rf="")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-id-execucao"
+        execucao = ExecucaoETL.objects.create()
+
+        provisionar_usuario_kc(admin, u, realm="sme-apps", execucao=execucao)
+
+        controle = ControleProvisionamento.objects.get(id_origem="66677788899")
+        assert controle.ultima_execucao_id == execucao.id
+
+
+# ---------------------------------------------------------------------------
+# provisionar_usuarios_kc_em_paralelo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+class TestProvisionarUsuariosKcEmParalelo:
+    def test_provisiona_todos_e_preserva_ordem(self) -> None:
+        usuarios = [_usuario(cpf=str(n).zfill(11), rf="") for n in range(10)]
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.side_effect = [f"kc-{n}" for n in range(10)]
+
+        resultados = provisionar_usuarios_kc_em_paralelo(
+            admin, usuarios, realm="sme-apps", max_workers=1
+        )
+
+        assert len(resultados) == 10
+        assert all(
+            isinstance(r, dict) and r["acao"] == "criado" for r in resultados
+        )
+        ids_obtidos = [r["kc_user_id"] for r in resultados]  # type: ignore[index]
+        ids_esperados = [f"kc-{n}" for n in range(10)]
+        assert sorted(ids_obtidos) == sorted(ids_esperados)
+
+    def test_erro_em_um_usuario_nao_interrompe_os_demais(self) -> None:
+        usuarios = [_usuario(cpf=str(n).zfill(11), rf="") for n in range(5)]
+        admin = MagicMock()
+        admin.get_users.return_value = []
+
+        def _create_user(payload: Any, exist_ok: bool = True) -> str:
+            if payload["username"] == "00000000002":
+                raise Exception("falha kc")
+            return f"kc-{payload['username']}"
+
+        admin.create_user.side_effect = _create_user
+
+        resultados = provisionar_usuarios_kc_em_paralelo(
+            admin, usuarios, realm="sme-apps", max_workers=1
+        )
+
+        assert len(resultados) == 5
+        erros = [r for r in resultados if isinstance(r, Exception)]
+        sucessos = [r for r in resultados if isinstance(r, dict)]
+        assert len(erros) == 1
+        assert len(sucessos) == 4
+
+    def test_lista_vazia_retorna_lista_vazia(self) -> None:
+        admin = MagicMock()
+        assert provisionar_usuarios_kc_em_paralelo(admin, []) == []
+
+    def test_respeita_max_workers_informado(self) -> None:
+        usuarios = [_usuario(cpf=str(n).zfill(11), rf="") for n in range(3)]
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-1"
+
+        resultados = provisionar_usuarios_kc_em_paralelo(
+            admin, usuarios, realm="sme-apps", max_workers=1
+        )
+
+        assert len(resultados) == 3
+
+
+# ---------------------------------------------------------------------------
+# _localizar_usuario_kc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLocalizarUsuarioKc:
+    def test_retorna_none_sem_candidatos(self) -> None:
+        u = _usuario(rf="")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        payload = {"username": "12345678901", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) is None
+
+    def test_retorna_id_quando_username_coincide(self) -> None:
+        u = _usuario()
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {"id": "kc-1", "username": "12345678901"}
+        ]
+        payload = {"username": "12345678901", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) == "kc-1"
+
+    def test_remove_usuario_legado_quando_username_diverge(self) -> None:
+        u = _usuario()
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {"id": "kc-legado", "username": "username-antigo"}
+        ]
+        payload = {"username": "12345678901", "email": "ana@sme.sp.gov.br"}
+        resultado = _localizar_usuario_kc(admin, u, payload)
+        assert resultado is None
+        admin.delete_user.assert_called_once_with("kc-legado")
+
+    def test_falha_ao_remover_usuario_legado_nao_propaga(self) -> None:
+        u = _usuario()
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {"id": "kc-legado", "username": "username-antigo"}
+        ]
+        admin.delete_user.side_effect = Exception("falha ao remover")
+        payload = {"username": "12345678901", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) is None
+
+    def test_busca_por_rf_quando_sem_resultado_por_email(self) -> None:
+        u = _usuario(rf="9999999")
+        admin = MagicMock()
+
+        def get_users(filtro: Any) -> list[Any]:
+            if filtro.get("email"):
+                return []
+            if filtro.get("username") == "9999999":
+                return [{"id": "kc-rf", "username": "9999999"}]
+            return []
+
+        admin.get_users.side_effect = get_users
+        payload = {"username": "9999999", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) == "kc-rf"
+
+    def test_excecao_na_busca_por_email_e_ignorada(self) -> None:
+        u = _usuario(rf="")
+        admin = MagicMock()
+        admin.get_users.side_effect = Exception("erro busca")
+        payload = {"username": "12345678901", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) is None
+
+    def test_excecao_na_busca_por_rf_e_ignorada(self) -> None:
+        u = _usuario(rf="9999999")
+        admin = MagicMock()
+
+        def get_users(filtro: Any) -> list[Any]:
+            if filtro.get("email"):
+                return []
+            raise Exception("erro busca por rf")
+
+        admin.get_users.side_effect = get_users
+        payload = {"username": "9999999", "email": "ana@sme.sp.gov.br"}
+        assert _localizar_usuario_kc(admin, u, payload) is None
+
+
+# ---------------------------------------------------------------------------
+# _atribuir_roles_e_grupos
+# ---------------------------------------------------------------------------
+
+
+class TestAtribuirRolesEGrupos:
+    def test_atribui_role_e_grupo_com_sucesso(self) -> None:
+        admin = MagicMock()
+        admin.get_realm_role.return_value = {"name": "Professor"}
+        admin.get_group_by_path.return_value = {"id": "g-1"}
+
+        _atribuir_roles_e_grupos(admin, "kc-id", ["Professor"], ["/SME/DRE-1"])
+
+        admin.assign_realm_roles.assert_called_once_with(
+            "kc-id", [{"name": "Professor"}]
+        )
+        admin.group_user_add.assert_called_once_with("kc-id", "g-1")
+
+    def test_role_indisponivel_e_ignorada(self) -> None:
+        admin = MagicMock()
+        admin.get_realm_role.side_effect = Exception("role inexistente")
+
+        _atribuir_roles_e_grupos(admin, "kc-id", ["Inexistente"], [])
+
+        admin.assign_realm_roles.assert_not_called()
+
+    def test_grupo_indisponivel_e_ignorado(self) -> None:
+        admin = MagicMock()
+        admin.get_group_by_path.side_effect = Exception("grupo inexistente")
+
+        _atribuir_roles_e_grupos(admin, "kc-id", [], ["/SME/DRE-9"])
+
+        admin.group_user_add.assert_not_called()
+
+    def test_grupo_sem_id_nao_atribui(self) -> None:
+        admin = MagicMock()
+        admin.get_group_by_path.return_value = {}
+
+        _atribuir_roles_e_grupos(admin, "kc-id", [], ["/SME/DRE-9"])
+
+        admin.group_user_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _com_reintento
+# ---------------------------------------------------------------------------
+
+
+class TestComReintento:
+    def test_retorna_resultado_quando_sem_erro(self) -> None:
+        fn = MagicMock(return_value="ok")
+        assert _com_reintento(fn, 1, dois=2) == "ok"
+        fn.assert_called_once_with(1, dois=2)
+
+    def test_reintenta_apos_erro_transitorio(self) -> None:
+        fn = MagicMock(side_effect=[ConnectionError("falha"), "sucesso"])
+        with patch("apps.controle_etl.orquestrador_kc.time.sleep"):
+            assert _com_reintento(fn) == "sucesso"
+        assert fn.call_count == 2
+
+    def test_propaga_apos_esgotar_tentativas(self) -> None:
+        fn = MagicMock(side_effect=ConnectionError("falha persistente"))
+        with (
+            patch("apps.controle_etl.orquestrador_kc.time.sleep"),
+            pytest.raises(ConnectionError),
+        ):
+            _com_reintento(fn)
+        assert fn.call_count == 5
+
+    def test_erro_nao_retriavel_propaga_imediatamente(self) -> None:
+        fn = MagicMock(side_effect=ValueError("erro de valor"))
+        with pytest.raises(ValueError):
+            _com_reintento(fn)
+        fn.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# provisionar_client_kc
+# ---------------------------------------------------------------------------
+
+
+def _sistema_staging(**kwargs: Any) -> Any:
+    from apps.staging.models import SistemaStaging
+
+    defaults = {
+        "coresso_sis_id": 1,
+        "nome": "Sistema Escolar",
+        "sigla": "sisesc",
+        "url_callback": "https://app.exemplo/callback",
+        "url_logout": "https://app.exemplo/logout",
+        "situacao": 1,
+    }
+    defaults.update(kwargs)
+    return SistemaStaging.objects.create(**defaults)
+
+
+@pytest.mark.django_db
+class TestProvisionarClientKc:
+    def test_cria_client_novo(self, settings: Any) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_client_kc
+        from apps.staging.models import SistemaStaging
+
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging()
+        admin = MagicMock()
+        admin.get_client_id.return_value = None
+        admin.create_client.return_value = "uuid-novo"
+
+        resultado = provisionar_client_kc(admin, sistema, realm="sme-apps")
+
+        assert resultado["acao"] == "criado"
+        assert resultado["client_id"] == "sisesc-prod"
+        assert resultado["kc_uuid"] == "uuid-novo"
+        sistema.refresh_from_db()
+        assert sistema.kc_client_uuid == "uuid-novo"
+        assert (
+            sistema.situacao_provisionamento
+            == SistemaStaging.SituacaoProvisionamento.PROVISIONADO
+        )
+
+    def test_atualiza_client_existente(self, settings: Any) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_client_kc
+
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging()
+        admin = MagicMock()
+        admin.get_client_id.return_value = "uuid-existente"
+
+        resultado = provisionar_client_kc(admin, sistema, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        assert resultado["kc_uuid"] == "uuid-existente"
+        admin.update_client.assert_called_once()
+
+    def test_sigla_ausente_usa_slug_do_nome(self, settings: Any) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_client_kc
+
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging(sigla=None, nome="Gestão Pedagógica")
+        admin = MagicMock()
+        admin.get_client_id.return_value = None
+        admin.create_client.return_value = "uuid-x"
+
+        resultado = provisionar_client_kc(admin, sistema, realm="sme-apps")
+
+        assert resultado["client_id"] == "gestao-pedagogica-prod"
+
+    def test_create_client_sem_retorno_busca_uuid(self, settings: Any) -> None:
+        from apps.controle_etl.orquestrador_kc import provisionar_client_kc
+
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging()
+        admin = MagicMock()
+        admin.get_client_id.side_effect = [None, "uuid-recuperado"]
+        admin.create_client.return_value = None
+
+        resultado = provisionar_client_kc(admin, sistema, realm="sme-apps")
+
+        assert resultado["acao"] == "criado"
+        assert resultado["kc_uuid"] == "uuid-recuperado"
+
+
+# ---------------------------------------------------------------------------
+# provisionar_role_client_kc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestProvisionarRoleClientKc:
+    def test_sistema_sem_client_marca_erro(self) -> None:
+        from apps.controle_etl.orquestrador_kc import (
+            provisionar_role_client_kc,
+        )
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = _sistema_staging(kc_client_uuid=None)
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-1",
+            coresso_sis_id=sistema.coresso_sis_id,
+            sistema=sistema,
+            nome="Professor",
+            kc_role_nome="Professor",
+        )
+        admin = MagicMock()
+
+        resultado = provisionar_role_client_kc(admin, perfil)
+
+        assert resultado["acao"] == "ignorado"
+        perfil.refresh_from_db()
+        assert (
+            perfil.situacao_provisionamento
+            == PerfilCoressoStaging.SituacaoProvisionamento.ERRO
+        )
+
+    def test_cria_role_com_sucesso(self) -> None:
+        from apps.controle_etl.orquestrador_kc import (
+            provisionar_role_client_kc,
+        )
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = _sistema_staging(kc_client_uuid="uuid-sistema")
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-2",
+            coresso_sis_id=sistema.coresso_sis_id,
+            sistema=sistema,
+            nome="Professor",
+            kc_role_nome="Professor",
+        )
+        admin = MagicMock()
+        admin.get_client_role.return_value = {"id": "role-id-1"}
+
+        resultado = provisionar_role_client_kc(admin, perfil)
+
+        assert resultado["acao"] == "criado"
+        assert resultado["role_id"] == "role-id-1"
+        perfil.refresh_from_db()
+        assert (
+            perfil.situacao_provisionamento
+            == PerfilCoressoStaging.SituacaoProvisionamento.PROVISIONADO
+        )
+        assert perfil.detalhe_erro is None
+
+    def test_role_ja_existente_marca_atualizado(self) -> None:
+        from apps.controle_etl.orquestrador_kc import (
+            provisionar_role_client_kc,
+        )
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = _sistema_staging(kc_client_uuid="uuid-sistema")
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-3",
+            coresso_sis_id=sistema.coresso_sis_id,
+            sistema=sistema,
+            nome="Diretor",
+            kc_role_nome="Diretor",
+        )
+        admin = MagicMock()
+        admin.create_client_role.side_effect = Exception("Role already exists")
+        admin.get_client_role.return_value = {"id": "role-id-2"}
+
+        resultado = provisionar_role_client_kc(admin, perfil)
+
+        assert resultado["acao"] == "atualizado"
+
+    def test_erro_inesperado_ao_criar_role_propaga(self) -> None:
+        from apps.controle_etl.orquestrador_kc import (
+            provisionar_role_client_kc,
+        )
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = _sistema_staging(kc_client_uuid="uuid-sistema")
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-4",
+            coresso_sis_id=sistema.coresso_sis_id,
+            sistema=sistema,
+            nome="Diretor",
+            kc_role_nome="Diretor",
+        )
+        admin = MagicMock()
+        admin.create_client_role.side_effect = Exception("erro de conexão")
+
+        with pytest.raises(Exception, match="erro de conexão"):
+            provisionar_role_client_kc(admin, perfil)
+
+    def test_get_client_role_falha_nao_propaga(self) -> None:
+        from apps.controle_etl.orquestrador_kc import (
+            provisionar_role_client_kc,
+        )
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = _sistema_staging(kc_client_uuid="uuid-sistema")
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-5",
+            coresso_sis_id=sistema.coresso_sis_id,
+            sistema=sistema,
+            nome="Agente",
+            kc_role_nome="Agente",
+        )
+        admin = MagicMock()
+        admin.get_client_role.side_effect = Exception("falha ao buscar")
+
+        resultado = provisionar_role_client_kc(admin, perfil)
+
+        assert resultado["acao"] == "criado"
+        assert resultado["role_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# obter_admin_keycloak
+# ---------------------------------------------------------------------------
+
+
+class TestObterAdminKeycloak:
+    def test_usa_realm_informado(self) -> None:
+        from apps.controle_etl.orquestrador_kc import obter_admin_keycloak
+
+        with patch("keycloak.KeycloakAdmin") as mock_admin_cls:
+            obter_admin_keycloak(realm="outro-realm")
+
+        _, kwargs = mock_admin_cls.call_args
+        assert kwargs["realm_name"] == "outro-realm"
+
+    def test_usa_realm_padrao_do_settings(self, settings: Any) -> None:
+        from apps.controle_etl.orquestrador_kc import obter_admin_keycloak
+
+        settings.KEYCLOAK_REALM = "realm-padrao"
+        with patch("keycloak.KeycloakAdmin") as mock_admin_cls:
+            obter_admin_keycloak()
+
+        _, kwargs = mock_admin_cls.call_args
+        assert kwargs["realm_name"] == "realm-padrao"
