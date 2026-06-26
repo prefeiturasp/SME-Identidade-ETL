@@ -650,9 +650,9 @@ def buscar_grupos_coresso_por_login(login: str) -> list[dict]:
         SELECT
             g.gru_id    AS gru_id,
             g.gru_nome  AS nome
-        FROM GRU_Grupo g
-        INNER JOIN GRU_UsuarioGrupo ug ON ug.gru_id = g.gru_id
-        INNER JOIN Usuario u ON u.usu_id = ug.usu_id
+        FROM SYS_Grupo g
+        INNER JOIN SYS_UsuarioGrupo ug ON ug.gru_id = g.gru_id
+        INNER JOIN SYS_Usuario u ON u.usu_id = ug.usu_id
         WHERE u.usu_login = ?
           AND g.gru_situacao = 1
     """
@@ -701,9 +701,9 @@ def extrair_sistemas_coresso() -> int:
     )
     consulta = f"""
         SELECT
-            sis_id, sis_nome, sis_sigla, sis_descricao,
-            sis_urlEntrada, sis_urlSaida,
-            sis_tipoAuth, sis_situacao
+            sis_id, sis_nome, sis_descricao,
+            sis_tipoAutenticacao, sis_urlIntegracao,
+            sis_caminhoLogout, sis_situacao
         FROM SYS_Sistema {filtro_exclusao} ORDER BY sis_id
     """
     conn = pyodbc.connect(
@@ -721,9 +721,8 @@ def extrair_sistemas_coresso() -> int:
                 coresso_sis_id=item["sis_id"],
                 defaults={
                     "nome": item.get("sis_nome") or "",
-                    "sigla": item.get("sis_sigla"),
-                    "url_callback": item.get("sis_urlEntrada"),
-                    "url_logout": item.get("sis_urlSaida"),
+                    "url_callback": item.get("sis_urlIntegracao"),
+                    "url_logout": item.get("sis_caminhoLogout"),
                     "situacao": item.get("sis_situacao", 1),
                 },
             )
@@ -736,7 +735,7 @@ def extrair_sistemas_coresso() -> int:
 
 
 def extrair_perfis_coresso() -> int:
-    """Extrai perfis/grupos (GRU_Grupo) do CoreSSO.
+    """Extrai perfis/grupos (SYS_Grupo) do CoreSSO.
 
     Persiste no SYNC_REC_DB apenas os metadados de mapeamento
     para roles Keycloak.
@@ -754,13 +753,13 @@ def extrair_perfis_coresso() -> int:
 
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     filtro_exclusao = (
-        f"WHERE gru_sis_id NOT IN ({','.join(str(i) for i in excluidos)})"
+        f"WHERE sis_id NOT IN ({','.join(str(i) for i in excluidos)})"
         if excluidos
         else ""
     )
     consulta = f"""
-        SELECT gru_id, gru_nome, gru_sis_id, gru_vis_id, gru_situacao
-        FROM GRU_Grupo {filtro_exclusao} ORDER BY gru_sis_id, gru_id
+        SELECT gru_id, gru_nome, sis_id, vis_id, gru_situacao
+        FROM SYS_Grupo {filtro_exclusao} ORDER BY sis_id, gru_id
     """
     conn = pyodbc.connect(
         _string_conexao_coresso(),
@@ -774,13 +773,13 @@ def extrair_perfis_coresso() -> int:
         for linha in cursor.fetchall():
             item = dict(zip(colunas, linha, strict=False))
             sistema = SistemaStaging.objects.filter(
-                coresso_sis_id=item["gru_sis_id"]
+                coresso_sis_id=item["sis_id"]
             ).first()
             PerfilCoressoStaging.objects.update_or_create(
                 coresso_gru_id=str(item["gru_id"]),
                 defaults={
                     "nome": item.get("gru_nome") or "",
-                    "coresso_sis_id": item["gru_sis_id"],
+                    "coresso_sis_id": item["sis_id"],
                     "sistema": sistema,
                     "kc_role_nome": _slugificar_role(
                         item.get("gru_nome") or ""
@@ -794,6 +793,195 @@ def extrair_perfis_coresso() -> int:
 
     logger.info("extrair_perfis_coresso — %d perfis", total)
     return total
+
+
+def extrair_vinculos_usuario_grupo_coresso(
+    *,
+    sis_id: int | None = None,
+    gru_id: str | None = None,
+) -> Iterator[dict]:
+    """Extrai vínculos usuário↔grupo ativos do CoreSSO.
+
+    Args:
+        sis_id: Filtra por sistema (``SYS_Grupo.sis_id``).
+            None = todos os sistemas.
+        gru_id: Filtra por grupo (``SYS_Grupo.gru_id``).
+            None = todos os grupos.
+
+    Yields:
+        Dicionário com ``login``, ``cpf``, ``gru_id``,
+        ``gru_nome`` e ``sis_id``.
+    """
+    if not settings.CORESSO_DB_SERVIDOR:
+        logger.warning("CoreSSO SQL não configurado" " — skipping vínculos.")
+        return
+
+    import pyodbc
+
+    filtros_extra: list[str] = []
+    excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
+    if excluidos:
+        filtros_extra.append(
+            f"AND g.sis_id NOT IN" f" ({','.join(str(i) for i in excluidos)})"
+        )
+    if sis_id is not None:
+        filtros_extra.append(f"AND g.sis_id = {int(sis_id)}")
+    if gru_id is not None:
+        filtros_extra.append(f"AND g.gru_id = '{gru_id}'")
+    clausulas = "\n          ".join(filtros_extra)
+    consulta = f"""
+        SELECT
+            u.usu_login     AS login,
+            doc.psd_numero  AS cpf,
+            pes.pes_nome    AS nome,
+            u.usu_email     AS email,
+            g.gru_id        AS gru_id,
+            g.gru_nome      AS gru_nome,
+            g.sis_id        AS sis_id
+        FROM SYS_Usuario u
+        INNER JOIN PES_Pessoa pes
+            ON pes.pes_id = u.pes_id
+        LEFT JOIN PES_PessoaDocumento doc
+            ON doc.pes_id = pes.pes_id
+            AND doc.tdo_id = (
+                SELECT TOP 1 tdo_id
+                FROM SYS_TipoDocumentacao
+                WHERE tdo_nome LIKE '%CPF%'
+            )
+        INNER JOIN SYS_UsuarioGrupo ug
+            ON ug.usu_id = u.usu_id
+        INNER JOIN SYS_Grupo g
+            ON g.gru_id = ug.gru_id
+        WHERE g.gru_situacao = 1
+          AND u.usu_situacao = 1
+          {clausulas}
+        ORDER BY u.usu_login, g.sis_id
+    """
+    lote_maximo = settings.ETL_LOTE_MAXIMO
+    conn = pyodbc.connect(
+        _string_conexao_coresso(),
+        timeout=settings.CORESSO_DB_TIMEOUT,
+    )
+    total = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute(consulta)
+        colunas = [d[0] for d in cursor.description]
+        while True:
+            linhas = cursor.fetchmany(settings.ETL_CHUNK_SIZE)
+            if not linhas:
+                break
+            for linha in linhas:
+                if lote_maximo and total >= lote_maximo:
+                    logger.info(
+                        "vinculos: limite" " ETL_LOTE_MAXIMO=%d atingido",
+                        lote_maximo,
+                    )
+                    return
+                total += 1
+                yield dict(zip(colunas, linha, strict=False))
+    finally:
+        conn.close()
+
+
+def buscar_dados_usuario_coresso(
+    identificador: str,
+) -> dict | None:
+    """Busca dados completos de um usuário no CoreSSO.
+
+    Busca por login (RF), CPF ou email. Retorna dados
+    pessoais e todos os vínculos sistema↔grupo.
+
+    Args:
+        identificador: RF, CPF ou email do usuário.
+
+    Returns:
+        Dict com dados do usuário ou None se não encontrado.
+    """
+    if not settings.CORESSO_DB_SERVIDOR:
+        return None
+
+    import pyodbc
+
+    ident = identificador.strip()
+    if "@" in ident:
+        filtro = "u.usu_email = ?"
+    elif len(ident) > 7:
+        filtro = "doc.psd_numero = ?"
+    else:
+        filtro = "u.usu_login = ?"
+
+    consulta = f"""
+        SELECT
+            u.usu_login     AS login,
+            doc.psd_numero  AS cpf,
+            pes.pes_nome    AS nome,
+            u.usu_email     AS email,
+            u.usu_situacao  AS situacao,
+            g.gru_id        AS gru_id,
+            g.gru_nome      AS gru_nome,
+            g.sis_id        AS sis_id,
+            s.sis_nome      AS sis_nome
+        FROM SYS_Usuario u
+        INNER JOIN PES_Pessoa pes
+            ON pes.pes_id = u.pes_id
+        LEFT JOIN PES_PessoaDocumento doc
+            ON doc.pes_id = pes.pes_id
+            AND doc.tdo_id = (
+                SELECT TOP 1 tdo_id
+                FROM SYS_TipoDocumentacao
+                WHERE tdo_nome LIKE '%CPF%'
+            )
+        LEFT JOIN SYS_UsuarioGrupo ug
+            ON ug.usu_id = u.usu_id
+        LEFT JOIN SYS_Grupo g
+            ON g.gru_id = ug.gru_id
+            AND g.gru_situacao = 1
+        LEFT JOIN SYS_Sistema s
+            ON s.sis_id = g.sis_id
+        WHERE {filtro}
+        ORDER BY s.sis_nome, g.gru_nome
+    """
+    conn = pyodbc.connect(
+        _string_conexao_coresso(),
+        timeout=settings.CORESSO_DB_TIMEOUT,
+    )
+    try:
+        cursor = conn.cursor()
+        cursor.execute(consulta, (ident,))
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+        return _montar_resultado_usuario(rows)
+    finally:
+        conn.close()
+
+
+def _montar_resultado_usuario(rows: list) -> dict:
+    """Monta o dict de resultado a partir das linhas SQL."""
+    r0 = rows[0]
+    resultado: dict = {
+        "login": (r0[0] or "").strip(),
+        "cpf": (r0[1] or "").strip(),
+        "nome": (r0[2] or "").strip(),
+        "email": (r0[3] or "").strip(),
+        "situacao": "ativo" if r0[4] == 1 else "inativo",
+        "sistemas": {},
+    }
+    for r in rows:
+        sis_id = r[7]
+        if sis_id is None:
+            continue
+        if sis_id not in resultado["sistemas"]:
+            resultado["sistemas"][sis_id] = {
+                "sis_id": sis_id,
+                "nome": (r[8] or "").strip(),
+                "grupos": [],
+            }
+        resultado["sistemas"][sis_id]["grupos"].append(
+            {"gru_id": str(r[5]), "nome": (r[6] or "").strip()}
+        )
+    return resultado
 
 
 def _slugificar_role(nome: str) -> str:

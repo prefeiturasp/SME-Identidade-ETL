@@ -370,6 +370,8 @@ def _provisionar_lote_kc(
     lote: list,
     execucao: Any,
     id_execucao: str,
+    *,
+    forcar_atualizacao: bool = False,
 ) -> tuple[int, int, int]:
     """Provisiona um lote de usuários no Keycloak em paralelo.
 
@@ -378,6 +380,7 @@ def _provisionar_lote_kc(
         lote: Lista de instâncias de staging do usuário.
         execucao: Instância de ExecucaoETL para rastreamento.
         id_execucao: UUID da execução, usado apenas em logs.
+        forcar_atualizacao: Força update mesmo sem mudança.
 
     Returns:
         Tupla ``(provisionados, ignorados, erros)``.
@@ -387,7 +390,11 @@ def _provisionar_lote_kc(
     )
 
     resultados = provisionar_usuarios_kc_em_paralelo(
-        admin, lote, realm=execucao.realm_destino, execucao=execucao
+        admin,
+        lote,
+        realm=execucao.realm_destino,
+        execucao=execucao,
+        forcar_atualizacao=forcar_atualizacao,
     )
 
     provisionados = ignorados = erros = 0

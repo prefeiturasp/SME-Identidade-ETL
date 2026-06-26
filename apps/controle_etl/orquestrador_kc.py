@@ -374,6 +374,7 @@ def provisionar_usuario_kc(
     *,
     realm: str = "sme-apps",
     execucao: Any = None,
+    forcar_atualizacao: bool = False,
 ) -> dict[str, Any]:
     """Cria ou atualiza um usuário no Keycloak via upsert idempotente.
 
@@ -382,6 +383,8 @@ def provisionar_usuario_kc(
         usuario: Instância de staging do usuário.
         realm: Realm Keycloak de destino.
         execucao: Instância de ExecucaoETL para rastreamento.
+        forcar_atualizacao: Ignora cache de hash e força
+            update no Keycloak mesmo sem mudança de dados.
 
     Returns:
         Dicionário com ``acao``, ``kc_user_id`` e ``hash_conteudo``.
@@ -411,7 +414,8 @@ def provisionar_usuario_kc(
     )
 
     if (
-        not criado
+        not forcar_atualizacao
+        and not criado
         and controle.id_destino
         and controle.hash_conteudo == hash_conteudo
     ):
@@ -463,13 +467,9 @@ def provisionar_usuarios_kc_em_paralelo(
     realm: str = "sme-apps",
     execucao: Any = None,
     max_workers: int | None = None,
+    forcar_atualizacao: bool = False,
 ) -> list[dict[str, Any] | Exception]:
     """Provisiona usuários no Keycloak em paralelo via threads.
-
-    Cada chamada a ``provisionar_usuario_kc`` é uma operação de
-    rede (Keycloak Admin API) — paralelizar via threads reduz
-    drasticamente o tempo total em volumes grandes (centenas de
-    milhares de usuários), já que o trabalho é I/O-bound.
 
     Args:
         admin: Cliente KeycloakAdmin autenticado, compartilhado
@@ -477,19 +477,22 @@ def provisionar_usuarios_kc_em_paralelo(
         usuarios: Iterável de instâncias de staging do usuário.
         realm: Realm Keycloak de destino.
         execucao: Instância de ExecucaoETL para rastreamento.
-        max_workers: Número de threads (padrão: configuração interna).
+        max_workers: Número de threads.
+        forcar_atualizacao: Força update mesmo sem mudança.
 
     Returns:
-        Lista de resultados na mesma ordem de ``usuarios`` — cada
-        item é o dict de ``provisionar_usuario_kc`` ou a Exception
-        capturada para aquele usuário específico.
+        Lista de resultados na mesma ordem de ``usuarios``.
     """
     workers = max_workers or _PROVISIONAMENTO_MAX_WORKERS
 
     def _provisionar(usuario: Any) -> dict[str, Any] | Exception:
         def _chamada() -> dict[str, Any]:
             return provisionar_usuario_kc(
-                admin, usuario, realm=realm, execucao=execucao
+                admin,
+                usuario,
+                realm=realm,
+                execucao=execucao,
+                forcar_atualizacao=forcar_atualizacao,
             )
 
         try:
@@ -666,4 +669,349 @@ def provisionar_role_client_kc(admin: Any, perfil: Any) -> dict[str, Any]:
         "client_uuid": sistema.kc_client_uuid,
         "role_nome": nome_role,
         "role_id": role_id,
+    }
+
+
+def _resolver_role_info(
+    gru_id: str,
+    cache: dict[str, tuple[str, dict] | None],
+) -> tuple[str, dict] | None:
+    """Resolve client_uuid e role payload a partir do staging."""
+    if gru_id not in cache:
+        from apps.staging.models import PerfilCoressoStaging
+
+        perfil = (
+            PerfilCoressoStaging.objects.select_related("sistema")
+            .filter(coresso_gru_id=gru_id)
+            .first()
+        )
+        if (
+            perfil
+            and perfil.kc_role_id
+            and perfil.sistema
+            and perfil.sistema.kc_client_uuid
+        ):
+            cache[gru_id] = (
+                perfil.sistema.kc_client_uuid,
+                {
+                    "id": perfil.kc_role_id,
+                    "name": perfil.kc_role_nome,
+                },
+            )
+        else:
+            cache[gru_id] = None
+    return cache[gru_id]
+
+
+def _resolver_kc_user_id(
+    admin: Any,
+    username: str,
+    cache: dict[str, str | None],
+) -> str | None:
+    """Resolve o UUID do usuário no Keycloak."""
+    if username not in cache:
+        try:
+            usuarios_kc = _com_reintento(
+                admin.get_users,
+                {"username": username, "exact": True},
+            )
+            cache[username] = (
+                str(usuarios_kc[0]["id"]) if usuarios_kc else None
+            )
+        except Exception:
+            cache[username] = None
+    return cache[username]
+
+
+def atribuir_client_roles_usuario_kc(
+    admin: Any,
+    vinculos: Iterable[dict],
+) -> dict[str, int]:
+    """Atribui client roles aos usuários no Keycloak.
+
+    Opera em streaming sobre os vínculos extraídos do CoreSSO,
+    usando caches locais para evitar lookups repetidos na API
+    do Keycloak.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        vinculos: Iterável de dicts com ``login``, ``cpf``,
+            ``gru_id``, ``gru_nome`` e ``sis_id``.
+
+    Returns:
+        Dicionário com ``atribuidos``, ``ignorados`` e ``erros``.
+    """
+    cache_role: dict[str, tuple[str, dict] | None] = {}
+    cache_usuario: dict[str, str | None] = {}
+    atribuidos = ignorados = erros = 0
+
+    for vinculo in vinculos:
+        gru_id = str(vinculo["gru_id"])
+        login = vinculo.get("login") or ""
+        cpf = (vinculo.get("cpf") or "").strip()
+
+        role_info = _resolver_role_info(gru_id, cache_role)
+        if role_info is None:
+            ignorados += 1
+            continue
+
+        client_uuid, role_payload = role_info
+        username = "".join(c for c in cpf if c.isdigit()) or login
+        if not username:
+            ignorados += 1
+            continue
+
+        kc_user_id = _resolver_kc_user_id(admin, username, cache_usuario)
+        if kc_user_id is None:
+            ignorados += 1
+            continue
+
+        try:
+            _com_reintento(
+                admin.assign_client_role,
+                kc_user_id,
+                client_uuid,
+                [role_payload],
+            )
+            atribuidos += 1
+        except Exception as exc:
+            logger.warning(
+                "KC: falha ao atribuir role %s ao user %s:" " %s",
+                role_payload.get("name"),
+                username,
+                exc,
+            )
+            erros += 1
+
+    logger.info(
+        "atribuir_client_roles — atribuidos=%d" " ignorados=%d erros=%d",
+        atribuidos,
+        ignorados,
+        erros,
+    )
+    return {
+        "atribuidos": atribuidos,
+        "ignorados": ignorados,
+        "erros": erros,
+    }
+
+
+def _resolver_conflito_email(
+    admin: Any,
+    payload: dict,
+    login: str,
+) -> dict:
+    """Resolve conflito de email duplicado no KC.
+
+    Busca o dono do email: se os atributos rf/cpf coincidem
+    com o usuário atual, limpa o email do duplicado e
+    mantém o payload original. Caso contrário, remove o
+    email do payload.
+    """
+    email = (payload.get("email") or "").strip()
+    if not email:
+        return payload
+
+    try:
+        donos = _com_reintento(
+            admin.get_users, {"email": email, "exact": True}
+        )
+    except Exception:
+        donos = []
+
+    if not donos:
+        return {k: v for k, v in payload.items() if k != "email"}
+
+    dono = donos[0]
+    attrs_dono = dono.get("attributes", {})
+    rf_dono = (attrs_dono.get("rf", [""])[0] or "").strip()
+    cpf_dono = (attrs_dono.get("cpf", [""])[0] or "").strip()
+
+    attrs_novo = payload.get("attributes", {})
+    rf_novo = (attrs_novo.get("rf", [""])[0] or "").strip()
+    cpf_novo = (attrs_novo.get("cpf", [""])[0] or "").strip()
+
+    mesmo_usuario = (rf_dono and rf_dono == rf_novo) or (
+        cpf_dono and cpf_dono == cpf_novo
+    )
+
+    if mesmo_usuario:
+        logger.info(
+            "KC: email %s pertence ao mesmo usuário"
+            " (%s) — limpando duplicado",
+            email,
+            dono.get("username"),
+        )
+        _com_reintento(
+            admin.update_user,
+            str(dono["id"]),
+            {"email": ""},
+        )
+        return payload
+
+    logger.info(
+        "KC: email %s pertence a outro usuário (%s)"
+        " — removendo do payload de %s",
+        email,
+        dono.get("username"),
+        login,
+    )
+    return {k: v for k, v in payload.items() if k != "email"}
+
+
+def _upsert_usuario_kc(
+    admin: Any, payload: dict, login: str, username: str
+) -> tuple[str | None, str]:
+    """Cria ou atualiza usuário no KC. Retorna (id, acao)."""
+    kc_users = _com_reintento(
+        admin.get_users,
+        {"username": username, "exact": True},
+    )
+    if not kc_users and login != username:
+        kc_users = _com_reintento(
+            admin.get_users,
+            {"username": login, "exact": True},
+        )
+    if kc_users:
+        kc_id = str(kc_users[0]["id"])
+        try:
+            _com_reintento(admin.update_user, kc_id, payload)
+        except Exception:
+            payload = _resolver_conflito_email(admin, payload, login)
+            _com_reintento(admin.update_user, kc_id, payload)
+        return kc_id, "atualizado"
+
+    try:
+        kc_id = _com_reintento(admin.create_user, payload, exist_ok=True)
+    except Exception:
+        payload = _resolver_conflito_email(admin, payload, login)
+        kc_id = _com_reintento(admin.create_user, payload, exist_ok=True)
+    if not kc_id:
+        kc_users = _com_reintento(
+            admin.get_users,
+            {"username": username, "exact": True},
+        )
+        kc_id = str(kc_users[0]["id"]) if kc_users else ""
+    if kc_id:
+        _com_reintento(
+            admin.set_user_password,
+            kc_id,
+            username,
+            temporary=True,
+        )
+    return kc_id, "criado"
+
+
+def _atribuir_roles_sistema(
+    admin: Any, kc_user_id: str, sis_data: dict
+) -> dict:
+    """Atribui roles de um sistema ao usuário no KC."""
+    from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+    sis_id = sis_data["sis_id"]
+    sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
+    if not sistema or not sistema.kc_client_uuid:
+        return {
+            "sistema": sis_data["nome"],
+            "status": "sem client no KC",
+            "roles": [],
+            "erros": 0,
+        }
+
+    roles_ok: list[str] = []
+    erros = 0
+    for grupo in sis_data.get("grupos", []):
+        perfil = PerfilCoressoStaging.objects.filter(
+            coresso_gru_id=grupo["gru_id"]
+        ).first()
+        if not perfil or not perfil.kc_role_id:
+            continue
+        try:
+            _com_reintento(
+                admin.assign_client_role,
+                kc_user_id,
+                sistema.kc_client_uuid,
+                [
+                    {
+                        "id": perfil.kc_role_id,
+                        "name": perfil.kc_role_nome,
+                    }
+                ],
+            )
+            roles_ok.append(perfil.kc_role_nome or "")
+        except Exception:
+            erros += 1
+
+    return {
+        "sistema": sis_data["nome"],
+        "client_id": sistema.kc_client_id,
+        "roles": roles_ok,
+        "erros": erros,
+    }
+
+
+def sincronizar_usuario_kc(
+    admin: Any,
+    dados_coresso: dict,
+    *,
+    realm: str = "sme-apps",
+) -> dict[str, Any]:
+    """Sincroniza um usuário no Keycloak com todos os seus roles.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        dados_coresso: Resultado de
+            ``buscar_dados_usuario_coresso``.
+        realm: Realm de destino.
+
+    Returns:
+        Dict com ``acao``, ``kc_user_id``, ``roles_atribuidos``
+        e ``sistemas``.
+    """
+    login = dados_coresso["login"]
+    cpf = dados_coresso.get("cpf", "").strip()
+    nome = dados_coresso.get("nome", "").strip()
+    email = dados_coresso.get("email", "").strip()
+    partes = nome.split()
+
+    username = cpf if cpf else login
+    payload = {
+        "username": username,
+        "email": email,
+        "firstName": partes[0] if partes else "",
+        "lastName": (" ".join(partes[1:]) if len(partes) > 1 else ""),
+        "enabled": dados_coresso["situacao"] == "ativo",
+        "emailVerified": False,
+        "attributes": {
+            "cpf": [cpf],
+            "rf": [login],
+            "fonte": ["coresso"],
+        },
+    }
+
+    kc_user_id, acao = _upsert_usuario_kc(admin, payload, login, username)
+    if not kc_user_id:
+        return {"acao": "erro", "motivo": "sem kc_user_id"}
+
+    total_roles = total_erros = 0
+    sistemas_resultado: list[dict] = []
+    for sis_data in dados_coresso.get("sistemas", {}).values():
+        r = _atribuir_roles_sistema(admin, kc_user_id, sis_data)
+        total_roles += len(r.get("roles", []))
+        total_erros += r.get("erros", 0)
+        sistemas_resultado.append(r)
+
+    base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
+    return {
+        "acao": acao,
+        "kc_user_id": kc_user_id,
+        "kc_url": (
+            f"{base}/admin/master/console/"
+            f"#/{realm}/users/{kc_user_id}/settings"
+        ),
+        "username": username,
+        "nome": nome,
+        "roles_atribuidos": total_roles,
+        "roles_erros": total_erros,
+        "sistemas": sistemas_resultado,
     }

@@ -38,6 +38,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Relatório de validação E2E (contém dados reais extraídos — gerado
-# localmente por `make validar-e2e`, não deve ser versionado)
+# Relatórios de validação E2E (contêm dados reais extraídos — gerados
+# localmente por `make validar-e2e`, não devem ser versionados)
 validacao.md
+validacao_e2e/
+validacao_login/
+rf

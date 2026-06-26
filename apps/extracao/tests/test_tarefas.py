@@ -12,16 +12,19 @@ from apps.extracao.tasks import (
     RegistroIdentidade,
     _atualizar_watermark,
     _iterar_com_watermark,
+    _montar_resultado_usuario,
     _obter_watermark,
     _slugificar_role,
     _string_conexao_coresso,
     _string_conexao_se1426,
+    buscar_dados_usuario_coresso,
     buscar_grupos_coresso_por_login,
     extrair_coresso,
     extrair_eol_alunos,
     extrair_perfis_coresso,
     extrair_se1426,
     extrair_sistemas_coresso,
+    extrair_vinculos_usuario_grupo_coresso,
 )
 
 # ---------------------------------------------------------------------------
@@ -792,22 +795,20 @@ class TestExtrairSistemasCoresso:
         linha = (
             42,
             "Sistema Escolar",
-            "SE",
             "Desc",
-            "http://entrada",
-            "http://saida",
             "oauth2",
+            "http://integracao",
+            "http://logout",
             1,
         )
         mock_cursor = MagicMock()
         mock_cursor.description = [
             ("sis_id",),
             ("sis_nome",),
-            ("sis_sigla",),
             ("sis_descricao",),
-            ("sis_urlEntrada",),
-            ("sis_urlSaida",),
-            ("sis_tipoAuth",),
+            ("sis_tipoAutenticacao",),
+            ("sis_urlIntegracao",),
+            ("sis_caminhoLogout",),
             ("sis_situacao",),
         ]
         mock_cursor.fetchall.return_value = [linha]
@@ -820,7 +821,8 @@ class TestExtrairSistemasCoresso:
         assert total == 1
         sistema = SistemaStaging.objects.get(coresso_sis_id=42)
         assert sistema.nome == "Sistema Escolar"
-        assert sistema.sigla == "SE"
+        assert sistema.url_callback == "http://integracao"
+        assert sistema.url_logout == "http://logout"
 
     def test_aplica_filtro_de_exclusao_quando_configurado(
         self,
@@ -837,11 +839,10 @@ class TestExtrairSistemasCoresso:
         mock_cursor.description = [
             ("sis_id",),
             ("sis_nome",),
-            ("sis_sigla",),
             ("sis_descricao",),
-            ("sis_urlEntrada",),
-            ("sis_urlSaida",),
-            ("sis_tipoAuth",),
+            ("sis_tipoAutenticacao",),
+            ("sis_urlIntegracao",),
+            ("sis_caminhoLogout",),
             ("sis_situacao",),
         ]
         mock_cursor.fetchall.return_value = []
@@ -869,11 +870,10 @@ class TestExtrairSistemasCoresso:
         mock_cursor.description = [
             ("sis_id",),
             ("sis_nome",),
-            ("sis_sigla",),
             ("sis_descricao",),
-            ("sis_urlEntrada",),
-            ("sis_urlSaida",),
-            ("sis_tipoAuth",),
+            ("sis_tipoAutenticacao",),
+            ("sis_urlIntegracao",),
+            ("sis_caminhoLogout",),
             ("sis_situacao",),
         ]
         mock_cursor.fetchall.return_value = []
@@ -913,8 +913,8 @@ class TestExtrairPerfisCoresso:
         mock_cursor.description = [
             ("gru_id",),
             ("gru_nome",),
-            ("gru_sis_id",),
-            ("gru_vis_id",),
+            ("sis_id",),
+            ("vis_id",),
             ("gru_situacao",),
         ]
         mock_cursor.fetchall.return_value = [linha]
@@ -943,8 +943,8 @@ class TestExtrairPerfisCoresso:
         mock_cursor.description = [
             ("gru_id",),
             ("gru_nome",),
-            ("gru_sis_id",),
-            ("gru_vis_id",),
+            ("sis_id",),
+            ("vis_id",),
             ("gru_situacao",),
         ]
         mock_cursor.fetchall.return_value = []
@@ -955,7 +955,7 @@ class TestExtrairPerfisCoresso:
             extrair_perfis_coresso()
 
         consulta_executada = mock_cursor.execute.call_args[0][0]
-        assert "WHERE gru_sis_id NOT IN (174)" in consulta_executada
+        assert "WHERE sis_id NOT IN (174)" in consulta_executada
 
 
 # ---------------------------------------------------------------------------
@@ -982,3 +982,248 @@ class TestSlugificarRole:
         slug = _slugificar_role("Aux. Técnico (Educ.)")
         assert "(" not in slug
         assert "." not in slug
+
+
+# ------------------------------------------------------------------
+# extrair_vinculos_usuario_grupo_coresso
+# ------------------------------------------------------------------
+
+
+class TestExtrairVinculosUsuarioGrupoCoresso:
+    def test_sem_servidor_retorna_vazio(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = ""
+        resultado = list(extrair_vinculos_usuario_grupo_coresso())
+        assert resultado == []
+
+    def test_retorna_vinculos_em_streaming(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+        settings.CORESSO_EXCLUDE_SISTEMA_IDS = []
+        settings.ETL_CHUNK_SIZE = 500
+        settings.ETL_LOTE_MAXIMO = 0
+
+        linhas = [
+            ("6913261", "11972201867", "gru-a", "ASCOM", 1008),
+            ("6605656", "15143960843", "gru-b", "COPED", 1008),
+        ]
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("login",),
+            ("cpf",),
+            ("gru_id",),
+            ("gru_nome",),
+            ("sis_id",),
+        ]
+        mock_cursor.fetchmany.side_effect = [linhas, []]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = list(extrair_vinculos_usuario_grupo_coresso())
+
+        assert len(resultado) == 2
+        assert resultado[0]["login"] == "6913261"
+        assert resultado[0]["sis_id"] == 1008
+        assert resultado[1]["gru_nome"] == "COPED"
+
+    def test_aplica_filtro_de_exclusao(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+        settings.CORESSO_EXCLUDE_SISTEMA_IDS = [174]
+        settings.ETL_CHUNK_SIZE = 500
+        settings.ETL_LOTE_MAXIMO = 0
+
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("login",),
+            ("cpf",),
+            ("gru_id",),
+            ("gru_nome",),
+            ("sis_id",),
+        ]
+        mock_cursor.fetchmany.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            list(extrair_vinculos_usuario_grupo_coresso())
+
+        consulta = mock_cursor.execute.call_args[0][0]
+        assert "sis_id NOT IN" in consulta
+        assert "174" in consulta
+
+    def test_usa_subquery_para_tdo_id_cpf(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+        settings.CORESSO_EXCLUDE_SISTEMA_IDS = []
+        settings.ETL_CHUNK_SIZE = 500
+        settings.ETL_LOTE_MAXIMO = 0
+
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("login",),
+            ("cpf",),
+            ("gru_id",),
+            ("gru_nome",),
+            ("sis_id",),
+        ]
+        mock_cursor.fetchmany.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            list(extrair_vinculos_usuario_grupo_coresso())
+
+        consulta = mock_cursor.execute.call_args[0][0]
+        assert "SYS_TipoDocumentacao" in consulta
+        assert "CPF" in consulta
+
+    def test_respeita_lote_maximo(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+        settings.CORESSO_EXCLUDE_SISTEMA_IDS = []
+        settings.ETL_CHUNK_SIZE = 500
+        settings.ETL_LOTE_MAXIMO = 1
+
+        linhas = [
+            ("u1", "111", "g1", "A", 1),
+            ("u2", "222", "g2", "B", 2),
+            ("u3", "333", "g3", "C", 3),
+        ]
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("login",),
+            ("cpf",),
+            ("gru_id",),
+            ("gru_nome",),
+            ("sis_id",),
+        ]
+        mock_cursor.fetchmany.side_effect = [linhas, []]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = list(extrair_vinculos_usuario_grupo_coresso())
+
+        assert len(resultado) == 1
+        assert resultado[0]["login"] == "u1"
+
+
+# ------------------------------------------------------------------
+# _montar_resultado_usuario
+# ------------------------------------------------------------------
+
+
+class TestMontarResultadoUsuario:
+    def test_monta_resultado_basico(self) -> None:
+        rows = [
+            (
+                "7777777",
+                "11122233344",
+                "Joao",
+                "j@sme",
+                1,
+                "g1",
+                "Admin",
+                42,
+                "SGP",
+            ),
+        ]
+        r = _montar_resultado_usuario(rows)
+        assert r["login"] == "7777777"
+        assert r["cpf"] == "11122233344"
+        assert r["nome"] == "Joao"
+        assert r["situacao"] == "ativo"
+        assert 42 in r["sistemas"]
+        assert r["sistemas"][42]["grupos"][0]["nome"] == "Admin"
+
+    def test_usuario_sem_sistema(self) -> None:
+        rows = [
+            ("rf1", "", "Nome", "e@x", 1, None, None, None, None),
+        ]
+        r = _montar_resultado_usuario(rows)
+        assert r["sistemas"] == {}
+
+    def test_agrupa_por_sistema(self) -> None:
+        rows = [
+            ("rf", "cpf", "N", "e", 1, "g1", "Admin", 10, "SGP"),
+            ("rf", "cpf", "N", "e", 1, "g2", "Editor", 10, "SGP"),
+            ("rf", "cpf", "N", "e", 1, "g3", "Viewer", 20, "PTRF"),
+        ]
+        r = _montar_resultado_usuario(rows)
+        assert len(r["sistemas"]) == 2
+        assert len(r["sistemas"][10]["grupos"]) == 2
+        assert len(r["sistemas"][20]["grupos"]) == 1
+
+
+# ------------------------------------------------------------------
+# buscar_dados_usuario_coresso
+# ------------------------------------------------------------------
+
+
+class TestBuscarDadosUsuarioCoresso:
+    def test_sem_servidor_retorna_none(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = ""
+        assert buscar_dados_usuario_coresso("123") is None
+
+    def test_retorna_dados_por_rf(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        rows = [
+            (
+                "7777777",
+                "11122233344",
+                "Joao Silva",
+                "j@sme",
+                1,
+                "g1",
+                "Admin",
+                42,
+                "SGP",
+            ),
+        ]
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = rows
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            r = buscar_dados_usuario_coresso("7777777")
+
+        assert r is not None
+        assert r["login"] == "7777777"
+        assert r["cpf"] == "11122233344"
+        assert 42 in r["sistemas"]
+
+    def test_nao_encontrado_retorna_none(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            r = buscar_dados_usuario_coresso("inexistente")
+
+        assert r is None

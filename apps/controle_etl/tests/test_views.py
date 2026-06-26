@@ -646,31 +646,249 @@ class TestKanbanView:
         assert resp.status_code == status.HTTP_200_OK
 
 
+# ------------------------------------------------------------------
+# Vínculos
+# ------------------------------------------------------------------
+
+
 @pytest.mark.django_db
-class TestDispararExecucaoDashboardView:
-    URL = reverse("dashboard-executar")
+class TestExtrairVinculos:
+    URL = "/identidade-etl/api/v1/etl/vinculos/extrair/"
 
-    def test_dispara_e_redireciona(
-        self,
-        cliente_anonimo: APIClient,
+    def test_retorna_total_extraido(self, cliente: APIClient) -> None:
+        vinculos = [
+            {
+                "login": "u1",
+                "cpf": "111",
+                "gru_id": "g1",
+                "gru_nome": "X",
+                "sis_id": 1,
+            },
+        ]
+        with patch(
+            "apps.extracao.tasks" ".extrair_vinculos_usuario_grupo_coresso",
+            return_value=iter(vinculos),
+        ):
+            resp = cliente.post(self.URL)
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data["total_extraido"] == 1
+
+    def test_retorna_502_quando_falha(self, cliente: APIClient) -> None:
+        with patch(
+            "apps.extracao.tasks" ".extrair_vinculos_usuario_grupo_coresso",
+            side_effect=ConnectionError("falha"),
+        ):
+            resp = cliente.post(self.URL)
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.django_db
+class TestProvisionarVinculos:
+    URL = "/identidade-etl/api/v1/etl/vinculos/provisionar/"
+
+    def test_retorna_resultado(self, cliente: APIClient) -> None:
+        resultado = {
+            "atribuidos": 2,
+            "ignorados": 1,
+            "erros": 0,
+        }
+        with (
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            ),
+            patch(
+                "apps.extracao.tasks"
+                ".extrair_vinculos_usuario_grupo_coresso",
+                return_value=iter([]),
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".atribuir_client_roles_usuario_kc",
+                return_value=resultado,
+            ),
+        ):
+            resp = cliente.post(self.URL)
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data["atribuidos"] == 2
+
+    def test_retorna_502_quando_falha(self, cliente: APIClient) -> None:
+        with patch(
+            "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            side_effect=Exception("kc down"),
+        ):
+            resp = cliente.post(self.URL)
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.django_db
+class TestListarVinculos:
+    URL = "/identidade-etl/api/v1/etl/vinculos/"
+
+    def test_retorna_lista_vazia_sem_dados(self, cliente: APIClient) -> None:
+        resp = cliente.get(self.URL)
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data == []
+
+    def test_retorna_sistemas_com_contagem(self, cliente: APIClient) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=42,
+            nome="Teste",
+            situacao=1,
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g1",
+            coresso_sis_id=42,
+            sistema=sistema,
+            nome="Perfil1",
+            situacao_provisionamento="provisionado",
+        )
+
+        resp = cliente.get(self.URL)
+        assert resp.status_code == status.HTTP_200_OK
+        assert len(resp.data) == 1
+        assert resp.data[0]["total_perfis"] == 1
+        assert resp.data[0]["provisionados"] == 1
+
+
+# ------------------------------------------------------------------
+# Sincronizar Usuário
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestSincronizarUsuario:
+    URL = "/identidade-etl/api/v1/etl/usuario/sincronizar/"
+
+    def test_sem_identificador_retorna_400(self, cliente: APIClient) -> None:
+        resp = cliente.post(self.URL, {})
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_usuario_nao_encontrado_retorna_404(
+        self, cliente: APIClient
     ) -> None:
         with patch(
-            "apps.controle_etl.tasks"
-            ".task_identidade_executar_pipeline.apply_async"
-        ) as mock_apply_async:
-            mock_apply_async.return_value.id = "abc"
-            resp = cliente_anonimo.post(self.URL, {"fonte": "coresso"})
-        assert resp.status_code == status.HTTP_302_FOUND
-        assert ExecucaoETL.objects.filter(fonte="coresso").exists()
+            "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
+            return_value=None,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {"identificador": "inexistente"},
+            )
+        assert resp.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_fonte_invalida_usa_todos(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
+    def test_sincroniza_com_sucesso(self, cliente: APIClient) -> None:
+        dados = {
+            "login": "123",
+            "cpf": "",
+            "nome": "Teste",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        resultado = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "username": "123",
+            "nome": "Teste",
+            "roles_atribuidos": 0,
+            "roles_erros": 0,
+            "sistemas": [],
+        }
+        with (
+            patch(
+                "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
+                return_value=dados,
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".sincronizar_usuario_kc",
+                return_value=resultado,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {"identificador": "123"},
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data["acao"] == "criado"
+
+    def test_erro_coresso_retorna_502(self, cliente: APIClient) -> None:
         with patch(
-            "apps.controle_etl.tasks"
-            ".task_identidade_executar_pipeline.apply_async"
-        ) as mock_apply_async:
-            mock_apply_async.return_value.id = "abc"
-            cliente_anonimo.post(self.URL, {"fonte": "invalida"})
-        assert ExecucaoETL.objects.filter(fonte="todos").exists()
+            "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
+            side_effect=ConnectionError("falha"),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {"identificador": "123"},
+            )
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+# ------------------------------------------------------------------
+# Pipeline Sistema
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestPipelineSistema:
+    URL = "/identidade-etl/api/v1/etl/pipeline-sistema/"
+
+    def test_sem_sis_id_retorna_400(self, cliente: APIClient) -> None:
+        resp = cliente.post(self.URL, {})
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_executa_pipeline(self, cliente: APIClient) -> None:
+        with (
+            patch(
+                "apps.extracao.tasks" ".extrair_sistemas_coresso",
+                return_value=1,
+            ),
+            patch(
+                "apps.extracao.tasks" ".extrair_perfis_coresso",
+                return_value=1,
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".provisionar_client_kc",
+                return_value={"acao": "criado"},
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".provisionar_role_client_kc",
+                return_value={"acao": "criado"},
+            ),
+            patch(
+                "apps.extracao.tasks"
+                ".extrair_vinculos_usuario_grupo_coresso",
+                return_value=iter([]),
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".atribuir_client_roles_usuario_kc",
+                return_value={
+                    "atribuidos": 0,
+                    "ignorados": 0,
+                    "erros": 0,
+                },
+            ),
+        ):
+            from apps.staging.models import SistemaStaging
+
+            SistemaStaging.objects.create(
+                coresso_sis_id=99,
+                nome="Test",
+                situacao=1,
+                kc_client_uuid="uuid-99",
+            )
+            resp = cliente.post(
+                self.URL,
+                {"coresso_sis_id": 99},
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data["coresso_sis_id"] == 99
