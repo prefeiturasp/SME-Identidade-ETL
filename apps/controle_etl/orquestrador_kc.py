@@ -84,7 +84,7 @@ def _com_reintento(fn: Any, *args: Any, **kwargs: Any) -> Any:
             atraso = min(_ATRASO_BASE * (2 ** (tentativa - 1)), _ATRASO_MAXIMO)
             logger.warning(
                 "KC: erro transitório (tentativa %d/%d)"
-                " — aguardando %.1fs: %s",
+                + " — aguardando %.1fs: %s",
                 tentativa,
                 _MAX_TENTATIVAS,
                 atraso,
@@ -776,7 +776,7 @@ def atribuir_client_roles_usuario_kc(
             atribuidos += 1
         except Exception as exc:
             logger.warning(
-                "KC: falha ao atribuir role %s ao user %s:" " %s",
+                "KC: falha ao atribuir role %s ao user %s:" + " %s",
                 role_payload.get("name"),
                 username,
                 exc,
@@ -784,7 +784,7 @@ def atribuir_client_roles_usuario_kc(
             erros += 1
 
     logger.info(
-        "atribuir_client_roles — atribuidos=%d" " ignorados=%d erros=%d",
+        "atribuir_client_roles — atribuidos=%d" + " ignorados=%d erros=%d",
         atribuidos,
         ignorados,
         erros,
@@ -838,7 +838,7 @@ def _resolver_conflito_email(
     if mesmo_usuario:
         logger.info(
             "KC: email %s pertence ao mesmo usuário"
-            " (%s) — limpando duplicado",
+            + " (%s) — limpando duplicado",
             email,
             dono.get("username"),
         )
@@ -851,7 +851,7 @@ def _resolver_conflito_email(
 
     logger.info(
         "KC: email %s pertence a outro usuário (%s)"
-        " — removendo do payload de %s",
+        + " — removendo do payload de %s",
         email,
         dono.get("username"),
         login,
@@ -1007,7 +1007,7 @@ def sincronizar_usuario_kc(
         "kc_user_id": kc_user_id,
         "kc_url": (
             f"{base}/admin/master/console/"
-            f"#/{realm}/users/{kc_user_id}/settings"
+            + f"#/{realm}/users/{kc_user_id}/settings"
         ),
         "username": username,
         "nome": nome,

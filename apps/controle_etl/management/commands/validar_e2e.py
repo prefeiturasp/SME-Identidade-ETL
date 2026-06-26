@@ -30,6 +30,8 @@ from apps.staging.models import (
     UsuarioTerceiroStaging,
 )
 
+_MD_TABLE_SEP = "|---|---|---|---|"
+
 _FONTES_MODELO = (
     ("se1426", UsuarioServidorStaging),
     ("coresso", UsuarioTerceiroStaging),
@@ -54,7 +56,7 @@ def _url_usuario_kc(kc_user_id: str | None, realm: str) -> str:
     base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
     return (
         f"{base}/admin/master/console/"
-        f"#/{realm}/users/{kc_user_id}/settings"
+        + f"#/{realm}/users/{kc_user_id}/settings"
     )
 
 
@@ -64,7 +66,7 @@ def _info_usuario_kc(u: dict) -> dict[str, Any]:
         "encontrado": True,
         "kc_user_id": str(u["id"]),
         "nome": (
-            f"{u.get('firstName', '')}" f" {u.get('lastName', '')}"
+            f"{u.get('firstName', '')}" + f" {u.get('lastName', '')}"
         ).strip(),
         "email": u.get("email", ""),
     }
@@ -75,8 +77,8 @@ class Command(BaseCommand):
 
     help = (
         "Valida o pipeline ponta a ponta. Use --sis-id e/ou"
-        " --gru-id para filtrar por sistema/grupo."
-        " Use --forcar-atualizacao para forçar update no KC."
+        + " --gru-id para filtrar por sistema/grupo."
+        + " Use --forcar-atualizacao para forçar update no KC."
     )
 
     def add_arguments(self, parser: Any) -> None:
@@ -98,7 +100,8 @@ class Command(BaseCommand):
             type=str,
             default="",
             help=(
-                "Caminho do relatório. Padrão:" " validacao_e2e/{data_hora}.md"
+                "Caminho do relatório. Padrão:"
+                + " validacao_e2e/{data_hora}.md"
             ),
         )
         parser.add_argument(
@@ -113,7 +116,7 @@ class Command(BaseCommand):
             default=None,
             help=(
                 "Filtra por sistema CoreSSO (sis_id)."
-                " Ex: 1008 (Auto Serviço). Omitir = todos."
+                + " Ex: 1008 (Auto Serviço). Omitir = todos."
             ),
         )
         parser.add_argument(
@@ -121,7 +124,7 @@ class Command(BaseCommand):
             type=str,
             default=None,
             help=(
-                "Filtra por grupo CoreSSO (gru_id UUID)." " Omitir = todos."
+                "Filtra por grupo CoreSSO (gru_id UUID)." + " Omitir = todos."
             ),
         )
         parser.add_argument(
@@ -130,7 +133,7 @@ class Command(BaseCommand):
             default=False,
             help=(
                 "Força update dos usuários no Keycloak"
-                " mesmo sem mudança de dados."
+                + " mesmo sem mudança de dados."
             ),
         )
         parser.add_argument(
@@ -145,7 +148,7 @@ class Command(BaseCommand):
             ],
             help=(
                 "Fonte a extrair: todos (padrão),"
-                " se1426, coresso ou eol_alunos."
+                + " se1426, coresso ou eol_alunos."
             ),
         )
 
@@ -187,8 +190,8 @@ class Command(BaseCommand):
             filtro_desc += " | forcar_atualizacao=True"
         self.stdout.write(
             f"ExecucaoETL criada: {id_exec}"
-            f" | lote_maximo={lote_maximo}"
-            f" | realm={realm}{filtro_desc}"
+            + f" | lote_maximo={lote_maximo}"
+            + f" | realm={realm}{filtro_desc}"
         )
 
         resultado_sistemas = self._extrair_e_provisionar_sistemas(realm)
@@ -203,7 +206,7 @@ class Command(BaseCommand):
             self._criar_usuarios_ausentes_kc(realm, usuarios_sistema)
             self.stdout.write(
                 "\n--- Validação direta no Keycloak"
-                f" ({len(usuarios_sistema)} logins) ---"
+                + f" ({len(usuarios_sistema)} logins) ---"
             )
             validacoes_kc = self._validar_logins_keycloak(
                 realm, set(usuarios_sistema.keys())
@@ -227,7 +230,7 @@ class Command(BaseCommand):
         execucao.marcar_finalizada(situacao_final)
         self.stdout.write(
             self.style.SUCCESS(
-                f"\nPipeline concluído" f" | situacao={execucao.situacao}"
+                "\nPipeline concluído" + f" | situacao={execucao.situacao}"
             )
         )
 
@@ -275,7 +278,7 @@ class Command(BaseCommand):
             t0 = time.monotonic()
             resultado = task(id_execucao=id_exec)
             self.stdout.write(
-                f"{resultado}" f" ({time.monotonic() - t0:.1f}s)"
+                f"{resultado}" + f" ({time.monotonic() - t0:.1f}s)"
             )
             resultados_extracao.append(resultado)
 
@@ -285,7 +288,7 @@ class Command(BaseCommand):
         )
         self.stdout.write(str(resultado_resolucao))
 
-        self.stdout.write("\n--- Provisionamento Keycloak" " (usuários) ---")
+        self.stdout.write("\n--- Provisionamento Keycloak (usuários) ---")
         task_provisionar_identidade_keycloak(
             resultado_resolucao, id_execucao=id_exec
         )
@@ -302,8 +305,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "\n--- Provisionamento de usuários"
-            f" do sistema ({len(logins_sistema)}"
-            " logins) ---"
+            + f" do sistema ({len(logins_sistema)}"
+            + " logins) ---"
         )
         admin = obter_admin_keycloak(realm=realm)
         criados = atualizados = ignorados = erros_u = 0
@@ -332,9 +335,9 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Usuários sistema: {criados} criados,"
-            f" {atualizados} atualizados,"
-            f" {ignorados} ignorados,"
-            f" {erros_u} erros"
+            + f" {atualizados} atualizados,"
+            + f" {ignorados} ignorados,"
+            + f" {erros_u} erros"
         )
 
     def _extrair_e_provisionar_sistemas(self, realm: str) -> dict[str, int]:
@@ -346,7 +349,7 @@ class Command(BaseCommand):
         t0 = time.monotonic()
         total_sistemas = extrair_sistemas_coresso()
         self.stdout.write(
-            f"{total_sistemas} sistemas" f" ({time.monotonic() - t0:.1f}s)"
+            f"{total_sistemas} sistemas" + f" ({time.monotonic() - t0:.1f}s)"
         )
 
         self.stdout.write("\n--- Provisionamento de Clients ---")
@@ -367,8 +370,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Clients: {criados} criados,"
-            f" {atualizados} atualizados,"
-            f" {erros_cli} erros"
+            + f" {atualizados} atualizados,"
+            + f" {erros_cli} erros"
         )
         return {
             "total_sistemas": total_sistemas,
@@ -388,7 +391,7 @@ class Command(BaseCommand):
         t0 = time.monotonic()
         total_perfis = extrair_perfis_coresso()
         self.stdout.write(
-            f"{total_perfis} perfis" f" ({time.monotonic() - t0:.1f}s)"
+            f"{total_perfis} perfis" + f" ({time.monotonic() - t0:.1f}s)"
         )
 
         self.stdout.write("\n--- Provisionamento de Client Roles ---")
@@ -412,9 +415,9 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Roles: {criados} criados,"
-            f" {atualizados} atualizados,"
-            f" {ignorados} ignorados,"
-            f" {erros_r} erros"
+            + f" {atualizados} atualizados,"
+            + f" {ignorados} ignorados,"
+            + f" {erros_r} erros"
         )
         return {
             "total_perfis": total_perfis,
@@ -480,12 +483,12 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Vínculos: {resultado['atribuidos']}"
-            f" atribuídos,"
-            f" {resultado['ignorados']} ignorados,"
-            f" {resultado['erros']} erros"
-            f" | {len(usuarios_por_login)}"
-            f" usuários do sistema"
-            f" ({time.monotonic() - t0:.1f}s)"
+            + " atribuídos,"
+            + f" {resultado['ignorados']} ignorados,"
+            + f" {resultado['erros']} erros"
+            + f" | {len(usuarios_por_login)}"
+            + " usuários do sistema"
+            + f" ({time.monotonic() - t0:.1f}s)"
         )
         return resultado, usuarios_por_login
 
@@ -500,7 +503,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "\n--- Provisionamento de usuários"
-            f" do sistema ({len(usuarios_sistema)}) ---"
+            + f" do sistema ({len(usuarios_sistema)}) ---"
         )
 
         for login, dados in usuarios_sistema.items():
@@ -543,8 +546,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Usuários: {criados} criados,"
-            f" {existentes} já existiam,"
-            f" {erros_c} erros"
+            + f" {existentes} já existiam,"
+            + f" {erros_c} erros"
         )
 
     def _validar_logins_keycloak(
@@ -581,7 +584,7 @@ class Command(BaseCommand):
                 }
 
         self.stdout.write(
-            f"Keycloak: {confirmados}/{len(resultado)}" " confirmados"
+            f"Keycloak: {confirmados}/{len(resultado)}" + " confirmados"
         )
         return resultado
 
@@ -643,8 +646,8 @@ class Command(BaseCommand):
             if total_validados:
                 self.stdout.write(
                     f"{fonte}:"
-                    f" {confirmados}/{total_validados}"
-                    " confirmados no Keycloak"
+                    + f" {confirmados}/{total_validados}"
+                    + " confirmados no Keycloak"
                 )
 
         return resultado
@@ -664,10 +667,10 @@ class Command(BaseCommand):
         """Monta o relatório Markdown de validação manual."""
         realm = execucao.realm_destino
         linhas = [
-            "# Relatório de validação E2E" " — SME-Identidade-ETL",
+            ("# Relatório de validação E2E" + " — SME-Identidade-ETL"),
             "",
             f"- **Execução:** `{id_exec}`",
-            f"- **Gerado em:**" f" {timezone.now():%Y-%m-%d %H:%M:%S}",
+            ("- **Gerado em:**" + f" {timezone.now():%Y-%m-%d %H:%M:%S}"),
             f"- **Realm Keycloak:** {realm}",
             f"- **Situação final:** {execucao.situacao}",
         ]
@@ -677,54 +680,54 @@ class Command(BaseCommand):
             if s:
                 nome_sis = f" ({s.nome})"
             linhas.append(
-                f"- **Filtro sistema:** sis_id={sis_id}" f"{nome_sis}"
+                f"- **Filtro sistema:** sis_id={sis_id}" + f"{nome_sis}"
             )
 
+        sis = resultado_sistemas
+        prf = resultado_perfis
+        vnc = resultado_vinculos
         linhas += [
             "",
             "## Sistemas e Clients",
             "",
-            f"- Sistemas extraídos:"
-            f" {resultado_sistemas['total_sistemas']}",
-            f"- Clients criados:" f" {resultado_sistemas['clients_criados']}",
-            f"- Clients atualizados:"
-            f" {resultado_sistemas['clients_atualizados']}",
-            f"- Clients erros:" f" {resultado_sistemas['clients_erros']}",
+            f"- Sistemas extraídos: {sis['total_sistemas']}",
+            f"- Clients criados: {sis['clients_criados']}",
+            f"- Clients atualizados: {sis['clients_atualizados']}",
+            f"- Clients erros: {sis['clients_erros']}",
             "",
             "## Perfis e Client Roles",
             "",
-            f"- Perfis extraídos:" f" {resultado_perfis['total_perfis']}",
-            f"- Roles criados:" f" {resultado_perfis['roles_criados']}",
-            f"- Roles atualizados:"
-            f" {resultado_perfis['roles_atualizados']}",
-            f"- Roles ignorados:" f" {resultado_perfis['roles_ignorados']}",
-            f"- Roles erros:" f" {resultado_perfis['roles_erros']}",
+            f"- Perfis extraídos: {prf['total_perfis']}",
+            f"- Roles criados: {prf['roles_criados']}",
+            f"- Roles atualizados: {prf['roles_atualizados']}",
+            f"- Roles ignorados: {prf['roles_ignorados']}",
+            f"- Roles erros: {prf['roles_erros']}",
             "",
             "## Vínculos (client role assignments)",
             "",
-            f"- Atribuídos:" f" {resultado_vinculos['atribuidos']}",
-            f"- Ignorados:" f" {resultado_vinculos['ignorados']}",
-            f"- Erros: {resultado_vinculos['erros']}",
+            f"- Atribuídos: {vnc['atribuidos']}",
+            f"- Ignorados: {vnc['ignorados']}",
+            f"- Erros: {vnc['erros']}",
             "",
             "## Totais por etapa",
             "",
             "| Etapa | Entrada | Saída | Erros |",
-            "|---|---|---|---|",
+            _MD_TABLE_SEP,
         ]
         etapas = execucao.etapas  # type: ignore[attr-defined]
         for etapa in etapas.order_by("ordem_etapa"):
             linhas.append(
                 f"| {etapa.nome_etapa}"
-                f" | {etapa.registros_entrada}"
-                f" | {etapa.registros_saida}"
-                f" | {etapa.registros_erro} |"
+                + f" | {etapa.registros_entrada}"
+                + f" | {etapa.registros_saida}"
+                + f" | {etapa.registros_erro} |"
             )
 
         linhas += [
             "",
             f"- Extraído: {execucao.total_extraido}",
-            f"- Transformado:" f" {execucao.total_transformado}",
-            f"- Carregado no Keycloak:" f" {execucao.total_carregado}",
+            f"- Transformado: {execucao.total_transformado}",
+            ("- Carregado no Keycloak:" + f" {execucao.total_carregado}"),
             f"- Erros: {execucao.total_erros}",
             f"- Ignorados: {execucao.total_ignorados}",
         ]
@@ -734,8 +737,8 @@ class Command(BaseCommand):
                 "",
                 "## Usuários do sistema",
                 "",
-                "| Login | Nome | Grupos" " | Keycloak |",
-                "|---|---|---|---|",
+                "| Login | Nome | Grupos | Keycloak |",
+                _MD_TABLE_SEP,
             ]
             for login in sorted(usuarios_sistema):
                 dados_coresso = usuarios_sistema[login]
@@ -744,12 +747,15 @@ class Command(BaseCommand):
                 grupos = dados_coresso.get("grupos", "—")
                 col_kc = _col_keycloak(kc_info, realm)
                 linhas.append(
-                    f"| {login}" f" | {nome}" f" | {grupos}" f" | {col_kc} |"
+                    f"| {login}"
+                    + f" | {nome}"
+                    + f" | {grupos}"
+                    + f" | {col_kc} |"
                 )
         else:
             linhas += [
                 "",
-                "## Amostra por fonte" " (para conferência manual)",
+                ("## Amostra por fonte" + " (para conferência manual)"),
                 "",
             ]
             linhas += _linhas_amostra_por_fonte(
@@ -813,8 +819,8 @@ def _linhas_amostra_por_fonte(
         linhas += [
             f"### {fonte}",
             "",
-            "| RF/CPF/Matrícula | Nome | Situação" " | Keycloak |",
-            "|---|---|---|---|",
+            ("| RF/CPF/Matrícula | Nome | Situação" + " | Keycloak |"),
+            _MD_TABLE_SEP,
         ]
         for usuario in usuarios:
             identificador = _identificador_exibicao(usuario)
@@ -822,9 +828,9 @@ def _linhas_amostra_por_fonte(
             info = validacoes_kc.get(uid, {})
             linhas.append(
                 f"| {identificador}"
-                f" | {usuario.nome or '—'}"
-                f" | {usuario.situacao or '—'}"
-                f" | {_col_keycloak(info, realm)} |"
+                + f" | {usuario.nome or '—'}"
+                + f" | {usuario.situacao or '—'}"
+                + f" | {_col_keycloak(info, realm)} |"
             )
         linhas.append("")
     return linhas

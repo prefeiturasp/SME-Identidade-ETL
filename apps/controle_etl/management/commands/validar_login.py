@@ -25,7 +25,7 @@ def _url_usuario_kc(kc_user_id: str, realm: str) -> str:
     base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
     return (
         f"{base}/admin/master/console/"
-        f"#/{realm}/users/{kc_user_id}/settings"
+        + f"#/{realm}/users/{kc_user_id}/settings"
     )
 
 
@@ -34,7 +34,7 @@ class Command(BaseCommand):
 
     help = (
         "Reseta a senha de um usuário, faz login via"
-        " OpenID Connect e exibe/salva o token e userinfo."
+        + " OpenID Connect e exibe/salva o token e userinfo."
     )
 
     def add_arguments(self, parser: Any) -> None:
@@ -50,8 +50,8 @@ class Command(BaseCommand):
             default=None,
             help=(
                 "Senha a definir. Padrão:"
-                " VALIDAR_LOGIN_SENHA_PADRAO do .env"
-                " ou mesmo valor do username."
+                + " VALIDAR_LOGIN_SENHA_PADRAO do .env"
+                + " ou mesmo valor do username."
             ),
         )
         parser.add_argument(
@@ -66,7 +66,7 @@ class Command(BaseCommand):
             default="admin-cli",
             help=(
                 "Client ID para login (deve ter Direct"
-                " Access Grants). Padrão: admin-cli."
+                + " Access Grants). Padrão: admin-cli."
             ),
         )
         parser.add_argument(
@@ -74,7 +74,8 @@ class Command(BaseCommand):
             type=str,
             default="",
             help=(
-                "Client secret. Vazio para clients" " públicos como admin-cli."
+                "Client secret. Vazio para clients"
+                + " públicos como admin-cli."
             ),
         )
         parser.add_argument(
@@ -82,7 +83,7 @@ class Command(BaseCommand):
             type=str,
             default="",
             help=(
-                "Caminho do JSON. Padrão:" " validacao_login/{username}.json"
+                "Caminho do JSON. Padrão:" + " validacao_login/{username}.json"
             ),
         )
 
@@ -115,7 +116,7 @@ class Command(BaseCommand):
         }
 
         self.stdout.write(
-            f"Usuário: {username} | realm={realm}" f" | client={client_id}"
+            f"Usuário: {username} | realm={realm}" + f" | client={client_id}"
         )
 
         admin = obter_admin_keycloak(realm=realm)
@@ -141,8 +142,8 @@ class Command(BaseCommand):
         }
         self.stdout.write(
             f"Encontrado: {kc_user.get('firstName')}"
-            f" {kc_user.get('lastName')}"
-            f" (id={kc_user_id})"
+            + f" {kc_user.get('lastName')}"
+            + f" (id={kc_user_id})"
         )
 
         self.stdout.write("Preparando conta para login...")
@@ -207,7 +208,7 @@ class Command(BaseCommand):
         )
         resultado["userinfo"] = userinfo
         self.stdout.write(
-            f"  sub={userinfo.get('sub')}" f" | name={userinfo.get('name')}"
+            f"  sub={userinfo.get('sub')}" + f" | name={userinfo.get('name')}"
         )
 
         self.stdout.write("Obtendo roles...")

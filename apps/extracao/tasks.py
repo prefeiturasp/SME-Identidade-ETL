@@ -199,7 +199,7 @@ def _iterar_com_watermark(
         if lote_maximo and total >= lote_maximo:
             logger.info(
                 "%s: limite ETL_LOTE_MAXIMO=%d atingido"
-                " — interrompendo extração",
+                + " — interrompendo extração",
                 fonte,
                 lote_maximo,
             )
@@ -813,7 +813,7 @@ def extrair_vinculos_usuario_grupo_coresso(
         ``gru_nome`` e ``sis_id``.
     """
     if not settings.CORESSO_DB_SERVIDOR:
-        logger.warning("CoreSSO SQL não configurado" " — skipping vínculos.")
+        logger.warning("CoreSSO SQL não configurado" + " — skipping vínculos.")
         return
 
     import pyodbc
@@ -822,7 +822,7 @@ def extrair_vinculos_usuario_grupo_coresso(
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     if excluidos:
         filtros_extra.append(
-            f"AND g.sis_id NOT IN" f" ({','.join(str(i) for i in excluidos)})"
+            "AND g.sis_id NOT IN" + f" ({','.join(str(i) for i in excluidos)})"
         )
     if sis_id is not None:
         filtros_extra.append(f"AND g.sis_id = {int(sis_id)}")
@@ -874,7 +874,7 @@ def extrair_vinculos_usuario_grupo_coresso(
             for linha in linhas:
                 if lote_maximo and total >= lote_maximo:
                     logger.info(
-                        "vinculos: limite" " ETL_LOTE_MAXIMO=%d atingido",
+                        "vinculos: limite" + " ETL_LOTE_MAXIMO=%d atingido",
                         lote_maximo,
                     )
                     return
