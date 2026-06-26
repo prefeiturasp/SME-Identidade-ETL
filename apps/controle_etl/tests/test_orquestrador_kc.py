@@ -1364,3 +1364,84 @@ class TestSincronizarUsuarioKc:
         }
         r = sincronizar_usuario_kc(admin, dados)
         assert r["acao"] == "erro"
+
+
+# ------------------------------------------------------------------
+# _resolver_conflito_email
+# ------------------------------------------------------------------
+
+
+class TestResolverConflitoEmail:
+    def test_mesmo_usuario_limpa_duplicado(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {
+                "id": "kc-old",
+                "username": "old",
+                "attributes": {"rf": ["111"]},
+            }
+        ]
+        payload = {
+            "username": "111",
+            "email": "a@x",
+            "attributes": {"rf": ["111"]},
+        }
+        result = _resolver_conflito_email(admin, payload, "111")
+        assert result["email"] == "a@x"
+        admin.update_user.assert_called_once_with("kc-old", {"email": ""})
+
+    def test_outro_usuario_remove_email(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {
+                "id": "kc-other",
+                "username": "other",
+                "attributes": {"rf": ["999"]},
+            }
+        ]
+        payload = {
+            "username": "111",
+            "email": "a@x",
+            "attributes": {"rf": ["111"]},
+        }
+        result = _resolver_conflito_email(admin, payload, "111")
+        assert "email" not in result
+
+    def test_sem_email_retorna_payload(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        payload = {"username": "u", "email": ""}
+        result = _resolver_conflito_email(admin, payload, "u")
+        assert result == payload
+
+
+class TestUpsertComConflito:
+    def test_update_com_conflito_email(self) -> None:
+        admin = MagicMock()
+        admin.get_users.side_effect = [
+            [{"id": "kc-1"}],  # busca por username
+            [
+                {
+                    "id": "kc-other",
+                    "username": "other",
+                    "attributes": {"rf": ["999"]},
+                }
+            ],  # busca por email
+        ]
+        admin.update_user.side_effect = [
+            Exception("409 email"),
+            None,  # retry sem email
+        ]
+        payload = {
+            "username": "111",
+            "email": "dup@x",
+            "attributes": {"rf": ["111"]},
+        }
+        kc_id, acao = _upsert_usuario_kc(admin, payload, "111", "111")
+        assert kc_id == "kc-1"
+        assert acao == "atualizado"

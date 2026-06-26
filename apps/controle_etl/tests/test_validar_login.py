@@ -237,3 +237,94 @@ class TestValidarLogin:
 
         dados = json.loads(saida.read_text())
         assert dados["kc_user_id"] == "kc-2"
+
+
+# ------------------------------------------------------------------
+# Métodos internos diretamente
+# ------------------------------------------------------------------
+
+
+class TestMetodosInternosValidarLogin:
+    def _cmd(self) -> Any:
+        from apps.controle_etl.management.commands.validar_login import Command
+
+        return Command()
+
+    def test_fazer_login_sucesso(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        settings.KEYCLOAK_VERIFICAR_SSL = False
+        cmd = self._cmd()
+        with patch("keycloak.KeycloakOpenID") as mock_cls:
+            mock_kc = MagicMock()
+            mock_kc.token.return_value = {
+                "access_token": "tok",
+            }
+            mock_cls.return_value = mock_kc
+            r = cmd._fazer_login(
+                username="u1",
+                senha="p",
+                realm="r",
+                client_id="c",
+                client_secret="s",
+            )
+        assert r["access_token"] == "tok"
+
+    def test_fazer_login_erro(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        settings.KEYCLOAK_VERIFICAR_SSL = False
+        cmd = self._cmd()
+        with patch("keycloak.KeycloakOpenID") as mock_cls:
+            mock_kc = MagicMock()
+            mock_kc.token.side_effect = Exception("401")
+            mock_cls.return_value = mock_kc
+            r = cmd._fazer_login(
+                username="u1",
+                senha="p",
+                realm="r",
+                client_id="c",
+                client_secret="s",
+            )
+        assert "error" in r
+
+    def test_obter_userinfo_sucesso(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        settings.KEYCLOAK_VERIFICAR_SSL = False
+        cmd = self._cmd()
+        with patch("keycloak.KeycloakOpenID") as mock_cls:
+            mock_kc = MagicMock()
+            mock_kc.userinfo.return_value = {"sub": "x"}
+            mock_cls.return_value = mock_kc
+            r = cmd._obter_userinfo(
+                "tok", realm="r", client_id="c", client_secret="s"
+            )
+        assert r["sub"] == "x"
+
+    def test_obter_userinfo_erro(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        settings.KEYCLOAK_VERIFICAR_SSL = False
+        cmd = self._cmd()
+        with patch("keycloak.KeycloakOpenID") as mock_cls:
+            mock_kc = MagicMock()
+            mock_kc.userinfo.side_effect = Exception("err")
+            mock_cls.return_value = mock_kc
+            r = cmd._obter_userinfo(
+                "tok", realm="r", client_id="c", client_secret="s"
+            )
+        assert "error" in r
+
+    @pytest.mark.django_db
+    def test_obter_roles(self) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=1,
+            nome="T",
+            kc_client_uuid="uuid-1",
+        )
+        admin = MagicMock()
+        admin.get_realm_roles_of_user.return_value = [{"name": "default"}]
+        admin.get_client_roles_of_user.return_value = [{"name": "Admin"}]
+        cmd = self._cmd()
+        r = cmd._obter_roles(admin, "kc-1")
+        assert "default" in r["realm_roles"]
+        assert r["client_roles"]

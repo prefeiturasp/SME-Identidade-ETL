@@ -606,3 +606,208 @@ class TestLinhasAmostraPorFonte:
 
         linhas = _linhas_amostra_por_fonte(str(uuid.uuid4()), "r", {}, None)
         assert linhas == []
+
+
+# ------------------------------------------------------------------
+# Métodos internos do Command (cobertura direta)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestMetodosInternosValidarE2e:
+    """Testa métodos internos do Command diretamente."""
+
+    def _cmd(self) -> Any:
+        from apps.controle_etl.management.commands.validar_e2e import Command
+
+        cmd = Command()
+        cmd.stdout = StringIO()
+        cmd.style = cmd.create_parser("", "validar_e2e").prog  # type: ignore
+        # Mock do style para não quebrar
+        cmd.style = MagicMock()
+        cmd.style.SUCCESS = lambda x: x
+        cmd.style.ERROR = lambda x: x
+        return cmd
+
+    def test_extrair_e_provisionar_sistemas(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(coresso_sis_id=1, nome="T", situacao=1)
+        with (
+            patch(
+                "apps.extracao.tasks.extrair_sistemas_coresso",
+                return_value=2,
+            ),
+            patch(f"{_CMD}.obter_admin_keycloak", return_value=admin),
+            patch(
+                "apps.controle_etl.orquestrador_kc" + ".provisionar_client_kc",
+                return_value={"acao": "criado"},
+            ),
+        ):
+            r = cmd._extrair_e_provisionar_sistemas("sme-apps")
+        assert r["total_sistemas"] == 2
+        assert r["clients_criados"] == 1
+
+    def test_extrair_e_provisionar_perfis(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sis = SistemaStaging.objects.create(
+            coresso_sis_id=10, nome="S", kc_client_uuid="u"
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g10",
+            coresso_sis_id=10,
+            sistema=sis,
+            nome="P",
+            kc_role_nome="P",
+        )
+        with (
+            patch(
+                "apps.extracao.tasks.extrair_perfis_coresso",
+                return_value=3,
+            ),
+            patch(f"{_CMD}.obter_admin_keycloak", return_value=admin),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                + ".provisionar_role_client_kc",
+                return_value={"acao": "criado"},
+            ),
+        ):
+            r = cmd._extrair_e_provisionar_perfis("sme-apps")
+        assert r["total_perfis"] == 3
+        assert r["roles_criados"] == 1
+
+    def test_atribuir_vinculos(self) -> None:
+        cmd = self._cmd()
+        vinculos = [
+            {
+                "login": "111",
+                "cpf": "",
+                "nome": "A",
+                "email": "a@x",
+                "gru_id": "g",
+                "gru_nome": "G1",
+                "sis_id": 1,
+            },
+        ]
+        admin = MagicMock()
+        with (
+            patch(f"{_CMD}.obter_admin_keycloak", return_value=admin),
+            patch(
+                "apps.extracao.tasks"
+                + ".extrair_vinculos_usuario_grupo_coresso",
+                return_value=iter(vinculos),
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                + ".atribuir_client_roles_usuario_kc",
+                return_value={
+                    "atribuidos": 1,
+                    "ignorados": 0,
+                    "erros": 0,
+                },
+            ),
+        ):
+            resultado, usuarios = cmd._atribuir_vinculos("sme-apps", sis_id=1)
+        assert resultado["atribuidos"] == 1
+        assert "111" in usuarios
+        assert usuarios["111"]["grupos"] == "G1"
+
+    def test_criar_usuarios_ausentes_kc(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new"
+        with patch(f"{_CMD}.obter_admin_keycloak", return_value=admin):
+            cmd._criar_usuarios_ausentes_kc(
+                "sme-apps",
+                {"111": {"nome": "Joao", "email": "j@x", "cpf": ""}},
+            )
+        admin.create_user.assert_called_once()
+
+    def test_validar_logins_keycloak_encontra(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {"id": "kc-1", "firstName": "A", "lastName": "B", "email": "a@x"}
+        ]
+        with patch(f"{_CMD}.obter_admin_keycloak", return_value=admin):
+            r = cmd._validar_logins_keycloak("sme-apps", {"111"})
+        assert r["111"]["encontrado"] is True
+
+    def test_validar_logins_keycloak_nao_encontra(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        with patch(f"{_CMD}.obter_admin_keycloak", return_value=admin):
+            r = cmd._validar_logins_keycloak("sme-apps", {"999"})
+        assert r["999"]["encontrado"] is False
+
+    def test_buscar_usuario_kc_por_rf(self) -> None:
+        cmd = self._cmd()
+        admin = MagicMock()
+        user = {"id": "kc-1", "username": "cpf123"}
+
+        def get_users_side(query: dict) -> list:
+            if "rf:" in str(query.get("q", "")):
+                return [user]
+            return []
+
+        admin.get_users.side_effect = get_users_side
+        result = cmd._buscar_usuario_kc(admin, "7777777")
+        assert result is not None
+        assert result["id"] == "kc-1"
+
+    def test_provisionar_usuarios_do_sistema(self) -> None:
+        import uuid
+
+        cmd = self._cmd()
+        id_exec = str(uuid.uuid4())
+        UsuarioServidorStaging.objects.create(
+            id_execucao=id_exec,
+            fonte="se1426",
+            rf="111",
+            nome="A",
+            situacao="pronto",
+        )
+        admin = MagicMock()
+        with (
+            patch(f"{_CMD}.obter_admin_keycloak", return_value=admin),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                + ".provisionar_usuario_kc",
+                return_value={"acao": "criado"},
+            ) as mock_prov,
+        ):
+            cmd._provisionar_usuarios_do_sistema(
+                id_exec, "sme-apps", {"111"}, False
+            )
+        mock_prov.assert_called_once()
+
+    def test_extrair_e_provisionar_usuarios(self) -> None:
+        import uuid
+
+        cmd = self._cmd()
+        id_exec = str(uuid.uuid4())
+
+        ExecucaoETL.objects.create(id_execucao=id_exec, fonte="coresso")
+
+        with (
+            patch(
+                _CMD + ".task_identidade_extrair_coresso",
+                return_value={"total_extraido": 0},
+            ),
+            patch(
+                _CMD + ".task_identidade_resolver_identidade",
+                return_value={"total_transformado": 0},
+            ),
+            patch(
+                _CMD + ".task_provisionar_identidade_keycloak",
+                return_value={"total_provisionado": 0},
+            ),
+        ):
+            cmd._extrair_e_provisionar_usuarios(id_exec, "coresso")
