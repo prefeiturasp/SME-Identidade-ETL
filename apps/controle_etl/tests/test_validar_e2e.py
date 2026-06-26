@@ -9,6 +9,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
+from apps.controle_etl.management.commands.validar_e2e import (
+    _col_keycloak,
+    _filtrar_usuarios,
+    _identificadores_usuario,
+    _info_usuario_kc,
+    _linhas_amostra_por_fonte,
+    _url_usuario_kc,
+)
 from apps.controle_etl.models import ExecucaoETL, LogEtapaETL
 from apps.staging.models import (
     UsuarioAlunoStaging,
@@ -420,3 +428,181 @@ class TestValidarE2e:
         assert "ASCOM, CODAE" in conteudo
         assert "✅" in conteudo
         assert "sis_id=1008" in conteudo
+
+    def test_fonte_coresso_executa_apenas_coresso(self, tmp_path: Any) -> None:
+        saida_md = tmp_path / "validacao.md"
+        admin = _fake_admin_kc({"11122233344"})
+
+        with (
+            self._patch_pipeline(),
+            self._patch_sistemas_perfis_vinculos(),
+            patch(
+                f"{_CMD}.obter_admin_keycloak",
+                return_value=admin,
+            ),
+        ):
+            out = StringIO()
+            call_command(
+                "validar_e2e",
+                f"--saida={saida_md}",
+                "--fonte=coresso",
+                "--lote-maximo=5",
+                stdout=out,
+            )
+        assert saida_md.exists()
+
+    def test_forcar_atualizacao_sem_sis_id(self, tmp_path: Any) -> None:
+        saida_md = tmp_path / "validacao.md"
+        admin = _fake_admin_kc(set())
+
+        with (
+            self._patch_pipeline(),
+            self._patch_sistemas_perfis_vinculos(),
+            patch(
+                f"{_CMD}.obter_admin_keycloak",
+                return_value=admin,
+            ),
+        ):
+            call_command(
+                "validar_e2e",
+                f"--saida={saida_md}",
+                "--forcar-atualizacao",
+                "--lote-maximo=5",
+                stdout=StringIO(),
+            )
+        assert saida_md.exists()
+
+
+# ------------------------------------------------------------------
+# Helpers do validar_e2e
+# ------------------------------------------------------------------
+
+
+class TestUrlUsuarioKc:
+    def test_com_id(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        url = _url_usuario_kc("abc-123", "sme-apps")
+        assert "/users/abc-123/settings" in url
+
+    def test_sem_id(self) -> None:
+        assert _url_usuario_kc(None, "r") == "—"
+
+
+class TestInfoUsuarioKc:
+    def test_extrai_dados(self) -> None:
+        u = {
+            "id": "kc-1",
+            "firstName": "Ana",
+            "lastName": "Silva",
+            "email": "a@x",
+        }
+        info = _info_usuario_kc(u)
+        assert info["encontrado"] is True
+        assert info["kc_user_id"] == "kc-1"
+        assert info["nome"] == "Ana Silva"
+        assert info["email"] == "a@x"
+
+
+class TestColKeycloak:
+    def test_encontrado_com_id(self, settings: Any) -> None:
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        info = {"encontrado": True, "kc_user_id": "abc"}
+        col = _col_keycloak(info, "sme")
+        assert "✅ ver" in col
+        assert "abc/settings" in col
+
+    def test_encontrado_sem_id(self) -> None:
+        info = {"encontrado": True, "kc_user_id": None}
+        assert _col_keycloak(info, "r") == "✅"
+
+    def test_nao_encontrado(self) -> None:
+        info = {"encontrado": False}
+        assert _col_keycloak(info, "r") == "❌"
+
+
+class TestIdentificadoresUsuario:
+    def test_com_cpf_rf_matricula(self) -> None:
+        u = MagicMock()
+        u.cpf = "11122233344"
+        u.rf = "7777777"
+        u.matricula = "9999"
+        ids = _identificadores_usuario(u)
+        assert ids == {"11122233344", "7777777", "9999"}
+
+    def test_sem_dados(self) -> None:
+        u = MagicMock()
+        u.cpf = ""
+        u.rf = None
+        u.matricula = None
+        assert _identificadores_usuario(u) == set()
+
+
+@pytest.mark.django_db
+class TestFiltrarUsuarios:
+    def test_sem_filtro_retorna_todos(self) -> None:
+        import uuid
+
+        id_exec = str(uuid.uuid4())
+        UsuarioServidorStaging.objects.create(
+            id_execucao=id_exec,
+            fonte="se1426",
+            rf="111",
+            nome="A",
+        )
+        result = _filtrar_usuarios(id_exec, UsuarioServidorStaging, None)
+        assert len(result) == 1
+
+    def test_filtra_por_login(self) -> None:
+        import uuid
+
+        id_exec = str(uuid.uuid4())
+        UsuarioServidorStaging.objects.create(
+            id_execucao=id_exec,
+            fonte="se1426",
+            rf="111",
+            nome="A",
+        )
+        UsuarioServidorStaging.objects.create(
+            id_execucao=id_exec,
+            fonte="se1426",
+            rf="222",
+            nome="B",
+        )
+        result = _filtrar_usuarios(id_exec, UsuarioServidorStaging, {"111"})
+        assert len(result) == 1
+        assert result[0].rf == "111"
+
+
+@pytest.mark.django_db
+class TestLinhasAmostraPorFonte:
+    def test_gera_linhas_md(self, settings: Any) -> None:
+        import uuid
+
+        settings.KEYCLOAK_URL_SERVIDOR = "https://kc/"
+        id_exec = str(uuid.uuid4())
+        u = UsuarioServidorStaging.objects.create(
+            id_execucao=id_exec,
+            fonte="se1426",
+            rf="111",
+            nome="Teste",
+            situacao="pronto",
+        )
+        validacoes = {
+            u.id: {
+                "encontrado": True,
+                "kc_user_id": "kc-1",
+            }
+        }
+        linhas = _linhas_amostra_por_fonte(
+            id_exec, "sme-apps", validacoes, None
+        )
+        texto = "\n".join(linhas)
+        assert "111" in texto
+        assert "Teste" in texto
+        assert "✅" in texto
+
+    def test_sem_usuarios_retorna_vazio(self) -> None:
+        import uuid
+
+        linhas = _linhas_amostra_por_fonte(str(uuid.uuid4()), "r", {}, None)
+        assert linhas == []

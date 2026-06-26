@@ -145,8 +145,17 @@ class Command(BaseCommand):
             f" (id={kc_user_id})"
         )
 
-        self.stdout.write("Resetando senha...")
+        self.stdout.write("Preparando conta para login...")
         try:
+            update_payload: dict[str, Any] = {
+                "requiredActions": [],
+                "emailVerified": True,
+            }
+            if not kc_user.get("email"):
+                fallback_email = f"{username}@validacao.local"
+                update_payload["email"] = fallback_email
+                self.stdout.write(f"  Email ausente — usando {fallback_email}")
+            _com_reintento(admin.update_user, kc_user_id, update_payload)
             _com_reintento(
                 admin.set_user_password,
                 kc_user_id,

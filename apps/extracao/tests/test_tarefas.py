@@ -1227,3 +1227,45 @@ class TestBuscarDadosUsuarioCoresso:
             r = buscar_dados_usuario_coresso("inexistente")
 
         assert r is None
+
+    def test_complementa_email_do_se1426(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+        settings.SE1426_DB_SERVIDOR = "srv2"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr2"
+        settings.SE1426_DB_SENHA = "pwd2"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        rows_coresso = [
+            ("7777777", "", "Joao", "", 1, "g1", "Admin", 42, "SGP"),
+        ]
+        mock_cursor_coresso = MagicMock()
+        mock_cursor_coresso.fetchall.return_value = rows_coresso
+        mock_conn_coresso = MagicMock()
+        mock_conn_coresso.cursor.return_value = mock_cursor_coresso
+
+        mock_cursor_se = MagicMock()
+        mock_cursor_se.fetchone.return_value = (
+            "7777777",
+            "Joao Silva",
+            "11122233344",
+            "joao@sme.sp",
+        )
+        mock_conn_se = MagicMock()
+        mock_conn_se.cursor.return_value = mock_cursor_se
+
+        def connect_side(cs, **kw):
+            if "CoreSSO" in cs:
+                return mock_conn_coresso
+            return mock_conn_se
+
+        with patch("pyodbc.connect", side_effect=connect_side):
+            r = buscar_dados_usuario_coresso("7777777")
+
+        assert r is not None
+        assert r["email"] == "joao@sme.sp"
+        assert r["cpf"] == "11122233344"

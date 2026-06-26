@@ -952,9 +952,19 @@ def buscar_dados_usuario_coresso(
         rows = cursor.fetchall()
         if not rows:
             return None
-        return _montar_resultado_usuario(rows)
+        resultado = _montar_resultado_usuario(rows)
     finally:
         conn.close()
+
+    if not resultado.get("email") or not resultado.get("cpf"):
+        complemento = buscar_complemento_se1426(resultado.get("login", ""))
+        if complemento:
+            if not resultado.get("email"):
+                resultado["email"] = complemento.get("email", "")
+            if not resultado.get("cpf"):
+                resultado["cpf"] = complemento.get("cpf", "")
+
+    return resultado
 
 
 def _montar_resultado_usuario(rows: list) -> dict:
@@ -982,6 +992,63 @@ def _montar_resultado_usuario(rows: list) -> dict:
             {"gru_id": str(r[5]), "nome": (r[6] or "").strip()}
         )
     return resultado
+
+
+def buscar_complemento_se1426(rf: str) -> dict | None:
+    """Busca dados complementares de um servidor no SE1426.
+
+    Args:
+        rf: Registro Funcional do servidor.
+
+    Returns:
+        Dict com ``email``, ``cpf``, ``nome`` ou None.
+    """
+    if not settings.SE1426_DB_SERVIDOR or not rf:
+        return None
+
+    import pyodbc
+
+    consulta = """
+        SELECT
+            s.cd_registro_funcional  AS rf,
+            s.nm_pessoa              AS nome,
+            s.cd_cpf_pessoa          AS cpf,
+            e.dc_dispositivo         AS email
+        FROM v_servidor_sme_serap s
+        LEFT JOIN v_servidor_cotic sc
+            ON sc.cd_registro_funcional
+               = s.cd_registro_funcional
+        LEFT JOIN v_servidor_email_cotic e
+            ON e.cd_servidor = sc.cd_servidor
+            AND e.dt_fim IS NULL
+        WHERE s.cd_registro_funcional = ?
+    """
+    try:
+        conn = pyodbc.connect(
+            _string_conexao_se1426(),
+            timeout=settings.SE1426_DB_TIMEOUT,
+        )
+        try:
+            cursor = conn.cursor()
+            cursor.execute(consulta, (rf.strip(),))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "rf": (row[0] or "").strip(),
+                "nome": (row[1] or "").strip(),
+                "cpf": str(row[2] or "").strip(),
+                "email": (row[3] or "").strip(),
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "SE1426: falha ao buscar RF '%s': %s",
+            rf,
+            exc,
+        )
+        return None
 
 
 def _slugificar_role(nome: str) -> str:
