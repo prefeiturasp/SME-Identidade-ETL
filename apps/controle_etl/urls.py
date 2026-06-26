@@ -127,6 +127,12 @@ urlpatterns = [
         views.sincronizar_usuario,
         name="etl-usuario-sincronizar",
     ),
+    # Concessão de acesso a sistema + roles
+    path(
+        "etl/usuario/conceder-acesso/",
+        views.conceder_acesso,
+        name="etl-usuario-conceder-acesso",
+    ),
     # Pipeline completo por sistema
     path(
         "etl/pipeline-sistema/",

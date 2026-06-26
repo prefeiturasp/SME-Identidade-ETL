@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rest_framework import status
@@ -350,3 +350,124 @@ class TestListarPerfis:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["coresso_gru_id"] == "g2"
+
+
+# ---------------------------------------------------------------------------
+# conceder_acesso (view)
+# ---------------------------------------------------------------------------
+
+_EXTRACAO = "apps.extracao.tasks"
+_ORQUESTRADOR = "apps.controle_etl.orquestrador_kc"
+
+
+@pytest.mark.django_db
+class TestConcederAcessoView:
+    URL = "/identidade-etl/api/v1/etl/usuario/conceder-acesso/"
+
+    def test_campos_obrigatorios(self, cliente: APIClient) -> None:
+        resp = cliente.post(self.URL, {}, format="json")
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_usuario_nao_encontrado(self, cliente: APIClient) -> None:
+        with patch(
+            f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+            return_value=None,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "0000000",
+                    "sistema": 1,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_sucesso(self, cliente: APIClient) -> None:
+        resultado = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "username": "7777777",
+            "sistema": "Teste",
+            "roles_atribuidos": ["Admin"],
+            "roles_nao_encontrados": [],
+            "erros": 0,
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value={
+                    "login": "7777777",
+                    "cpf": "",
+                    "nome": "Teste",
+                    "email": "",
+                    "situacao": "ativo",
+                    "sistemas": {},
+                },
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.conceder_acesso_kc",
+                return_value=resultado,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 1,
+                    "roles": ["Admin"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["acao"] == "criado"
+
+    def test_erro_coresso_retorna_502(self, cliente: APIClient) -> None:
+        with patch(
+            f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+            side_effect=Exception("timeout"),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 1,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+    def test_erro_keycloak_retorna_502(self, cliente: APIClient) -> None:
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value={
+                    "login": "7777777",
+                    "cpf": "",
+                    "nome": "Teste",
+                    "email": "",
+                    "situacao": "ativo",
+                    "sistemas": {},
+                },
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                side_effect=Exception("kc down"),
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 1,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY

@@ -183,6 +183,130 @@ class RastreioTentativaSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class SincronizarUsuarioSerializer(serializers.Serializer):
+    """Valida payload de sincronização de usuário."""
+
+    identificador = serializers.CharField(
+        help_text="RF, CPF ou email do usuário."
+    )
+    realm = serializers.CharField(
+        default="sme-apps",
+        required=False,
+        help_text="Realm Keycloak. Padrão: sme-apps.",
+    )
+
+
+class ConcederAcessoSerializer(serializers.Serializer):
+    """Valida payload de concessão de acesso a sistema."""
+
+    identificador = serializers.CharField(
+        help_text="RF, CPF ou email do usuário."
+    )
+    sistema = serializers.IntegerField(
+        help_text="coresso_sis_id do sistema alvo."
+    )
+    roles = serializers.ListField(
+        child=serializers.CharField(),
+        min_length=1,
+        help_text="Nomes dos roles/perfis a conceder.",
+    )
+    realm = serializers.CharField(default="sme-apps", required=False)
+
+
+class ProvisionarSistemasSerializer(serializers.Serializer):
+    """Valida payload de provisionamento de sistemas."""
+
+    realm = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Realm Keycloak.",
+    )
+    sigla = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Filtrar por sigla do sistema.",
+    )
+    coresso_sis_id = serializers.IntegerField(
+        required=False,
+        help_text="Filtrar por coresso_sis_id.",
+    )
+
+
+class ProvisionarPerfisSerializer(serializers.Serializer):
+    """Valida payload de provisionamento de perfis."""
+
+    realm = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Realm Keycloak.",
+    )
+    coresso_sis_id = serializers.IntegerField(
+        required=False,
+        help_text="Filtrar por coresso_sis_id.",
+    )
+    coresso_gru_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Filtrar por coresso_gru_id.",
+    )
+
+
+class ExtrairVinculosSerializer(serializers.Serializer):
+    """Valida payload de extração de vínculos."""
+
+    coresso_sis_id = serializers.IntegerField(
+        required=False,
+        help_text="Filtrar por coresso_sis_id.",
+    )
+    coresso_gru_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Filtrar por coresso_gru_id.",
+    )
+
+
+class ProvisionarVinculosSerializer(serializers.Serializer):
+    """Valida payload de provisionamento de vínculos."""
+
+    realm = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Realm Keycloak.",
+    )
+    coresso_sis_id = serializers.IntegerField(
+        required=False,
+        help_text="Filtrar por coresso_sis_id.",
+    )
+    coresso_gru_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Filtrar por coresso_gru_id.",
+    )
+
+
+class PipelineSistemaSerializer(serializers.Serializer):
+    """Valida payload do pipeline completo por sistema."""
+
+    coresso_sis_id = serializers.IntegerField(
+        help_text="ID do sistema no CoreSSO (obrigatório)."
+    )
+    coresso_gru_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Filtrar por grupo específico.",
+    )
+    realm = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Realm Keycloak.",
+    )
+    forcar_atualizacao = serializers.BooleanField(
+        default=False,
+        required=False,
+        help_text="Forçar atualização mesmo sem mudanças.",
+    )
+
+
 class HealthStatusSerializer(serializers.Serializer):
     """Serializa o status de saúde do serviço."""
 
