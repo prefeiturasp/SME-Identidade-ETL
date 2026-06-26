@@ -105,4 +105,32 @@ urlpatterns = [
         views.listar_perfis,
         name="etl-perfis",
     ),
+    # Vínculos usuário↔grupo → client roles Keycloak
+    path(
+        "etl/vinculos/extrair/",
+        views.extrair_vinculos,
+        name="etl-vinculos-extrair",
+    ),
+    path(
+        "etl/vinculos/provisionar/",
+        views.provisionar_vinculos,
+        name="etl-vinculos-provisionar",
+    ),
+    path(
+        "etl/vinculos/",
+        views.listar_vinculos,
+        name="etl-vinculos",
+    ),
+    # Sincronização individual de usuário
+    path(
+        "etl/usuario/sincronizar/",
+        views.sincronizar_usuario,
+        name="etl-usuario-sincronizar",
+    ),
+    # Pipeline completo por sistema
+    path(
+        "etl/pipeline-sistema/",
+        views.executar_pipeline_sistema,
+        name="etl-pipeline-sistema",
+    ),
 ]

@@ -2,11 +2,11 @@
 
 import contextlib
 import logging
+from typing import Any
 
 from django.db.models import Count, OuterRef, QuerySet, Subquery, Sum
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
-from django.urls import reverse
 from django.utils import timezone
 from django.views import View
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -642,9 +642,12 @@ def provisionar_sistemas(request: Request) -> Response:
     corpo = request.data or {}
     realm = corpo.get("realm") or None
     sigla = corpo.get("sigla")
+    sis_id = corpo.get("coresso_sis_id")
 
     qs = SistemaStaging.objects.filter(situacao=1)
-    if sigla:
+    if sis_id:
+        qs = qs.filter(coresso_sis_id=int(sis_id))
+    elif sigla:
         qs = qs.filter(sigla=sigla)
 
     admin = obter_admin_keycloak(realm=realm)
@@ -731,10 +734,13 @@ def provisionar_perfis(request: Request) -> Response:
     corpo = request.data or {}
     realm = corpo.get("realm") or None
     sis_id = corpo.get("coresso_sis_id")
+    gru_id = corpo.get("coresso_gru_id")
 
     qs = PerfilCoressoStaging.objects.select_related("sistema").all()
     if sis_id:
         qs = qs.filter(coresso_sis_id=int(sis_id))
+    if gru_id:
+        qs = qs.filter(coresso_gru_id=str(gru_id))
 
     admin = obter_admin_keycloak(realm=realm)
     criados = atualizados = ignorados = erros = 0
@@ -805,28 +811,289 @@ def listar_perfis(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard e Kanban (HTML)
+# Vínculos usuário↔grupo CoreSSO → client roles Keycloak
 # ---------------------------------------------------------------------------
 
 
-class DispararExecucaoDashboardView(View):
-    """Dispara uma execução a partir do formulário do dashboard HTML.
+@api_view(["POST"])
+def extrair_vinculos(request: Request) -> Response:
+    """Extrai vínculos usuário↔grupo do CoreSSO (contagem)."""
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        extrair_vinculos_usuario_grupo_coresso,
+    )
 
-    Diferente de `ExecucoesView.post` (API autenticada por API Key), este
-    endpoint é acionado pelo próprio formulário renderizado em
-    `/dashboard/` e redireciona de volta para a página após o disparo.
+    corpo = request.data or {}
+    sis_id = corpo.get("coresso_sis_id")
+    gru_id = corpo.get("coresso_gru_id")
+
+    try:
+        total = sum(
+            1
+            for _ in extrair_vinculos_usuario_grupo_coresso(
+                sis_id=int(sis_id) if sis_id else None,
+                gru_id=gru_id or None,
+            )
+        )
+    except Exception as exc:
+        logger.exception("Falha na extração de vínculos: %s", exc)
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    return Response({"total_extraido": total})
+
+
+@api_view(["POST"])
+def provisionar_vinculos(request: Request) -> Response:
+    """Atribui client roles aos usuários no Keycloak."""
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        atribuir_client_roles_usuario_kc,
+        obter_admin_keycloak,
+    )
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        extrair_vinculos_usuario_grupo_coresso,
+    )
+
+    corpo = request.data or {}
+    realm = corpo.get("realm") or None
+    sis_id = corpo.get("coresso_sis_id")
+    gru_id = corpo.get("coresso_gru_id")
+
+    try:
+        admin = obter_admin_keycloak(realm=realm)
+        vinculos = extrair_vinculos_usuario_grupo_coresso(
+            sis_id=int(sis_id) if sis_id else None,
+            gru_id=gru_id or None,
+        )
+        resultado = atribuir_client_roles_usuario_kc(admin, vinculos)
+    except Exception as exc:
+        logger.exception("Falha no provisionamento de vínculos: %s", exc)
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    return Response(resultado)
+
+
+@api_view(["GET"])
+def listar_vinculos(request: Request) -> Response:
+    """Resumo de perfis provisionados por sistema."""
+    from apps.staging.models import (  # noqa: PLC0415
+        PerfilCoressoStaging,
+        SistemaStaging,
+    )
+
+    sistemas = SistemaStaging.objects.filter(situacao=1).order_by(
+        "coresso_sis_id"
+    )
+    dados = []
+    for s in sistemas:
+        perfis = PerfilCoressoStaging.objects.filter(
+            coresso_sis_id=s.coresso_sis_id
+        )
+        dados.append(
+            {
+                "coresso_sis_id": s.coresso_sis_id,
+                "nome": s.nome,
+                "kc_client_id": s.kc_client_id,
+                "total_perfis": perfis.count(),
+                "provisionados": perfis.filter(
+                    situacao_provisionamento="provisionado"
+                ).count(),
+            }
+        )
+    return Response(dados)
+
+
+# ---------------------------------------------------------------------------
+# Sincronização individual de usuário
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+def sincronizar_usuario(request: Request) -> Response:
+    """Sincroniza um usuário no Keycloak com todos os seus roles.
+
+    Busca o usuário no CoreSSO por RF, CPF ou email,
+    cria/atualiza no Keycloak e atribui todos os client
+    roles dos sistemas aos quais pertence.
+
+    Body (JSON):
+        identificador: str (RF, CPF ou email) — obrigatório
+        realm: str (opcional, padrão: sme-apps)
     """
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        obter_admin_keycloak,
+        sincronizar_usuario_kc,
+    )
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        buscar_dados_usuario_coresso,
+    )
 
-    def post(self, request: HttpRequest) -> HttpResponseRedirect:
-        """Cria e dispara a execução, redirecionando para o dashboard."""
-        fonte = request.POST.get("fonte", "todos")
-        if fonte not in _FONTES_VALIDAS:
-            fonte = "todos"
+    corpo = request.data or {}
+    identificador = corpo.get("identificador", "").strip()
+    realm = corpo.get("realm") or "sme-apps"
 
-        usuario = getattr(request, "user", None)
-        disparado_por = getattr(usuario, "username", None) or "dashboard"
-        _disparar_execucao(fonte=fonte, disparado_por=disparado_por)
-        return HttpResponseRedirect(reverse("dashboard"))
+    if not identificador:
+        return Response(
+            {"detalhe": "identificador é obrigatório" " (RF, CPF ou email)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        dados = buscar_dados_usuario_coresso(identificador)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao buscar usuário %s: %s",
+            identificador,
+            exc,
+        )
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if not dados:
+        return Response(
+            {
+                "detalhe": (
+                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
+                )
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        admin = obter_admin_keycloak(realm=realm)
+        resultado = sincronizar_usuario_kc(admin, dados, realm=realm)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao sincronizar %s: %s",
+            identificador,
+            exc,
+        )
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(resultado)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline completo por sistema (extração + clients + roles + vínculos)
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+def executar_pipeline_sistema(request: Request) -> Response:
+    """Executa o pipeline completo para um sistema e/ou grupo.
+
+    Etapas: extrair sistemas → provisionar client →
+    extrair perfis → provisionar roles → atribuir vínculos.
+
+    Body (JSON):
+        coresso_sis_id: int (obrigatório)
+        coresso_gru_id: str (opcional)
+        realm: str (opcional, padrão: settings)
+        forcar_atualizacao: bool (opcional, padrão: false)
+    """
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        atribuir_client_roles_usuario_kc,
+        obter_admin_keycloak,
+        provisionar_client_kc,
+        provisionar_role_client_kc,
+    )
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        extrair_perfis_coresso,
+        extrair_sistemas_coresso,
+        extrair_vinculos_usuario_grupo_coresso,
+    )
+    from apps.staging.models import (  # noqa: PLC0415
+        PerfilCoressoStaging,
+        SistemaStaging,
+    )
+
+    corpo = request.data or {}
+    sis_id = corpo.get("coresso_sis_id")
+    gru_id = corpo.get("coresso_gru_id")
+    realm = corpo.get("realm") or None
+    forcar = bool(corpo.get("forcar_atualizacao", False))
+
+    if not sis_id:
+        return Response(
+            {"detalhe": "coresso_sis_id é obrigatório."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    sis_id_int = int(sis_id)
+    resultado: dict[str, Any] = {
+        "coresso_sis_id": sis_id_int,
+        "forcar_atualizacao": forcar,
+    }
+    if gru_id:
+        resultado["coresso_gru_id"] = gru_id
+
+    try:
+        total_sistemas = extrair_sistemas_coresso()
+        resultado["sistemas_extraidos"] = total_sistemas
+
+        total_perfis = extrair_perfis_coresso()
+        resultado["perfis_extraidos"] = total_perfis
+
+        admin = obter_admin_keycloak(realm=realm)
+
+        sistema = SistemaStaging.objects.filter(
+            coresso_sis_id=sis_id_int, situacao=1
+        ).first()
+        if sistema:
+            r_cli = provisionar_client_kc(admin, sistema, realm=realm)
+            resultado["client"] = r_cli
+        else:
+            resultado["client"] = {
+                "acao": "ignorado",
+                "motivo": "sistema não encontrado" " ou inativo",
+            }
+
+        qs_perfis = PerfilCoressoStaging.objects.select_related(
+            "sistema"
+        ).filter(coresso_sis_id=sis_id_int)
+        if gru_id:
+            qs_perfis = qs_perfis.filter(coresso_gru_id=str(gru_id))
+
+        roles_criados = roles_erros = 0
+        for perfil in qs_perfis.iterator():
+            try:
+                provisionar_role_client_kc(admin, perfil)
+                roles_criados += 1
+            except Exception:
+                roles_erros += 1
+        resultado["roles"] = {
+            "provisionados": roles_criados,
+            "erros": roles_erros,
+        }
+
+        vinculos = extrair_vinculos_usuario_grupo_coresso(
+            sis_id=sis_id_int,
+            gru_id=gru_id or None,
+        )
+        r_vinc = atribuir_client_roles_usuario_kc(admin, vinculos)
+        resultado["vinculos"] = r_vinc
+
+    except Exception as exc:
+        logger.exception("Pipeline sistema %s falhou: %s", sis_id, exc)
+        resultado["erro"] = str(exc)
+        return Response(
+            resultado,
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(resultado)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard e Kanban (HTML)
+# ---------------------------------------------------------------------------
 
 
 class DashboardView(View):

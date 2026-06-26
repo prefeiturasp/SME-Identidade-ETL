@@ -1,11 +1,12 @@
 DC           = docker compose -f docker-compose-dev.yml
 RUN          = $(DC) run --rm etl_api
-PYTEST_ARGS ?= --cov=apps --cov-report=term-missing --cov-fail-under=80
+PYTEST_ARGS ?= --cov=apps --cov-report=term-missing --cov-fail-under=90
 
 .PHONY: help build up down logs shell migrate \
         test test-controle test-extracao \
         lint coverage schema docs docs-clean \
-        carregar-perfis validar-e2e
+        carregar-perfis validar-e2e validar-login \
+        sincronizar-usuario
 
 help:
 	@echo ""
@@ -38,10 +39,21 @@ help:
 	@echo "    make carregar-perfis SIS_ID=42 REALM=sme-hom"
 	@echo ""
 	@echo "  Validação E2E:"
-	@echo "    make validar-e2e               — extração→resolução→Keycloak"
-	@echo "                                      (15 registros/fonte) + validacao.md"
-	@echo "    make validar-e2e LOTE_MAXIMO=5  — reduz o volume de teste"
-	@echo "    make validar-e2e REALM=sme-hom  — outro realm Keycloak"
+	@echo "    make validar-e2e                         — pipeline completo (15 reg/fonte)"
+	@echo "    make validar-e2e LOTE_MAXIMO=5            — reduz o volume de teste"
+	@echo "    make validar-e2e REALM=sme-hom            — outro realm Keycloak"
+	@echo "    make validar-e2e SIS_ID=1008              — filtra por sistema (Auto Serviço)"
+	@echo "    make validar-e2e SIS_ID=1008 GRU_ID=abc   — filtra por sistema e grupo"
+	@echo ""
+	@echo "  Sincronizar Usuário:"
+	@echo "    make sincronizar-usuario USER=6913261      — por RF"
+	@echo "    make sincronizar-usuario USER=11122233344  — por CPF"
+	@echo "    make sincronizar-usuario USER=a@sme.sp     — por email"
+	@echo ""
+	@echo "  Validação de Login:"
+	@echo "    make validar-login USER=11122233344        — testa login por CPF"
+	@echo "    make validar-login USER=6913261            — testa login por RF"
+	@echo "    make validar-login USER=6913261 SENHA=xyz  — senha customizada"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -129,11 +141,42 @@ carregar-perfis:
 
 # make validar-e2e
 # make validar-e2e LOTE_MAXIMO=5
+# make validar-e2e FONTE=coresso               — só CoreSSO
+# make validar-e2e FONTE=se1426                 — só SE1426
+# make validar-e2e FONTE=eol_alunos             — só EOL_DB
 # make validar-e2e REALM=sme-hom
+# make validar-e2e SIS_ID=1008                  — modo sistema
+# make validar-e2e SIS_ID=1008 FORCAR=true
 LOTE_MAXIMO ?= 15
+GRU_ID      ?=
+FORCAR      ?=
+FONTE       ?= todos
 
 validar-e2e:
 	$(RUN) python manage.py validar_e2e \
 		--lote-maximo $(LOTE_MAXIMO) \
+		--fonte $(FONTE) \
+		$(if $(REALM),--realm $(REALM)) \
+		$(if $(filter-out -,$(SIS_ID)),--sis-id $(SIS_ID)) \
+		$(if $(GRU_ID),--gru-id $(GRU_ID)) \
+		$(if $(FORCAR),--forcar-atualizacao)
+	@echo "Relatório salvo em validacao_e2e/"
+
+# make validar-login USER=11122233344
+# make validar-login USER=6913261 SENHA=minhasenha
+# make validar-login USER=6913261 REALM=sme-hom
+SENHA ?=
+
+validar-login:
+	$(RUN) python manage.py validar_login $(USER) \
+		$(if $(SENHA),--senha $(SENHA)) \
 		$(if $(REALM),--realm $(REALM))
-	@echo "Relatório gerado em validacao.md"
+	@echo "Resultado salvo em validacao_login/"
+
+# make sincronizar-usuario USER=6913261
+# make sincronizar-usuario USER=11122233344
+# make sincronizar-usuario USER=angela@sme.sp REALM=sme-hom
+sincronizar-usuario:
+	$(RUN) python manage.py sincronizar_usuario $(USER) \
+		$(if $(REALM),--realm $(REALM))
+	@echo "Resultado salvo em validacao_e2e/"

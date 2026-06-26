@@ -314,29 +314,7 @@
   <div class="page-title"><i class="bi bi-activity me-2"></i>Painel de Execuções ETL — Identidade</div>
   <div class="page-sub">Monitoramento em tempo real · últimas {{ execucoes|length }} execuções</div>
 
-  <!-- Disparar nova execução -->
-  <div class="section-title">Disparar execução</div>
-  <div class="run-card">
-    <form method="post" action="{% url 'dashboard-executar' %}" class="row g-2 align-items-end" id="form-disparar">
-      {% csrf_token %}
-      <div class="col-12 col-sm-6 col-md-3">
-        <label for="id_fonte_disparo" class="form-label mb-1" style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px">Fonte</label>
-        <select id="id_fonte_disparo" name="fonte" class="form-select form-select-sm">
-          {% for f in fontes %}
-          <option value="{{ f }}">{{ f }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="col-auto">
-        <button type="submit" class="btn btn-sm btn-success" style="border-radius:8px;font-size:.8rem">
-          <i class="bi bi-play-fill me-1"></i>Executar
-        </button>
-      </div>
-      <div class="col-auto" style="font-size:.72rem;color:#64748b">
-        "todos" executa o pipeline completo (SE1426 + CoreSSO + EOL Alunos).
-      </div>
-    </form>
-  </div>
+  <!-- Execuções são disparadas via API (POST /api/v1/etl/execucoes/) -->
 
   <!-- Cards por fonte -->
   <div class="section-title">Status atual por fonte</div>

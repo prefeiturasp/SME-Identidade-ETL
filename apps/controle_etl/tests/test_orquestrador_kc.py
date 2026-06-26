@@ -9,18 +9,24 @@ import pytest
 
 from apps.controle_etl.orquestrador_kc import (
     _atribuir_roles_e_grupos,
+    _atribuir_roles_sistema,
     _com_reintento,
     _derivar_grupos,
     _derivar_roles_realm,
     _excecoes_retriaveis,
     _inferir_tipo_usuario,
     _localizar_usuario_kc,
+    _resolver_kc_user_id,
+    _resolver_role_info,
     _resolver_username,
     _slugificar_client_id,
+    _upsert_usuario_kc,
+    atribuir_client_roles_usuario_kc,
     calcular_hash_conteudo,
     construir_payload_kc,
     construir_payload_token_ms,
     provisionar_usuarios_kc_em_paralelo,
+    sincronizar_usuario_kc,
 )
 
 # ---------------------------------------------------------------------------
@@ -1018,3 +1024,424 @@ class TestObterAdminKeycloak:
 
         _, kwargs = mock_admin_cls.call_args
         assert kwargs["realm_name"] == "realm-padrao"
+
+
+# ------------------------------------------------------------------
+# _resolver_role_info
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResolverRoleInfo:
+    def test_retorna_none_quando_perfil_nao_existe(self) -> None:
+        cache: dict = {}
+        resultado = _resolver_role_info("inexistente", cache)
+        assert resultado is None
+        assert cache["inexistente"] is None
+
+    def test_retorna_tupla_quando_perfil_provisionado(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=42,
+            nome="Teste",
+            kc_client_uuid="uuid-client-42",
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-abc",
+            coresso_sis_id=42,
+            sistema=sistema,
+            nome="Admin",
+            kc_role_nome="Admin",
+            kc_role_id="uuid-role-abc",
+        )
+
+        cache: dict = {}
+        resultado = _resolver_role_info("gru-abc", cache)
+        assert resultado is not None
+        client_uuid, role_payload = resultado
+        assert client_uuid == "uuid-client-42"
+        assert role_payload["id"] == "uuid-role-abc"
+        assert role_payload["name"] == "Admin"
+
+    def test_usa_cache_na_segunda_chamada(self) -> None:
+        cache: dict = {"gru-x": ("uuid-c", {"id": "r", "name": "N"})}
+        resultado = _resolver_role_info("gru-x", cache)
+        assert resultado == ("uuid-c", {"id": "r", "name": "N"})
+
+
+# ------------------------------------------------------------------
+# _resolver_kc_user_id
+# ------------------------------------------------------------------
+
+
+class TestResolverKcUserId:
+    def test_retorna_id_quando_usuario_existe(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-123"}]
+        cache: dict = {}
+        resultado = _resolver_kc_user_id(admin, "12345678901", cache)
+        assert resultado == "kc-123"
+        assert cache["12345678901"] == "kc-123"
+
+    def test_retorna_none_quando_nao_encontra(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        cache: dict = {}
+        resultado = _resolver_kc_user_id(admin, "inexistente", cache)
+        assert resultado is None
+
+    def test_retorna_none_quando_excecao(self) -> None:
+        admin = MagicMock()
+        admin.get_users.side_effect = ConnectionError("falha")
+        cache: dict = {}
+        resultado = _resolver_kc_user_id(admin, "user1", cache)
+        assert resultado is None
+        assert cache["user1"] is None
+
+    def test_usa_cache_na_segunda_chamada(self) -> None:
+        admin = MagicMock()
+        cache: dict = {"user1": "kc-cached"}
+        resultado = _resolver_kc_user_id(admin, "user1", cache)
+        assert resultado == "kc-cached"
+        admin.get_users.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# atribuir_client_roles_usuario_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestAtribuirClientRolesUsuarioKc:
+    def _criar_sistema_e_perfil(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=1008,
+            nome="Auto Servico",
+            kc_client_uuid="uuid-client-1008",
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="gru-100",
+            coresso_sis_id=1008,
+            sistema=sistema,
+            nome="COPED",
+            kc_role_nome="COPED",
+            kc_role_id="uuid-role-100",
+        )
+
+    def test_atribui_role_com_sucesso(self) -> None:
+        self._criar_sistema_e_perfil()
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-user-1"}]
+
+        vinculos = [
+            {
+                "login": "6913261",
+                "cpf": "11972201867",
+                "gru_id": "gru-100",
+                "gru_nome": "COPED",
+                "sis_id": 1008,
+            },
+        ]
+        resultado = atribuir_client_roles_usuario_kc(admin, vinculos)
+
+        assert resultado["atribuidos"] == 1
+        assert resultado["erros"] == 0
+        admin.assign_client_role.assert_called_once_with(
+            "kc-user-1",
+            "uuid-client-1008",
+            [{"id": "uuid-role-100", "name": "COPED"}],
+        )
+
+    def test_ignora_quando_perfil_nao_provisionado(self) -> None:
+        admin = MagicMock()
+        vinculos = [
+            {
+                "login": "user1",
+                "cpf": "",
+                "gru_id": "gru-inexistente",
+                "gru_nome": "X",
+                "sis_id": 999,
+            },
+        ]
+        resultado = atribuir_client_roles_usuario_kc(admin, vinculos)
+        assert resultado["ignorados"] == 1
+        assert resultado["atribuidos"] == 0
+
+    def test_ignora_quando_usuario_nao_existe_no_kc(self) -> None:
+        self._criar_sistema_e_perfil()
+        admin = MagicMock()
+        admin.get_users.return_value = []
+
+        vinculos = [
+            {
+                "login": "fantasma",
+                "cpf": "",
+                "gru_id": "gru-100",
+                "gru_nome": "COPED",
+                "sis_id": 1008,
+            },
+        ]
+        resultado = atribuir_client_roles_usuario_kc(admin, vinculos)
+        assert resultado["ignorados"] == 1
+
+    def test_conta_erros_quando_assign_falha(self) -> None:
+        self._criar_sistema_e_perfil()
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-u"}]
+        admin.assign_client_role.side_effect = Exception("boom")
+
+        vinculos = [
+            {
+                "login": "user1",
+                "cpf": "11122233344",
+                "gru_id": "gru-100",
+                "gru_nome": "COPED",
+                "sis_id": 1008,
+            },
+        ]
+        resultado = atribuir_client_roles_usuario_kc(admin, vinculos)
+        assert resultado["erros"] == 1
+        assert resultado["atribuidos"] == 0
+
+    def test_usa_cpf_como_username_prioritario(self) -> None:
+        self._criar_sistema_e_perfil()
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-cpf"}]
+
+        vinculos = [
+            {
+                "login": "rf123",
+                "cpf": "11122233344",
+                "gru_id": "gru-100",
+                "gru_nome": "COPED",
+                "sis_id": 1008,
+            },
+        ]
+        atribuir_client_roles_usuario_kc(admin, vinculos)
+        query_chamada = admin.get_users.call_args[0][0]
+        assert query_chamada["username"] == "11122233344"
+
+    def test_lista_vazia_retorna_zeros(self) -> None:
+        admin = MagicMock()
+        resultado = atribuir_client_roles_usuario_kc(admin, [])
+        assert resultado == {
+            "atribuidos": 0,
+            "ignorados": 0,
+            "erros": 0,
+        }
+
+
+# ------------------------------------------------------------------
+# _upsert_usuario_kc
+# ------------------------------------------------------------------
+
+
+class TestUpsertUsuarioKc:
+    def test_atualiza_quando_existe(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-1"}]
+        payload = {"username": "12345678901"}
+        kc_id, acao = _upsert_usuario_kc(
+            admin, payload, "7777777", "12345678901"
+        )
+        assert kc_id == "kc-1"
+        assert acao == "atualizado"
+        admin.update_user.assert_called_once()
+
+    def test_cria_quando_nao_existe(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new"
+        payload = {"username": "user1"}
+        kc_id, acao = _upsert_usuario_kc(admin, payload, "user1", "user1")
+        assert kc_id == "kc-new"
+        assert acao == "criado"
+        admin.set_user_password.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# _atribuir_roles_sistema
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestAtribuirRolesSistema:
+    def test_sem_client_retorna_status(self) -> None:
+        admin = MagicMock()
+        sis_data = {"sis_id": 999, "nome": "X", "grupos": []}
+        r = _atribuir_roles_sistema(admin, "kc-1", sis_data)
+        assert r["status"] == "sem client no KC"
+
+    def test_atribui_role(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=50,
+            nome="Teste",
+            kc_client_uuid="uuid-cli",
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g-50",
+            coresso_sis_id=50,
+            sistema=sistema,
+            nome="Admin",
+            kc_role_nome="Admin",
+            kc_role_id="uuid-role",
+        )
+        admin = MagicMock()
+        sis_data = {
+            "sis_id": 50,
+            "nome": "Teste",
+            "grupos": [{"gru_id": "g-50", "nome": "Admin"}],
+        }
+        r = _atribuir_roles_sistema(admin, "kc-1", sis_data)
+        assert r["roles"] == ["Admin"]
+        admin.assign_client_role.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# sincronizar_usuario_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestSincronizarUsuarioKc:
+    def test_cria_e_atribui_roles(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=60,
+            nome="SisSync",
+            kc_client_uuid="uuid-60",
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g-60",
+            coresso_sis_id=60,
+            sistema=sistema,
+            nome="Editor",
+            kc_role_nome="Editor",
+            kc_role_id="uuid-r60",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new-60"
+
+        dados = {
+            "login": "1234567",
+            "cpf": "11122233344",
+            "nome": "Joao Silva",
+            "email": "joao@sme.sp",
+            "situacao": "ativo",
+            "sistemas": {
+                60: {
+                    "sis_id": 60,
+                    "nome": "SisSync",
+                    "grupos": [
+                        {"gru_id": "g-60", "nome": "Editor"},
+                    ],
+                },
+            },
+        }
+        r = sincronizar_usuario_kc(admin, dados)
+        assert r["acao"] == "criado"
+        assert r["roles_atribuidos"] == 1
+        assert r["sistemas"][0]["roles"] == ["Editor"]
+
+    def test_erro_quando_sem_id(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = None
+        dados = {
+            "login": "x",
+            "cpf": "",
+            "nome": "X",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = sincronizar_usuario_kc(admin, dados)
+        assert r["acao"] == "erro"
+
+
+# ------------------------------------------------------------------
+# _resolver_conflito_email
+# ------------------------------------------------------------------
+
+
+class TestResolverConflitoEmail:
+    def test_mesmo_usuario_limpa_duplicado(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {
+                "id": "kc-old",
+                "username": "old",
+                "attributes": {"rf": ["111"]},
+            }
+        ]
+        payload = {
+            "username": "111",
+            "email": "a@x",
+            "attributes": {"rf": ["111"]},
+        }
+        result = _resolver_conflito_email(admin, payload, "111")
+        assert result["email"] == "a@x"
+        admin.update_user.assert_called_once_with("kc-old", {"email": ""})
+
+    def test_outro_usuario_remove_email(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        admin.get_users.return_value = [
+            {
+                "id": "kc-other",
+                "username": "other",
+                "attributes": {"rf": ["999"]},
+            }
+        ]
+        payload = {
+            "username": "111",
+            "email": "a@x",
+            "attributes": {"rf": ["111"]},
+        }
+        result = _resolver_conflito_email(admin, payload, "111")
+        assert "email" not in result
+
+    def test_sem_email_retorna_payload(self) -> None:
+        from apps.controle_etl.orquestrador_kc import _resolver_conflito_email
+
+        admin = MagicMock()
+        payload = {"username": "u", "email": ""}
+        result = _resolver_conflito_email(admin, payload, "u")
+        assert result == payload
+
+
+class TestUpsertComConflito:
+    def test_update_com_conflito_email(self) -> None:
+        admin = MagicMock()
+        admin.get_users.side_effect = [
+            [{"id": "kc-1"}],  # busca por username
+            [
+                {
+                    "id": "kc-other",
+                    "username": "other",
+                    "attributes": {"rf": ["999"]},
+                }
+            ],  # busca por email
+        ]
+        admin.update_user.side_effect = [
+            Exception("409 email"),
+            None,  # retry sem email
+        ]
+        payload = {
+            "username": "111",
+            "email": "dup@x",
+            "attributes": {"rf": ["111"]},
+        }
+        kc_id, acao = _upsert_usuario_kc(admin, payload, "111", "111")
+        assert kc_id == "kc-1"
+        assert acao == "atualizado"
