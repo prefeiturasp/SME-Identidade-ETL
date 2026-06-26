@@ -122,14 +122,14 @@ class Command(BaseCommand):
             if roles_ok:
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f"  Roles atribuídos:" f" {', '.join(roles_ok)}"
+                        f"  Roles atribuídos: {', '.join(roles_ok)}"
                     )
                 )
             nao_enc = resultado.get("roles_nao_encontrados", [])
             if nao_enc:
                 self.stdout.write(
                     self.style.WARNING(
-                        f"  Roles não encontrados:" f" {', '.join(nao_enc)}"
+                        f"  Roles não encontrados: {', '.join(nao_enc)}"
                     )
                 )
             if resultado.get("erros"):
