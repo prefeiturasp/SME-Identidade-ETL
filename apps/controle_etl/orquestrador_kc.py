@@ -1110,23 +1110,13 @@ def _atribuir_roles_sistema(
     }
 
 
-def sincronizar_usuario_kc(
-    admin: Any,
-    dados_coresso: dict,
-    *,
-    realm: str = "sme-apps",
-) -> dict[str, Any]:
-    """Sincroniza um usuário no Keycloak com todos os seus roles.
-
-    Args:
-        admin: Cliente KeycloakAdmin autenticado.
-        dados_coresso: Resultado de
-            ``buscar_dados_usuario_coresso``.
-        realm: Realm de destino.
+def _upsert_coresso_kc(
+    admin: Any, dados_coresso: dict
+) -> tuple[str | None, str, str, str]:
+    """Monta payload a partir de dados CoreSSO e faz upsert no KC.
 
     Returns:
-        Dict com ``acao``, ``kc_user_id``, ``roles_atribuidos``
-        e ``sistemas``.
+        (kc_user_id, acao, username, nome)
     """
     login = dados_coresso["login"]
     cpf = dados_coresso.get("cpf", "").strip()
@@ -1150,6 +1140,28 @@ def sincronizar_usuario_kc(
     }
 
     kc_user_id, acao = _upsert_usuario_kc(admin, payload, login, username)
+    return kc_user_id, acao, username, nome
+
+
+def sincronizar_usuario_kc(
+    admin: Any,
+    dados_coresso: dict,
+    *,
+    realm: str = "sme-apps",
+) -> dict[str, Any]:
+    """Sincroniza um usuário no Keycloak com todos os seus roles.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        dados_coresso: Resultado de
+            ``buscar_dados_usuario_coresso``.
+        realm: Realm de destino.
+
+    Returns:
+        Dict com ``acao``, ``kc_user_id``, ``roles_atribuidos``
+        e ``sistemas``.
+    """
+    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
     if not kc_user_id:
         return {"acao": "erro", "motivo": "sem kc_user_id"}
 
@@ -1208,28 +1220,7 @@ def conceder_acesso_kc(
         SistemaStaging,
     )
 
-    login = dados_coresso["login"]
-    cpf = dados_coresso.get("cpf", "").strip()
-    nome = dados_coresso.get("nome", "").strip()
-    email = dados_coresso.get("email", "").strip()
-    partes = nome.split()
-
-    username = login if login else cpf
-    payload = {
-        "username": username,
-        "email": email,
-        "firstName": partes[0] if partes else "",
-        "lastName": (" ".join(partes[1:]) if len(partes) > 1 else ""),
-        "enabled": dados_coresso["situacao"] == "ativo",
-        "emailVerified": False,
-        "attributes": {
-            "cpf": [cpf],
-            "rf": [login],
-            "fonte": ["coresso"],
-        },
-    }
-
-    kc_user_id, acao = _upsert_usuario_kc(admin, payload, login, username)
+    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
     if not kc_user_id:
         return {"acao": "erro", "motivo": "sem kc_user_id"}
 

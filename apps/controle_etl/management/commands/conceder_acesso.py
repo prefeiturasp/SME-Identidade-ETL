@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
-
-from django.core.management.base import BaseCommand
-from django.utils import timezone
 
 from apps.controle_etl.orquestrador_kc import (
     conceder_acesso_kc,
     obter_admin_keycloak,
 )
-from apps.extracao.tasks import buscar_dados_usuario_coresso
+
+from ._base import BaseUsuarioCommand
 
 
-class Command(BaseCommand):
+class Command(BaseUsuarioCommand):
     """Concede acesso a um sistema e roles no Keycloak."""
 
     help = (
@@ -27,11 +23,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: Any) -> None:
         """Define os argumentos do comando."""
-        parser.add_argument(
-            "identificador",
-            type=str,
-            help="RF, CPF ou email do usuário.",
-        )
+        self.add_arguments_base(parser)
         parser.add_argument(
             "--sistema",
             type=int,
@@ -44,21 +36,6 @@ class Command(BaseCommand):
             required=True,
             help="Nomes dos perfis/roles a conceder.",
         )
-        parser.add_argument(
-            "--realm",
-            type=str,
-            default="sme-apps",
-            help="Realm Keycloak. Padrão: sme-apps.",
-        )
-        parser.add_argument(
-            "--saida",
-            type=str,
-            default="",
-            help=(
-                "Caminho do JSON. Padrão:"
-                " validacao_e2e/{identificador}.json"
-            ),
-        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         """Executa a concessão de acesso."""
@@ -66,35 +43,13 @@ class Command(BaseCommand):
         sis_id = options["sistema"]
         nomes_roles = options["roles"]
         realm = options["realm"]
+        caminho = self.resolver_caminho(options, "acesso")
 
-        if options["saida"]:
-            caminho = Path(options["saida"])
-        else:
-            pasta = Path("validacao_e2e")
-            pasta.mkdir(exist_ok=True)
-            caminho = pasta / f"acesso_{identificador}.json"
-
-        self.stdout.write(f"Buscando '{identificador}' no CoreSSO...")
-        dados = buscar_dados_usuario_coresso(identificador)
+        dados = self.buscar_coresso(identificador, caminho)
         if not dados:
-            self.stdout.write(
-                self.style.ERROR("Usuário não encontrado no CoreSSO.")
-            )
-            self._salvar(
-                caminho,
-                {
-                    "identificador": identificador,
-                    "erro": "não encontrado no CoreSSO",
-                    "timestamp": timezone.now().isoformat(),
-                },
-            )
             return
 
-        self.stdout.write(
-            f"Encontrado: {dados['nome']}"
-            f" | RF={dados['login']}"
-            f" | CPF={dados['cpf'] or '—'}"
-        )
+        self.exibir_encontrado(dados)
 
         self.stdout.write(
             f"\nConcedendo acesso ao sistema {sis_id}"
@@ -108,52 +63,35 @@ class Command(BaseCommand):
         if resultado.get("erro"):
             self.stdout.write(self.style.ERROR(resultado["erro"]))
         else:
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"\n{resultado['acao'].upper()}"
-                    f" | username="
-                    f"{resultado.get('username')}"
-                    f" | sistema="
-                    f"{resultado.get('sistema')}"
-                    f" ({resultado.get('client_id')})"
-                )
-            )
-            roles_ok = resultado.get("roles_atribuidos", [])
-            if roles_ok:
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"  Roles atribuídos: {', '.join(roles_ok)}"
-                    )
-                )
-            nao_enc = resultado.get("roles_nao_encontrados", [])
-            if nao_enc:
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"  Roles não encontrados: {', '.join(nao_enc)}"
-                    )
-                )
-            if resultado.get("erros"):
-                self.stdout.write(
-                    self.style.ERROR(f"  Erros: {resultado['erros']}")
-                )
+            self._exibir_sucesso(resultado)
 
         self.stdout.write(f"\nKeycloak: {resultado.get('kc_url', '—')}")
+        self.salvar_resultado(caminho, resultado, dados)
 
-        resultado["coresso"] = dados
-        resultado["timestamp"] = timezone.now().isoformat()
-        self._salvar(caminho, resultado)
-        self.stdout.write(self.style.SUCCESS(f"Resultado salvo em {caminho}"))
-
-    def _salvar(self, caminho: Path, dados: dict) -> None:
-        """Salva resultado em JSON."""
-        caminho.parent.mkdir(exist_ok=True)
-        caminho.write_text(
-            json.dumps(
-                dados,
-                indent=2,
-                ensure_ascii=False,
-                default=str,
+    def _exibir_sucesso(self, resultado: dict) -> None:
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"\n{resultado['acao'].upper()}"
+                f" | username={resultado.get('username')}"
+                f" | sistema={resultado.get('sistema')}"
+                f" ({resultado.get('client_id')})"
             )
-            + "\n",
-            encoding="utf-8",
         )
+        roles_ok = resultado.get("roles_atribuidos", [])
+        if roles_ok:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"  Roles atribuídos: {', '.join(roles_ok)}"
+                )
+            )
+        nao_enc = resultado.get("roles_nao_encontrados", [])
+        if nao_enc:
+            self.stdout.write(
+                self.style.WARNING(
+                    "  Roles não encontrados:" f" {', '.join(nao_enc)}"
+                )
+            )
+        if resultado.get("erros"):
+            self.stdout.write(
+                self.style.ERROR(f"  Erros: {resultado['erros']}")
+            )

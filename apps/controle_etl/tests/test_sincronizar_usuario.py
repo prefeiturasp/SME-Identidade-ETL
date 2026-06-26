@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
-_CMD = "apps.controle_etl.management.commands" ".sincronizar_usuario"
+_BASE = "apps.controle_etl.management.commands._base"
+_CMD = "apps.controle_etl.management.commands.sincronizar_usuario"
 
 
 @pytest.mark.django_db
@@ -17,7 +18,7 @@ class TestSincronizarUsuario:
     def test_usuario_nao_encontrado(self, tmp_path: Any) -> None:
         saida_json = tmp_path / "out.json"
         with patch(
-            f"{_CMD}.buscar_dados_usuario_coresso",
+            f"{_BASE}.buscar_dados_usuario_coresso",
             return_value=None,
         ):
             out = StringIO()
@@ -69,7 +70,7 @@ class TestSincronizarUsuario:
         }
         with (
             patch(
-                f"{_CMD}.buscar_dados_usuario_coresso",
+                f"{_BASE}.buscar_dados_usuario_coresso",
                 return_value=dados,
             ),
             patch(
