@@ -621,7 +621,7 @@ class TestMetodosInternosValidarE2e:
         from apps.controle_etl.management.commands.validar_e2e import Command
 
         cmd = Command()
-        cmd.stdout = StringIO()
+        cmd.stdout = StringIO()  # type: ignore[assignment]
         cmd.style = cmd.create_parser("", "validar_e2e").prog  # type: ignore
         # Mock do style para não quebrar
         cmd.style = MagicMock()

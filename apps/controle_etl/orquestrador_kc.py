@@ -164,12 +164,12 @@ def _derivar_grupos(usuario: Any) -> list[str]:
 
 
 def _resolver_username(usuario: Any) -> str:
-    cpf = "".join(c for c in (usuario.cpf or "") if c.isdigit())
-    if cpf:
-        return cpf
     rf = (getattr(usuario, "rf", None) or "").strip()
     if rf:
         return rf
+    cpf = "".join(c for c in (usuario.cpf or "") if c.isdigit())
+    if cpf:
+        return cpf
     matricula = (getattr(usuario, "matricula", None) or "").strip()
     if matricula:
         return matricula
@@ -756,7 +756,7 @@ def atribuir_client_roles_usuario_kc(
             continue
 
         client_uuid, role_payload = role_info
-        username = "".join(c for c in cpf if c.isdigit()) or login
+        username = login or "".join(c for c in cpf if c.isdigit())
         if not username:
             ignorados += 1
             continue
@@ -859,26 +859,186 @@ def _resolver_conflito_email(
     return {k: v for k, v in payload.items() if k != "email"}
 
 
+def _montar_queries_busca(login: str, cpf: str, email: str) -> list[dict]:
+    """Monta lista de queries KC para localizar contas."""
+    queries: list[dict] = []
+    if login:
+        queries.append({"username": login, "exact": True})
+    if cpf:
+        queries.append({"username": cpf, "exact": True})
+    if login:
+        queries.append({"q": f"rf:{login}"})
+    if cpf:
+        queries.append({"q": f"cpf:{cpf}"})
+    if email and "@" in email:
+        queries.append({"email": email, "exact": True})
+    return queries
+
+
+def _buscar_todas_contas_kc(
+    admin: Any, login: str, cpf: str, email: str
+) -> list[dict]:
+    """Busca todas as contas KC associadas ao usuário.
+
+    Prioridade: RF (login) → CPF → email.
+    Retorna lista de dicts KC sem duplicatas (por id).
+    """
+    vistos: set[str] = set()
+    contas: list[dict] = []
+    for query in _montar_queries_busca(login, cpf, email):
+        try:
+            encontrados = _com_reintento(admin.get_users, query)
+        except Exception:
+            continue
+        for u in encontrados or []:
+            uid = str(u["id"])
+            if uid not in vistos:
+                vistos.add(uid)
+                contas.append(u)
+    return contas
+
+
+def _migrar_client_roles_kc(
+    admin: Any,
+    kc_id_origem: str,
+    kc_id_destino: str,
+) -> None:
+    """Migra client roles de uma conta KC para outra."""
+    from apps.staging.models import SistemaStaging  # noqa: PLC0415
+
+    for s in SistemaStaging.objects.filter(
+        kc_client_uuid__isnull=False,
+    ).exclude(kc_client_uuid=""):
+        try:
+            croles = _com_reintento(
+                admin.get_client_roles_of_user,
+                kc_id_origem,
+                s.kc_client_uuid,
+            )
+            if croles:
+                _com_reintento(
+                    admin.assign_client_role,
+                    kc_id_destino,
+                    s.kc_client_uuid,
+                    croles,
+                )
+        except Exception as exc:
+            logger.warning(
+                "KC merge: erro ao migrar roles" + " do client %s: %s",
+                s.kc_client_id,
+                exc,
+            )
+
+
+def _migrar_realm_roles_kc(
+    admin: Any,
+    kc_id_origem: str,
+    kc_id_destino: str,
+) -> None:
+    """Migra realm roles de uma conta KC para outra."""
+    default_names = {
+        "default-roles-sme-apps",
+        "offline_access",
+        "uma_authorization",
+    }
+    try:
+        realm_roles = _com_reintento(
+            admin.get_realm_roles_of_user,
+            kc_id_origem,
+        )
+        roles_migrar = [
+            r
+            for r in (realm_roles or [])
+            if r.get("name") not in default_names
+        ]
+        if roles_migrar:
+            _com_reintento(
+                admin.assign_realm_roles,
+                kc_id_destino,
+                roles_migrar,
+            )
+    except Exception as exc:
+        logger.warning(
+            "KC merge: erro ao migrar realm roles: %s",
+            exc,
+        )
+
+
+def _merge_contas_kc(
+    admin: Any,
+    principal: dict,
+    duplicadas: list[dict],
+) -> list[str]:
+    """Migra roles das contas duplicadas e as remove.
+
+    Retorna lista de usernames removidos.
+    """
+    kc_id_principal = str(principal["id"])
+    removidos: list[str] = []
+
+    for dup in duplicadas:
+        kc_id_dup = str(dup["id"])
+        logger.info(
+            "KC merge: migrando roles de %s (%s)" + " para %s (%s)",
+            dup.get("username"),
+            kc_id_dup,
+            principal.get("username"),
+            kc_id_principal,
+        )
+        _migrar_client_roles_kc(admin, kc_id_dup, kc_id_principal)
+        _migrar_realm_roles_kc(admin, kc_id_dup, kc_id_principal)
+
+        try:
+            _com_reintento(admin.delete_user, kc_id_dup)
+            removidos.append(dup.get("username", kc_id_dup))
+            logger.info(
+                "KC merge: conta duplicada %s removida",
+                dup.get("username"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "KC merge: falha ao remover duplicada" + " %s: %s",
+                dup.get("username"),
+                exc,
+            )
+
+    return removidos
+
+
 def _upsert_usuario_kc(
     admin: Any, payload: dict, login: str, username: str
 ) -> tuple[str | None, str]:
-    """Cria ou atualiza usuário no KC. Retorna (id, acao)."""
-    kc_users = _com_reintento(
-        admin.get_users,
-        {"username": username, "exact": True},
-    )
-    if not kc_users and login != username:
-        kc_users = _com_reintento(
-            admin.get_users,
-            {"username": login, "exact": True},
-        )
-    if kc_users:
-        kc_id = str(kc_users[0]["id"])
+    """Cria ou atualiza usuário no KC. Retorna (id, acao).
+
+    Busca todas as contas associadas (por RF, CPF, email).
+    Se encontrar duplicatas, faz merge de roles para a
+    conta principal e remove as duplicadas.
+    """
+    cpf = (payload.get("attributes", {}).get("cpf") or [""])[0]
+    email = (payload.get("email") or "").strip()
+
+    contas = _buscar_todas_contas_kc(admin, login, cpf, email)
+
+    if contas:
+        principal = contas[0]
+        kc_id = str(principal["id"])
+
+        if len(contas) > 1:
+            removidos = _merge_contas_kc(admin, principal, contas[1:])
+            if removidos:
+                logger.info(
+                    "KC: merge concluído — removidos: %s",
+                    ", ".join(removidos),
+                )
+
+        payload_atualizado = {**payload, "username": username}
         try:
-            _com_reintento(admin.update_user, kc_id, payload)
+            _com_reintento(admin.update_user, kc_id, payload_atualizado)
         except Exception:
-            payload = _resolver_conflito_email(admin, payload, login)
-            _com_reintento(admin.update_user, kc_id, payload)
+            payload_atualizado = _resolver_conflito_email(
+                admin, payload_atualizado, login
+            )
+            _com_reintento(admin.update_user, kc_id, payload_atualizado)
         return kc_id, "atualizado"
 
     try:
@@ -950,6 +1110,39 @@ def _atribuir_roles_sistema(
     }
 
 
+def _upsert_coresso_kc(
+    admin: Any, dados_coresso: dict
+) -> tuple[str | None, str, str, str]:
+    """Monta payload a partir de dados CoreSSO e faz upsert no KC.
+
+    Returns:
+        (kc_user_id, acao, username, nome)
+    """
+    login = dados_coresso["login"]
+    cpf = dados_coresso.get("cpf", "").strip()
+    nome = dados_coresso.get("nome", "").strip()
+    email = dados_coresso.get("email", "").strip()
+    partes = nome.split()
+
+    username = login if login else cpf
+    payload = {
+        "username": username,
+        "email": email,
+        "firstName": partes[0] if partes else "",
+        "lastName": (" ".join(partes[1:]) if len(partes) > 1 else ""),
+        "enabled": dados_coresso["situacao"] == "ativo",
+        "emailVerified": False,
+        "attributes": {
+            "cpf": [cpf],
+            "rf": [login],
+            "fonte": ["coresso"],
+        },
+    }
+
+    kc_user_id, acao = _upsert_usuario_kc(admin, payload, login, username)
+    return kc_user_id, acao, username, nome
+
+
 def sincronizar_usuario_kc(
     admin: Any,
     dados_coresso: dict,
@@ -968,28 +1161,7 @@ def sincronizar_usuario_kc(
         Dict com ``acao``, ``kc_user_id``, ``roles_atribuidos``
         e ``sistemas``.
     """
-    login = dados_coresso["login"]
-    cpf = dados_coresso.get("cpf", "").strip()
-    nome = dados_coresso.get("nome", "").strip()
-    email = dados_coresso.get("email", "").strip()
-    partes = nome.split()
-
-    username = cpf if cpf else login
-    payload = {
-        "username": username,
-        "email": email,
-        "firstName": partes[0] if partes else "",
-        "lastName": (" ".join(partes[1:]) if len(partes) > 1 else ""),
-        "enabled": dados_coresso["situacao"] == "ativo",
-        "emailVerified": False,
-        "attributes": {
-            "cpf": [cpf],
-            "rf": [login],
-            "fonte": ["coresso"],
-        },
-    }
-
-    kc_user_id, acao = _upsert_usuario_kc(admin, payload, login, username)
+    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
     if not kc_user_id:
         return {"acao": "erro", "motivo": "sem kc_user_id"}
 
@@ -1014,4 +1186,107 @@ def sincronizar_usuario_kc(
         "roles_atribuidos": total_roles,
         "roles_erros": total_erros,
         "sistemas": sistemas_resultado,
+    }
+
+
+def conceder_acesso_kc(
+    admin: Any,
+    dados_coresso: dict,
+    sis_id: int,
+    nomes_roles: list[str],
+    *,
+    realm: str = "sme-apps",
+) -> dict[str, Any]:
+    """Concede acesso a um sistema e roles no Keycloak.
+
+    Cria/atualiza o usuário e atribui client roles
+    específicos, independentemente dos vínculos no CoreSSO.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        dados_coresso: Resultado de
+            ``buscar_dados_usuario_coresso``.
+        sis_id: ``coresso_sis_id`` do sistema alvo.
+        nomes_roles: Nomes dos perfis/roles a conceder.
+        realm: Realm de destino.
+
+    Returns:
+        Dict com ``acao``, ``kc_user_id``, ``sistema``,
+        ``roles_atribuidos``, ``roles_nao_encontrados``
+        e ``erros``.
+    """
+    from apps.staging.models import (  # noqa: PLC0415
+        PerfilCoressoStaging,
+        SistemaStaging,
+    )
+
+    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
+    if not kc_user_id:
+        return {"acao": "erro", "motivo": "sem kc_user_id"}
+
+    sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
+    if not sistema or not sistema.kc_client_uuid:
+        return {
+            "acao": acao,
+            "kc_user_id": kc_user_id,
+            "erro": (
+                f"Sistema sis_id={sis_id} não encontrado"
+                " ou sem client no Keycloak."
+            ),
+        }
+
+    roles_ok: list[str] = []
+    roles_nao_encontrados: list[str] = []
+    erros = 0
+
+    for role_name in nomes_roles:
+        perfil = PerfilCoressoStaging.objects.filter(
+            coresso_sis_id=sis_id,
+            nome__iexact=role_name,
+        ).first()
+        if not perfil:
+            perfil = PerfilCoressoStaging.objects.filter(
+                coresso_sis_id=sis_id,
+                kc_role_nome__iexact=role_name,
+            ).first()
+        if not perfil or not perfil.kc_role_id:
+            roles_nao_encontrados.append(role_name)
+            continue
+        try:
+            _com_reintento(
+                admin.assign_client_role,
+                kc_user_id,
+                sistema.kc_client_uuid,
+                [
+                    {
+                        "id": perfil.kc_role_id,
+                        "name": perfil.kc_role_nome,
+                    }
+                ],
+            )
+            roles_ok.append(perfil.kc_role_nome or role_name)
+        except Exception as exc:
+            logger.warning(
+                "KC: falha ao conceder role %s" + " ao user %s: %s",
+                role_name,
+                username,
+                exc,
+            )
+            erros += 1
+
+    base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
+    return {
+        "acao": acao,
+        "kc_user_id": kc_user_id,
+        "kc_url": (
+            f"{base}/admin/master/console/"
+            + f"#/{realm}/users/{kc_user_id}/settings"
+        ),
+        "username": username,
+        "nome": nome,
+        "sistema": sistema.nome,
+        "client_id": sistema.kc_client_id,
+        "roles_atribuidos": roles_ok,
+        "roles_nao_encontrados": roles_nao_encontrados,
+        "erros": erros,
     }

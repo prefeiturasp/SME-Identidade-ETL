@@ -1258,7 +1258,7 @@ class TestBuscarDadosUsuarioCoresso:
         mock_conn_se = MagicMock()
         mock_conn_se.cursor.return_value = mock_cursor_se
 
-        def connect_side(cs, **kw):
+        def connect_side(cs: str, **kw: Any) -> MagicMock:
             if "CoreSSO" in cs:
                 return mock_conn_coresso
             return mock_conn_se

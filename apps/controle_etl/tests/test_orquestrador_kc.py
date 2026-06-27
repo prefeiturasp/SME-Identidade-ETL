@@ -10,12 +10,17 @@ import pytest
 from apps.controle_etl.orquestrador_kc import (
     _atribuir_roles_e_grupos,
     _atribuir_roles_sistema,
+    _buscar_todas_contas_kc,
     _com_reintento,
     _derivar_grupos,
     _derivar_roles_realm,
     _excecoes_retriaveis,
     _inferir_tipo_usuario,
     _localizar_usuario_kc,
+    _merge_contas_kc,
+    _migrar_client_roles_kc,
+    _migrar_realm_roles_kc,
+    _montar_queries_busca,
     _resolver_kc_user_id,
     _resolver_role_info,
     _resolver_username,
@@ -23,6 +28,7 @@ from apps.controle_etl.orquestrador_kc import (
     _upsert_usuario_kc,
     atribuir_client_roles_usuario_kc,
     calcular_hash_conteudo,
+    conceder_acesso_kc,
     construir_payload_kc,
     construir_payload_token_ms,
     provisionar_usuarios_kc_em_paralelo,
@@ -83,13 +89,18 @@ def _usuario(
 class TestResolverUsername:
     """Testa a resolução do username de destino no Keycloak."""
 
-    def test_prefere_cpf_apenas_digitos(self) -> None:
-        """Verifica que o CPF, sem máscara, é preferido como username."""
+    def test_prefere_rf_sobre_cpf(self) -> None:
+        """Verifica que RF tem prioridade sobre CPF."""
+        u = _usuario(cpf="12345678901", rf="9876543")
+        assert _resolver_username(u) == "9876543"
+
+    def test_usa_cpf_quando_sem_rf(self) -> None:
+        """Verifica que o CPF é usado quando não há RF."""
         u = _usuario(cpf="123.456.789-01", rf="")
         assert _resolver_username(u) == "12345678901"
 
     def test_usa_rf_quando_sem_cpf(self) -> None:
-        """Verifica que o RF é usado como username quando não há CPF."""
+        """Verifica que o RF é usado quando não há CPF."""
         u = _usuario(cpf="", rf="9876543")
         assert _resolver_username(u) == "9876543"
 
@@ -1206,10 +1217,10 @@ class TestAtribuirClientRolesUsuarioKc:
         assert resultado["erros"] == 1
         assert resultado["atribuidos"] == 0
 
-    def test_usa_cpf_como_username_prioritario(self) -> None:
+    def test_usa_rf_como_username_prioritario(self) -> None:
         self._criar_sistema_e_perfil()
         admin = MagicMock()
-        admin.get_users.return_value = [{"id": "kc-cpf"}]
+        admin.get_users.return_value = [{"id": "kc-rf"}]
 
         vinculos = [
             {
@@ -1222,7 +1233,7 @@ class TestAtribuirClientRolesUsuarioKc:
         ]
         atribuir_client_roles_usuario_kc(admin, vinculos)
         query_chamada = admin.get_users.call_args[0][0]
-        assert query_chamada["username"] == "11122233344"
+        assert query_chamada["username"] == "rf123"
 
     def test_lista_vazia_retorna_zeros(self) -> None:
         admin = MagicMock()
@@ -1420,19 +1431,25 @@ class TestResolverConflitoEmail:
         assert result == payload
 
 
+@pytest.mark.django_db
 class TestUpsertComConflito:
     def test_update_com_conflito_email(self) -> None:
         admin = MagicMock()
-        admin.get_users.side_effect = [
-            [{"id": "kc-1"}],  # busca por username
-            [
-                {
-                    "id": "kc-other",
-                    "username": "other",
-                    "attributes": {"rf": ["999"]},
-                }
-            ],  # busca por email
-        ]
+
+        def _get_users_lado(query: dict) -> list[dict]:
+            if query.get("username") == "111":
+                return [{"id": "kc-1"}]
+            if query.get("email") == "dup@x":
+                return [
+                    {
+                        "id": "kc-other",
+                        "username": "other",
+                        "attributes": {"rf": ["999"]},
+                    }
+                ]
+            return []
+
+        admin.get_users.side_effect = _get_users_lado
         admin.update_user.side_effect = [
             Exception("409 email"),
             None,  # retry sem email
@@ -1440,8 +1457,255 @@ class TestUpsertComConflito:
         payload = {
             "username": "111",
             "email": "dup@x",
-            "attributes": {"rf": ["111"]},
+            "attributes": {"rf": ["111"], "cpf": [""]},
         }
         kc_id, acao = _upsert_usuario_kc(admin, payload, "111", "111")
         assert kc_id == "kc-1"
         assert acao == "atualizado"
+
+
+# ------------------------------------------------------------------
+# _montar_queries_busca
+# ------------------------------------------------------------------
+
+
+class TestMontarQueriesBusca:
+    def test_gera_queries_completas(self) -> None:
+        qs = _montar_queries_busca("rf1", "cpf1", "a@b.c")
+        assert len(qs) == 5
+        assert qs[0] == {"username": "rf1", "exact": True}
+        assert qs[1] == {"username": "cpf1", "exact": True}
+
+    def test_sem_email(self) -> None:
+        qs = _montar_queries_busca("rf1", "cpf1", "")
+        assert len(qs) == 4
+
+    def test_sem_login_nem_cpf(self) -> None:
+        qs = _montar_queries_busca("", "", "a@b.c")
+        assert len(qs) == 1
+
+
+# ------------------------------------------------------------------
+# _buscar_todas_contas_kc
+# ------------------------------------------------------------------
+
+
+class TestBuscarTodasContasKc:
+    def test_encontra_uma_conta(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-1"}]
+        contas = _buscar_todas_contas_kc(admin, "rf1", "", "")
+        assert len(contas) == 1
+        assert contas[0]["id"] == "kc-1"
+
+    def test_dedup_por_id(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-1"}]
+        contas = _buscar_todas_contas_kc(admin, "rf1", "cpf1", "a@b.c")
+        assert len(contas) == 1
+
+    def test_encontra_duplicatas(self) -> None:
+        admin = MagicMock()
+
+        def _side(query: dict) -> list[dict]:
+            if query.get("username") == "rf1":
+                return [{"id": "kc-rf"}]
+            if query.get("username") == "cpf1":
+                return [{"id": "kc-cpf"}]
+            return []
+
+        admin.get_users.side_effect = _side
+        contas = _buscar_todas_contas_kc(admin, "rf1", "cpf1", "")
+        assert len(contas) == 2
+        assert contas[0]["id"] == "kc-rf"
+        assert contas[1]["id"] == "kc-cpf"
+
+    def test_erro_na_api_continua(self) -> None:
+        admin = MagicMock()
+        admin.get_users.side_effect = Exception("falha")
+        contas = _buscar_todas_contas_kc(admin, "rf1", "", "")
+        assert contas == []
+
+
+# ------------------------------------------------------------------
+# _migrar_client_roles_kc e _migrar_realm_roles_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestMigrarRoles:
+    def test_migra_client_roles(self) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=99,
+            nome="SisTest",
+            kc_client_uuid="uuid-99",
+        )
+        admin = MagicMock()
+        admin.get_client_roles_of_user.return_value = [
+            {"id": "r1", "name": "Admin"}
+        ]
+        _migrar_client_roles_kc(admin, "origem", "destino")
+        admin.assign_client_role.assert_called_once_with(
+            "destino",
+            "uuid-99",
+            [{"id": "r1", "name": "Admin"}],
+        )
+
+    def test_migra_realm_roles(self) -> None:
+        admin = MagicMock()
+        admin.get_realm_roles_of_user.return_value = [
+            {"name": "default-roles-sme-apps"},
+            {"name": "Professor"},
+        ]
+        _migrar_realm_roles_kc(admin, "origem", "destino")
+        admin.assign_realm_roles.assert_called_once_with(
+            "destino", [{"name": "Professor"}]
+        )
+
+    def test_nao_migra_apenas_defaults(self) -> None:
+        admin = MagicMock()
+        admin.get_realm_roles_of_user.return_value = [
+            {"name": "default-roles-sme-apps"},
+            {"name": "offline_access"},
+        ]
+        _migrar_realm_roles_kc(admin, "origem", "destino")
+        admin.assign_realm_roles.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# _merge_contas_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestMergeContasKc:
+    def test_merge_e_remove_duplicadas(self) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=80,
+            nome="SisMerge",
+            kc_client_uuid="uuid-80",
+        )
+        admin = MagicMock()
+        admin.get_client_roles_of_user.return_value = []
+        admin.get_realm_roles_of_user.return_value = []
+
+        principal = {"id": "kc-main", "username": "rf1"}
+        duplicadas = [
+            {"id": "kc-dup", "username": "cpf1"},
+        ]
+        removidos = _merge_contas_kc(admin, principal, duplicadas)
+        assert removidos == ["cpf1"]
+        admin.delete_user.assert_called_once_with("kc-dup")
+
+
+# ------------------------------------------------------------------
+# conceder_acesso_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestConcederAcessoKc:
+    def test_concede_role_existente(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = SistemaStaging.objects.create(
+            coresso_sis_id=70,
+            nome="SisConc",
+            kc_client_uuid="uuid-70",
+            kc_client_id="sisconc-qa",
+        )
+        PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g-70",
+            coresso_sis_id=70,
+            sistema=sistema,
+            nome="ASCOM",
+            kc_role_nome="ASCOM",
+            kc_role_id="uuid-r70",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new-70"
+
+        dados = {
+            "login": "7777777",
+            "cpf": "11122233344",
+            "nome": "Joao Silva",
+            "email": "j@sme.sp",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 70, ["ASCOM"])
+        assert r["acao"] == "criado"
+        assert r["roles_atribuidos"] == ["ASCOM"]
+        assert r["roles_nao_encontrados"] == []
+        assert r["sistema"] == "SisConc"
+        admin.assign_client_role.assert_called_once()
+
+    def test_role_nao_encontrado(self) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=71,
+            nome="SisConc2",
+            kc_client_uuid="uuid-71",
+            kc_client_id="sisconc2-qa",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new-71"
+
+        dados = {
+            "login": "8888888",
+            "cpf": "",
+            "nome": "Maria",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 71, ["INEXISTENTE"])
+        assert r["roles_nao_encontrados"] == ["INEXISTENTE"]
+        assert r["roles_atribuidos"] == []
+
+    def test_sistema_sem_client(self) -> None:
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-x"
+
+        dados = {
+            "login": "9999999",
+            "cpf": "",
+            "nome": "Carlos",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 9999, ["X"])
+        assert "erro" in r
+
+    def test_usa_rf_como_username(self) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=72,
+            nome="SisRF",
+            kc_client_uuid="uuid-72",
+            kc_client_id="sisrf-qa",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-rf"
+
+        dados = {
+            "login": "1234567",
+            "cpf": "99988877766",
+            "nome": "Ana",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 72, [])
+        assert r["username"] == "1234567"

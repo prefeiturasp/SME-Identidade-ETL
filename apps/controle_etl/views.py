@@ -27,13 +27,20 @@ from .models import (
 )
 from .serializers import (
     CheckpointEtlSerializer,
+    ConcederAcessoSerializer,
     ControleProvisionamentoSerializer,
     CriarExecucaoETLSerializer,
     ExecucaoETLSerializer,
+    ExtrairVinculosSerializer,
     HealthStatusSerializer,
     ListarExecucaoETLSerializer,
     MarcaDaguaExtracaoSerializer,
+    PipelineSistemaSerializer,
+    ProvisionarPerfisSerializer,
+    ProvisionarSistemasSerializer,
+    ProvisionarVinculosSerializer,
     RastreioTentativaSerializer,
+    SincronizarUsuarioSerializer,
 )
 
 logger = logging.getLogger("etl_identidade")
@@ -614,6 +621,7 @@ def estatisticas(request: Request) -> Response:
     )
 
 
+@extend_schema(tags=["Sistemas"])
 @api_view(["POST"])
 def extrair_sistemas(request: Request) -> Response:
     """Dispara extração síncrona de sistemas do CoreSSO."""
@@ -630,6 +638,10 @@ def extrair_sistemas(request: Request) -> Response:
     return Response({"total_extraido": total})
 
 
+@extend_schema(
+    tags=["Sistemas"],
+    request=ProvisionarSistemasSerializer,
+)
 @api_view(["POST"])
 def provisionar_sistemas(request: Request) -> Response:
     """Provisiona sistemas do CoreSSO como clients no Keycloak."""
@@ -686,6 +698,7 @@ def provisionar_sistemas(request: Request) -> Response:
     )
 
 
+@extend_schema(tags=["Sistemas"])
 @api_view(["GET"])
 def listar_sistemas(request: Request) -> Response:
     """Lista sistemas CoreSSO sincronizados."""
@@ -706,6 +719,7 @@ def listar_sistemas(request: Request) -> Response:
     )
 
 
+@extend_schema(tags=["Perfis"])
 @api_view(["POST"])
 def extrair_perfis(request: Request) -> Response:
     """Dispara extração síncrona de perfis do CoreSSO."""
@@ -722,6 +736,10 @@ def extrair_perfis(request: Request) -> Response:
     return Response({"total_extraido": total})
 
 
+@extend_schema(
+    tags=["Perfis"],
+    request=ProvisionarPerfisSerializer,
+)
 @api_view(["POST"])
 def provisionar_perfis(request: Request) -> Response:
     """Provisiona perfis CoreSSO como client roles no Keycloak."""
@@ -786,6 +804,7 @@ def provisionar_perfis(request: Request) -> Response:
     )
 
 
+@extend_schema(tags=["Perfis"])
 @api_view(["GET"])
 def listar_perfis(request: Request) -> Response:
     """Lista perfis CoreSSO sincronizados."""
@@ -815,6 +834,10 @@ def listar_perfis(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+@extend_schema(
+    tags=["Vínculos"],
+    request=ExtrairVinculosSerializer,
+)
 @api_view(["POST"])
 def extrair_vinculos(request: Request) -> Response:
     """Extrai vínculos usuário↔grupo do CoreSSO (contagem)."""
@@ -843,6 +866,10 @@ def extrair_vinculos(request: Request) -> Response:
     return Response({"total_extraido": total})
 
 
+@extend_schema(
+    tags=["Vínculos"],
+    request=ProvisionarVinculosSerializer,
+)
 @api_view(["POST"])
 def provisionar_vinculos(request: Request) -> Response:
     """Atribui client roles aos usuários no Keycloak."""
@@ -875,6 +902,7 @@ def provisionar_vinculos(request: Request) -> Response:
     return Response(resultado)
 
 
+@extend_schema(tags=["Vínculos"])
 @api_view(["GET"])
 def listar_vinculos(request: Request) -> Response:
     """Resumo de perfis provisionados por sistema."""
@@ -910,6 +938,10 @@ def listar_vinculos(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+@extend_schema(
+    tags=["Usuário"],
+    request=SincronizarUsuarioSerializer,
+)
 @api_view(["POST"])
 def sincronizar_usuario(request: Request) -> Response:
     """Sincroniza um usuário no Keycloak com todos os seus roles.
@@ -917,10 +949,6 @@ def sincronizar_usuario(request: Request) -> Response:
     Busca o usuário no CoreSSO por RF, CPF ou email,
     cria/atualiza no Keycloak e atribui todos os client
     roles dos sistemas aos quais pertence.
-
-    Body (JSON):
-        identificador: str (RF, CPF ou email) — obrigatório
-        realm: str (opcional, padrão: sme-apps)
     """
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
         obter_admin_keycloak,
@@ -981,10 +1009,89 @@ def sincronizar_usuario(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Concessão de acesso a sistema + roles
+# ---------------------------------------------------------------------------
+
+
+@extend_schema(
+    tags=["Usuário"],
+    request=ConcederAcessoSerializer,
+)
+@api_view(["POST"])
+def conceder_acesso(request: Request) -> Response:
+    """Concede acesso a um sistema e roles no Keycloak.
+
+    Busca o usuário no CoreSSO, cria/atualiza no Keycloak
+    e atribui os client roles informados.
+    """
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        conceder_acesso_kc,
+        obter_admin_keycloak,
+    )
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        buscar_dados_usuario_coresso,
+    )
+
+    serializer = ConcederAcessoSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    dados_validados = serializer.validated_data
+
+    identificador = dados_validados["identificador"].strip()
+    sis_id = dados_validados["sistema"]
+    nomes_roles = dados_validados["roles"]
+    realm = dados_validados.get("realm") or "sme-apps"
+
+    try:
+        dados = buscar_dados_usuario_coresso(identificador)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao buscar usuário %s: %s",
+            identificador,
+            exc,
+        )
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if not dados:
+        return Response(
+            {
+                "detalhe": (
+                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
+                )
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        admin = obter_admin_keycloak(realm=realm)
+        resultado = conceder_acesso_kc(
+            admin, dados, sis_id, nomes_roles, realm=realm
+        )
+    except Exception as exc:
+        logger.exception(
+            "Falha ao conceder acesso %s: %s",
+            identificador,
+            exc,
+        )
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(resultado)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline completo por sistema (extração + clients + roles + vínculos)
 # ---------------------------------------------------------------------------
 
 
+@extend_schema(
+    tags=["Pipeline"],
+    request=PipelineSistemaSerializer,
+)
 @api_view(["POST"])
 def executar_pipeline_sistema(request: Request) -> Response:
     """Executa o pipeline completo para um sistema e/ou grupo.
