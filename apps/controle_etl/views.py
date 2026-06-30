@@ -4,6 +4,7 @@ import contextlib
 import logging
 from typing import Any
 
+from django.conf import settings
 from django.db.models import Count, OuterRef, QuerySet, Subquery, Sum
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
@@ -82,7 +83,7 @@ def _aplicar_filtros_execucao(
 
 def _disparar_execucao(
     fonte: str = "todos",
-    realm_destino: str = "sme-apps",
+    realm_destino: str = settings.KEYCLOAK_REALM,
     observacao: str = "",
     disparado_por: str = "api",
 ) -> ExecucaoETL:
@@ -183,7 +184,7 @@ class ExecucoesView(APIView):
         execucao = _disparar_execucao(
             fonte=serializador.validated_data.get("fonte", "todos"),
             realm_destino=serializador.validated_data.get(
-                "realm_destino", "sme-apps"
+                "realm_destino", settings.KEYCLOAK_REALM
             ),
             observacao=serializador.validated_data.get("observacao", ""),
             disparado_por=request.META.get("HTTP_X_FORWARDED_USER", "api"),
@@ -960,11 +961,11 @@ def sincronizar_usuario(request: Request) -> Response:
 
     corpo = request.data or {}
     identificador = corpo.get("identificador", "").strip()
-    realm = corpo.get("realm") or "sme-apps"
+    realm = corpo.get("realm") or settings.KEYCLOAK_REALM
 
     if not identificador:
         return Response(
-            {"detalhe": "identificador é obrigatório" " (RF, CPF ou email)."},
+            {"detalhe": "identificador é obrigatório (RF, CPF ou email)."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1039,7 +1040,7 @@ def conceder_acesso(request: Request) -> Response:
     identificador = dados_validados["identificador"].strip()
     sis_id = dados_validados["sistema"]
     nomes_roles = dados_validados["roles"]
-    realm = dados_validados.get("realm") or "sme-apps"
+    realm = dados_validados.get("realm") or settings.KEYCLOAK_REALM
 
     try:
         dados = buscar_dados_usuario_coresso(identificador)
@@ -1159,7 +1160,7 @@ def executar_pipeline_sistema(request: Request) -> Response:
         else:
             resultado["client"] = {
                 "acao": "ignorado",
-                "motivo": "sistema não encontrado" " ou inativo",
+                "motivo": "sistema não encontrado ou inativo",
             }
 
         qs_perfis = PerfilCoressoStaging.objects.select_related(

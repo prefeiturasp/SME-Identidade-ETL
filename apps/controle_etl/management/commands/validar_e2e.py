@@ -92,8 +92,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--realm",
             type=str,
-            default="sme-apps",
-            help="Realm Keycloak. Padrão: sme-apps.",
+            default=settings.KEYCLOAK_REALM,
+            help="Realm Keycloak.",
         )
         parser.add_argument(
             "--saida",

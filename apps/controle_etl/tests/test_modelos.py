@@ -6,6 +6,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from django.conf import settings
 from django.utils import timezone
 
 from apps.controle_etl.models import (
@@ -27,7 +28,7 @@ class TestExecucaoETL:
         execucao = ExecucaoETL.objects.create()
         assert execucao.situacao == ExecucaoETL.Situacao.PENDENTE
         assert execucao.fonte == "todos"
-        assert execucao.realm_destino == "sme-apps"
+        assert execucao.realm_destino == settings.KEYCLOAK_REALM
         assert execucao.total_extraido == 0
         assert execucao.id_execucao is not None
 

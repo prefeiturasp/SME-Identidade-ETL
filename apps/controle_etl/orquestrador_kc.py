@@ -372,7 +372,7 @@ def provisionar_usuario_kc(
     admin: Any,
     usuario: Any,
     *,
-    realm: str = "sme-apps",
+    realm: str = settings.KEYCLOAK_REALM,
     execucao: Any = None,
     forcar_atualizacao: bool = False,
 ) -> dict[str, Any]:
@@ -464,7 +464,7 @@ def provisionar_usuarios_kc_em_paralelo(
     admin: Any,
     usuarios: Iterable[Any],
     *,
-    realm: str = "sme-apps",
+    realm: str = settings.KEYCLOAK_REALM,
     execucao: Any = None,
     max_workers: int | None = None,
     forcar_atualizacao: bool = False,
@@ -937,7 +937,7 @@ def _migrar_realm_roles_kc(
 ) -> None:
     """Migra realm roles de uma conta KC para outra."""
     default_names = {
-        "default-roles-sme-apps",
+        f"default-roles-{settings.KEYCLOAK_REALM}",
         "offline_access",
         "uma_authorization",
     }
@@ -1147,7 +1147,7 @@ def sincronizar_usuario_kc(
     admin: Any,
     dados_coresso: dict,
     *,
-    realm: str = "sme-apps",
+    realm: str = settings.KEYCLOAK_REALM,
 ) -> dict[str, Any]:
     """Sincroniza um usuário no Keycloak com todos os seus roles.
 
@@ -1189,13 +1189,113 @@ def sincronizar_usuario_kc(
     }
 
 
+def _criar_role_kc(
+    admin: Any,
+    sistema: Any,
+    sis_id: int,
+    role_name: str,
+    perfil: Any | None,
+) -> Any | None:
+    """Cria um client role no Keycloak e registra no staging."""
+    from apps.staging.models import PerfilCoressoStaging  # noqa: PLC0415
+
+    payload = {
+        "name": role_name,
+        "description": "Criado via API conceder-acesso",
+        "clientRole": True,
+        "attributes": {
+            "coresso_sis_id": [str(sis_id)],
+        },
+    }
+    try:
+        _com_reintento(
+            admin.create_client_role,
+            sistema.kc_client_uuid,
+            payload,
+            skip_exists=True,
+        )
+    except Exception as exc:
+        if "already exists" not in str(exc).lower():
+            logger.warning(
+                "KC: falha ao criar role %s no client %s: %s",
+                role_name,
+                sistema.kc_client_id,
+                exc,
+            )
+            return None
+
+    try:
+        existente = _com_reintento(
+            admin.get_client_role,
+            sistema.kc_client_uuid,
+            role_name,
+        )
+    except Exception:
+        return None
+
+    role_id = (existente or {}).get("id")
+    if not role_id:
+        return None
+
+    if not perfil:
+        perfil, _ = PerfilCoressoStaging.objects.get_or_create(
+            coresso_sis_id=sis_id,
+            nome=role_name,
+            defaults={
+                "coresso_gru_id": f"api-{sis_id}-{role_name}",
+                "sistema": sistema,
+                "kc_role_nome": role_name,
+                "kc_role_id": role_id,
+                "situacao_provisionamento": (
+                    PerfilCoressoStaging.SituacaoProvisionamento.PROVISIONADO
+                ),
+            },
+        )
+        if not perfil.kc_role_id:
+            perfil.kc_role_id = role_id
+            perfil.kc_role_nome = role_name
+            perfil.situacao_provisionamento = (
+                PerfilCoressoStaging.SituacaoProvisionamento.PROVISIONADO
+            )
+            perfil.save(
+                update_fields=[
+                    "kc_role_id",
+                    "kc_role_nome",
+                    "situacao_provisionamento",
+                    "atualizado_em",
+                ]
+            )
+    else:
+        perfil.kc_role_id = role_id
+        perfil.kc_role_nome = perfil.kc_role_nome or role_name
+        perfil.situacao_provisionamento = (
+            PerfilCoressoStaging.SituacaoProvisionamento.PROVISIONADO
+        )
+        perfil.save(
+            update_fields=[
+                "kc_role_id",
+                "kc_role_nome",
+                "situacao_provisionamento",
+                "atualizado_em",
+            ]
+        )
+
+    logger.info(
+        "KC: role %s criado no client %s (id=%s)",
+        role_name,
+        sistema.kc_client_id,
+        role_id,
+    )
+    return perfil
+
+
 def conceder_acesso_kc(
     admin: Any,
     dados_coresso: dict,
     sis_id: int,
     nomes_roles: list[str],
     *,
-    realm: str = "sme-apps",
+    realm: str = settings.KEYCLOAK_REALM,
 ) -> dict[str, Any]:
     """Concede acesso a um sistema e roles no Keycloak.
 
@@ -1250,8 +1350,17 @@ def conceder_acesso_kc(
                 kc_role_nome__iexact=role_name,
             ).first()
         if not perfil or not perfil.kc_role_id:
-            roles_nao_encontrados.append(role_name)
-            continue
+            perfil = _criar_role_kc(
+                admin,
+                sistema,
+                sis_id,
+                role_name,
+                perfil,
+            )
+            if not perfil:
+                roles_nao_encontrados.append(role_name)
+                erros += 1
+                continue
         try:
             _com_reintento(
                 admin.assign_client_role,

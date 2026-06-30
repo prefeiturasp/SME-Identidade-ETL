@@ -1,5 +1,6 @@
 """Serializadores DRF da app controle_etl."""
 
+from django.conf import settings
 from rest_framework import serializers
 
 from .models import (
@@ -10,6 +11,10 @@ from .models import (
     MarcaDaguaExtracao,
     RastreioTentativa,
 )
+
+_HT_REALM = "Realm Keycloak."
+_HT_FILTRAR_SIS_ID = "Filtrar por coresso_sis_id."
+_HT_FILTRAR_GRU_ID = "Filtrar por coresso_gru_id."
 
 
 class LogEtapaETLSerializer(serializers.ModelSerializer):
@@ -89,7 +94,9 @@ class CriarExecucaoETLSerializer(serializers.Serializer):
         choices=["todos", "se1426", "coresso", "eol_alunos"],
         default="todos",
     )
-    realm_destino = serializers.CharField(default="sme-apps")
+    realm_destino = serializers.CharField(
+        default=settings.KEYCLOAK_REALM,
+    )
     observacao = serializers.CharField(required=False, allow_blank=True)
 
 
@@ -190,9 +197,9 @@ class SincronizarUsuarioSerializer(serializers.Serializer):
         help_text="RF, CPF ou email do usuário."
     )
     realm = serializers.CharField(
-        default="sme-apps",
+        default=settings.KEYCLOAK_REALM,
         required=False,
-        help_text="Realm Keycloak. Padrão: sme-apps.",
+        help_text=_HT_REALM,
     )
 
 
@@ -210,7 +217,9 @@ class ConcederAcessoSerializer(serializers.Serializer):
         min_length=1,
         help_text="Nomes dos roles/perfis a conceder.",
     )
-    realm = serializers.CharField(default="sme-apps", required=False)
+    realm = serializers.CharField(
+        default=settings.KEYCLOAK_REALM, required=False
+    )
 
 
 class ProvisionarSistemasSerializer(serializers.Serializer):
@@ -219,7 +228,7 @@ class ProvisionarSistemasSerializer(serializers.Serializer):
     realm = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Realm Keycloak.",
+        help_text=_HT_REALM,
     )
     sigla = serializers.CharField(
         required=False,
@@ -228,7 +237,7 @@ class ProvisionarSistemasSerializer(serializers.Serializer):
     )
     coresso_sis_id = serializers.IntegerField(
         required=False,
-        help_text="Filtrar por coresso_sis_id.",
+        help_text=_HT_FILTRAR_SIS_ID,
     )
 
 
@@ -238,16 +247,16 @@ class ProvisionarPerfisSerializer(serializers.Serializer):
     realm = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Realm Keycloak.",
+        help_text=_HT_REALM,
     )
     coresso_sis_id = serializers.IntegerField(
         required=False,
-        help_text="Filtrar por coresso_sis_id.",
+        help_text=_HT_FILTRAR_SIS_ID,
     )
     coresso_gru_id = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Filtrar por coresso_gru_id.",
+        help_text=_HT_FILTRAR_GRU_ID,
     )
 
 
@@ -256,12 +265,12 @@ class ExtrairVinculosSerializer(serializers.Serializer):
 
     coresso_sis_id = serializers.IntegerField(
         required=False,
-        help_text="Filtrar por coresso_sis_id.",
+        help_text=_HT_FILTRAR_SIS_ID,
     )
     coresso_gru_id = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Filtrar por coresso_gru_id.",
+        help_text=_HT_FILTRAR_GRU_ID,
     )
 
 
@@ -271,16 +280,16 @@ class ProvisionarVinculosSerializer(serializers.Serializer):
     realm = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Realm Keycloak.",
+        help_text=_HT_REALM,
     )
     coresso_sis_id = serializers.IntegerField(
         required=False,
-        help_text="Filtrar por coresso_sis_id.",
+        help_text=_HT_FILTRAR_SIS_ID,
     )
     coresso_gru_id = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Filtrar por coresso_gru_id.",
+        help_text=_HT_FILTRAR_GRU_ID,
     )
 
 
@@ -298,7 +307,7 @@ class PipelineSistemaSerializer(serializers.Serializer):
     realm = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Realm Keycloak.",
+        help_text=_HT_REALM,
     )
     forcar_atualizacao = serializers.BooleanField(
         default=False,

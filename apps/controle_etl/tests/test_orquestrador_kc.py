@@ -6,12 +6,14 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.conf import settings
 
 from apps.controle_etl.orquestrador_kc import (
     _atribuir_roles_e_grupos,
     _atribuir_roles_sistema,
     _buscar_todas_contas_kc,
     _com_reintento,
+    _criar_role_kc,
     _derivar_grupos,
     _derivar_roles_realm,
     _excecoes_retriaveis,
@@ -1555,8 +1557,9 @@ class TestMigrarRoles:
 
     def test_migra_realm_roles(self) -> None:
         admin = MagicMock()
+        default_role = f"default-roles-{settings.KEYCLOAK_REALM}"
         admin.get_realm_roles_of_user.return_value = [
-            {"name": "default-roles-sme-apps"},
+            {"name": default_role},
             {"name": "Professor"},
         ]
         _migrar_realm_roles_kc(admin, "origem", "destino")
@@ -1566,8 +1569,9 @@ class TestMigrarRoles:
 
     def test_nao_migra_apenas_defaults(self) -> None:
         admin = MagicMock()
+        default_role = f"default-roles-{settings.KEYCLOAK_REALM}"
         admin.get_realm_roles_of_user.return_value = [
-            {"name": "default-roles-sme-apps"},
+            {"name": default_role},
             {"name": "offline_access"},
         ]
         _migrar_realm_roles_kc(admin, "origem", "destino")
@@ -1603,6 +1607,96 @@ class TestMergeContasKc:
 
 
 # ------------------------------------------------------------------
+# _criar_role_kc
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCriarRoleKc:
+    def _sistema(self, sis_id: int = 90) -> Any:
+        from apps.staging.models import SistemaStaging
+
+        return SistemaStaging.objects.create(
+            coresso_sis_id=sis_id,
+            nome="SisTeste",
+            kc_client_uuid=f"uuid-{sis_id}",
+            kc_client_id=f"sis-{sis_id}-qa",
+        )
+
+    def test_cria_role_quando_perfil_none(self) -> None:
+        sistema = self._sistema(90)
+        admin = MagicMock()
+        admin.get_client_role.return_value = {"id": "role-uuid-90"}
+
+        resultado = _criar_role_kc(admin, sistema, 90, "NOVO_ROLE", None)
+
+        assert resultado is not None
+        assert resultado.kc_role_id == "role-uuid-90"
+        assert resultado.kc_role_nome == "NOVO_ROLE"
+        admin.create_client_role.assert_called_once()
+
+    def test_atualiza_perfil_existente_sem_kc_role_id(self) -> None:
+        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+
+        sistema = self._sistema(91)
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_sis_id=91,
+            coresso_gru_id="gru-91",
+            sistema=sistema,
+            nome="ROLE_SEM_ID",
+            kc_role_nome="ROLE_SEM_ID",
+            kc_role_id=None,
+        )
+        admin = MagicMock()
+        admin.get_client_role.return_value = {"id": "role-uuid-91"}
+
+        resultado = _criar_role_kc(admin, sistema, 91, "ROLE_SEM_ID", perfil)
+
+        assert resultado is not None
+        perfil.refresh_from_db()
+        assert perfil.kc_role_id == "role-uuid-91"
+
+    def test_retorna_none_quando_get_client_role_falha(self) -> None:
+        sistema = self._sistema(92)
+        admin = MagicMock()
+        admin.get_client_role.side_effect = Exception("timeout")
+
+        resultado = _criar_role_kc(admin, sistema, 92, "ROLE_X", None)
+
+        assert resultado is None
+
+    def test_retorna_none_quando_role_id_vazio(self) -> None:
+        sistema = self._sistema(93)
+        admin = MagicMock()
+        admin.get_client_role.return_value = {"id": None}
+
+        resultado = _criar_role_kc(admin, sistema, 93, "ROLE_Y", None)
+
+        assert resultado is None
+
+    def test_get_or_create_encontra_registro_existente_sem_id(
+        self,
+    ) -> None:
+        from apps.staging.models import PerfilCoressoStaging
+
+        sistema = self._sistema(94)
+        PerfilCoressoStaging.objects.create(
+            coresso_sis_id=94,
+            coresso_gru_id="api-94-ROLE_Z",
+            sistema=sistema,
+            nome="ROLE_Z",
+            kc_role_nome="ROLE_Z",
+            kc_role_id=None,
+        )
+        admin = MagicMock()
+        admin.get_client_role.return_value = {"id": "role-uuid-94"}
+
+        resultado = _criar_role_kc(admin, sistema, 94, "ROLE_Z", None)
+
+        assert resultado is not None
+        assert resultado.kc_role_id == "role-uuid-94"
+
+
 # conceder_acesso_kc
 # ------------------------------------------------------------------
 
@@ -1645,7 +1739,7 @@ class TestConcederAcessoKc:
         assert r["sistema"] == "SisConc"
         admin.assign_client_role.assert_called_once()
 
-    def test_role_nao_encontrado(self) -> None:
+    def test_role_inexistente_e_criado_automaticamente(self) -> None:
         from apps.staging.models import SistemaStaging
 
         SistemaStaging.objects.create(
@@ -1657,6 +1751,10 @@ class TestConcederAcessoKc:
         admin = MagicMock()
         admin.get_users.return_value = []
         admin.create_user.return_value = "kc-new-71"
+        admin.get_client_role.return_value = {
+            "id": "uuid-novo",
+            "name": "INEXISTENTE",
+        }
 
         dados = {
             "login": "8888888",
@@ -1667,7 +1765,36 @@ class TestConcederAcessoKc:
             "sistemas": {},
         }
         r = conceder_acesso_kc(admin, dados, 71, ["INEXISTENTE"])
-        assert r["roles_nao_encontrados"] == ["INEXISTENTE"]
+        assert r["roles_atribuidos"] == ["INEXISTENTE"]
+        assert r["roles_nao_encontrados"] == []
+        admin.create_client_role.assert_called_once()
+
+    def test_role_criacao_falha_vai_para_nao_encontrados(
+        self,
+    ) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=73,
+            nome="SisConc3",
+            kc_client_uuid="uuid-73",
+            kc_client_id="sisconc3-qa",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new-73"
+        admin.create_client_role.side_effect = Exception("erro de conexão")
+
+        dados = {
+            "login": "8888889",
+            "cpf": "",
+            "nome": "Maria",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 73, ["FALHA"])
+        assert r["roles_nao_encontrados"] == ["FALHA"]
         assert r["roles_atribuidos"] == []
 
     def test_sistema_sem_client(self) -> None:
