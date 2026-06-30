@@ -7,6 +7,7 @@ e controle de provisionamento por idempotência.
 
 import uuid
 
+from django.conf import settings as django_settings
 from django.db import models
 from django.utils import timezone
 
@@ -39,7 +40,10 @@ class ExecucaoETL(models.Model):
         default="todos",
         help_text="Fonte: todos | se1426 | coresso | eol_alunos",
     )
-    realm_destino = models.CharField(max_length=100, default="sme-apps")
+    realm_destino = models.CharField(
+        max_length=100,
+        default=django_settings.KEYCLOAK_REALM,
+    )
     tipo_disparo = models.CharField(
         max_length=20,
         choices=TipoDisparo.choices,
@@ -220,7 +224,10 @@ class ControleProvisionamento(models.Model):
         null=True,
         help_text="ID no Keycloak",
     )
-    realm_destino = models.CharField(max_length=100, default="sme-apps")
+    realm_destino = models.CharField(
+        max_length=100,
+        default=django_settings.KEYCLOAK_REALM,
+    )
     hash_conteudo = models.CharField(
         max_length=64,
         help_text="SHA-256 dos campos significativos",

@@ -114,19 +114,19 @@ def enviar_todos(
     tamanho = tamanho_lote or settings.TOKEN_MS_TAMANHO_LOTE
     total = 0
     lotes = 0
-    buffer: list[dict] = []
+    lote: list[dict] = []
 
     for usuario in usuarios:
-        buffer.append(usuario)
-        if len(buffer) >= tamanho:
-            enviar_lote(buffer, id_execucao=id_execucao)
-            total += len(buffer)
+        lote.append(usuario)
+        if len(lote) >= tamanho:
+            enviar_lote(lote, id_execucao=id_execucao)
+            total += len(lote)
             lotes += 1
-            buffer = []
+            lote = []
 
-    if buffer:
-        enviar_lote(buffer, id_execucao=id_execucao)
-        total += len(buffer)
+    if lote:
+        enviar_lote(lote, id_execucao=id_execucao)
+        total += len(lote)
         lotes += 1
 
     return {"enviados": total, "lotes": lotes}

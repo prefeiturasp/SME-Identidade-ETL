@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -25,8 +26,8 @@ class BaseUsuarioCommand(BaseCommand):
         parser.add_argument(
             "--realm",
             type=str,
-            default="sme-apps",
-            help="Realm Keycloak. Padrão: sme-apps.",
+            default=settings.KEYCLOAK_REALM,
+            help="Realm Keycloak.",
         )
         parser.add_argument(
             "--saida",

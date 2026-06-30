@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.conf import settings
 
 from apps.controle_etl.orquestrador_kc import (
     _atribuir_roles_e_grupos,
@@ -1555,8 +1556,9 @@ class TestMigrarRoles:
 
     def test_migra_realm_roles(self) -> None:
         admin = MagicMock()
+        default_role = f"default-roles-{settings.KEYCLOAK_REALM}"
         admin.get_realm_roles_of_user.return_value = [
-            {"name": "default-roles-sme-apps"},
+            {"name": default_role},
             {"name": "Professor"},
         ]
         _migrar_realm_roles_kc(admin, "origem", "destino")
@@ -1566,8 +1568,9 @@ class TestMigrarRoles:
 
     def test_nao_migra_apenas_defaults(self) -> None:
         admin = MagicMock()
+        default_role = f"default-roles-{settings.KEYCLOAK_REALM}"
         admin.get_realm_roles_of_user.return_value = [
-            {"name": "default-roles-sme-apps"},
+            {"name": default_role},
             {"name": "offline_access"},
         ]
         _migrar_realm_roles_kc(admin, "origem", "destino")
@@ -1645,7 +1648,7 @@ class TestConcederAcessoKc:
         assert r["sistema"] == "SisConc"
         admin.assign_client_role.assert_called_once()
 
-    def test_role_nao_encontrado(self) -> None:
+    def test_role_inexistente_e_criado_automaticamente(self) -> None:
         from apps.staging.models import SistemaStaging
 
         SistemaStaging.objects.create(
@@ -1657,6 +1660,10 @@ class TestConcederAcessoKc:
         admin = MagicMock()
         admin.get_users.return_value = []
         admin.create_user.return_value = "kc-new-71"
+        admin.get_client_role.return_value = {
+            "id": "uuid-novo",
+            "name": "INEXISTENTE",
+        }
 
         dados = {
             "login": "8888888",
@@ -1667,7 +1674,36 @@ class TestConcederAcessoKc:
             "sistemas": {},
         }
         r = conceder_acesso_kc(admin, dados, 71, ["INEXISTENTE"])
-        assert r["roles_nao_encontrados"] == ["INEXISTENTE"]
+        assert r["roles_atribuidos"] == ["INEXISTENTE"]
+        assert r["roles_nao_encontrados"] == []
+        admin.create_client_role.assert_called_once()
+
+    def test_role_criacao_falha_vai_para_nao_encontrados(
+        self,
+    ) -> None:
+        from apps.staging.models import SistemaStaging
+
+        SistemaStaging.objects.create(
+            coresso_sis_id=73,
+            nome="SisConc3",
+            kc_client_uuid="uuid-73",
+            kc_client_id="sisconc3-qa",
+        )
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.return_value = "kc-new-73"
+        admin.create_client_role.side_effect = Exception("erro de conexão")
+
+        dados = {
+            "login": "8888889",
+            "cpf": "",
+            "nome": "Maria",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        r = conceder_acesso_kc(admin, dados, 73, ["FALHA"])
+        assert r["roles_nao_encontrados"] == ["FALHA"]
         assert r["roles_atribuidos"] == []
 
     def test_sistema_sem_client(self) -> None:
