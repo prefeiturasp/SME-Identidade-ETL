@@ -23,7 +23,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Registra as flags opcionais ``--sis-id`` e ``--realm``."""
         parser.add_argument(
             "--sis-id",
             type=int,
@@ -64,7 +64,7 @@ class Command(BaseCommand):
                 )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Executa o provisionamento de roles."""
+        """Itera os perfis CoreSSO staging e provisiona cada um como role."""
         sis_id = options["sis_id"]
         realm = options["realm"]
 

@@ -1636,7 +1636,7 @@ class TestCriarRoleKc:
         admin.create_client_role.assert_called_once()
 
     def test_atualiza_perfil_existente_sem_kc_role_id(self) -> None:
-        from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+        from apps.staging.models import PerfilCoressoStaging
 
         sistema = self._sistema(91)
         perfil = PerfilCoressoStaging.objects.create(

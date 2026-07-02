@@ -128,7 +128,13 @@ def _disparar_execucao(
 
 @extend_schema(tags=["Execuções"])
 class ExecucoesView(APIView):
-    """Lista e cria execuções do pipeline ETL."""
+    """Lista execuções do pipeline ETL e dispara novas execuções.
+
+    O `POST` é o ponto de entrada usado tanto pela API externa quanto
+    pelo botão de disparo manual no dashboard HTML (via `_disparar_execucao`),
+    por isso a criação da `ExecucaoETL` e o `apply_async` ficam centralizados
+    nessa função auxiliar em vez de duplicados entre os dois consumidores.
+    """
 
     @extend_schema(
         summary="Lista execuções ETL",
@@ -197,7 +203,12 @@ class ExecucoesView(APIView):
 
 @extend_schema(tags=["Execuções"])
 class DetalheExecucaoView(APIView):
-    """Retorna detalhe de uma execução ETL."""
+    """Detalha uma execução específica, incluindo suas etapas.
+
+    Usada pelo dashboard e por integrações externas para acompanhar o
+    progresso de uma `ExecucaoETL` já disparada, expondo as etapas
+    (`LogEtapaETL`) registradas até o momento da consulta.
+    """
 
     @extend_schema(
         summary="Detalhe de execução",
@@ -221,7 +232,13 @@ class DetalheExecucaoView(APIView):
 
 @extend_schema(tags=["Execuções"])
 class CancelarExecucaoView(APIView):
-    """Cancela uma execução em andamento."""
+    """Cancela uma execução pendente ou em andamento.
+
+    Revoga a tarefa Celery associada (`terminate=True`) e marca a
+    `ExecucaoETL` como cancelada. Execuções já finalizadas (sucesso, falha
+    ou cancelamento anterior) são rejeitadas com 400, pois revogar uma
+    tarefa que já terminou não tem efeito e mascararia o estado real.
+    """
 
     @extend_schema(
         summary="Cancela uma execução",
@@ -275,7 +292,13 @@ class CancelarExecucaoView(APIView):
 
 @extend_schema(tags=["Provisionamento"])
 class ControleProvisionamentoView(APIView):
-    """Lista registros de controle de provisionamento."""
+    """Lista o histórico de idempotência de provisionamento no Keycloak.
+
+    `ControleProvisionamento` é a fonte de verdade sobre o que já foi
+    criado/atualizado no Keycloak (usuário, grupo, role ou client),
+    usada pelo orquestrador para evitar reprocessar entidades já
+    provisionadas nesta ou em execuções anteriores.
+    """
 
     @extend_schema(
         summary="Lista registros de provisionamento",
@@ -318,7 +341,12 @@ class ControleProvisionamentoView(APIView):
 
 @extend_schema(tags=["Identidades"])
 class ConsultaIdentidadeView(APIView):
-    """Consulta o histórico de provisionamento de uma identidade."""
+    """Consulta pública e somente-leitura do estado de uma identidade.
+
+    Não dispara reprocessamento nem acessa CoreSSO/Keycloak — responde
+    a partir do último `ControleProvisionamento` conhecido, por isso é
+    seguro expor sem autenticação (`AllowAny`) e sem custo de rede externa.
+    """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -403,7 +431,13 @@ class ConsultaIdentidadeView(APIView):
 
 @extend_schema(tags=["Monitoramento"])
 class MarcaDaguaView(APIView):
-    """Lista os watermarks por fonte."""
+    """Lista o watermark de extração de cada fonte.
+
+    O watermark (`MarcaDaguaExtracao`) marca até onde cada fonte
+    (SE1426, CoreSSO, EOL Alunos) já foi extraída, permitindo que a
+    próxima execução retome de forma incremental em vez de reprocessar
+    tudo desde o início.
+    """
 
     @extend_schema(
         summary="Lista watermarks de extração",
@@ -424,7 +458,13 @@ class MarcaDaguaView(APIView):
 
 @extend_schema(tags=["Monitoramento"])
 class ResetarMarcaDaguaView(APIView):
-    """Reseta o watermark de uma fonte para reprocessamento completo."""
+    """Força reprocessamento completo de uma fonte na próxima extração.
+
+    Zera o watermark (`ultimo_processado_em`/`ultima_pagina`) em vez de
+    apagar o registro, para manter o histórico do restante do modelo
+    (`MarcaDaguaExtracao`) intacto. Uso típico: recuperação após
+    inconsistência detectada na fonte de origem.
+    """
 
     @extend_schema(
         summary="Reseta o watermark de uma fonte",
@@ -454,7 +494,12 @@ class ResetarMarcaDaguaView(APIView):
 
 @extend_schema(tags=["Checkpoints"])
 class CheckpointsView(APIView):
-    """Lista checkpoints de execuções."""
+    """Lista pontos de retomada gravados durante uma execução.
+
+    `CheckpointEtl` guarda o progresso intermediário de uma `ExecucaoETL`
+    para permitir retomar a partir do último ponto salvo em vez de
+    reiniciar o pipeline do zero após uma falha ou interrupção.
+    """
 
     @extend_schema(
         summary="Lista checkpoints de retomada",
@@ -481,7 +526,12 @@ class CheckpointsView(APIView):
 
 @extend_schema(tags=["Execuções"])
 class TentativasView(APIView):
-    """Lista rastreios de tentativas por execução."""
+    """Lista o histórico de tentativas de cada task Celery do pipeline.
+
+    `RastreioTentativa` registra cada tentativa (inclusive retries) de
+    uma task dentro de uma `ExecucaoETL`, o que é útil para diagnosticar
+    lentidão ou falhas intermitentes em uma etapa específica do pipeline.
+    """
 
     @extend_schema(
         summary="Lista tentativas de tarefas",
@@ -516,7 +566,12 @@ class TentativasView(APIView):
 
 @extend_schema(tags=["Monitoramento"])
 class ResumoExecucoesView(APIView):
-    """Resumo público com a última execução por fonte."""
+    """Resumo público do estado mais recente de cada fonte ETL.
+
+    Pensado para telas externas de status (sem autenticação, `AllowAny`)
+    que precisam de uma visão rápida "está tudo rodando?" sem consultar
+    o histórico completo de execuções.
+    """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -540,7 +595,13 @@ class ResumoExecucoesView(APIView):
 
 @extend_schema(tags=["Health"])
 class HealthCheckView(APIView):
-    """Health check público do serviço de ETL de identidade."""
+    """Health check público consultado por orquestradores externos.
+
+    Verifica apenas a conectividade com o banco `default` (SYNC_REC_DB) —
+    não valida Keycloak, Celery/KeyDB nem as fontes externas — porque é
+    o dado mínimo necessário para orquestradores de infraestrutura
+    decidirem se o serviço está apto a receber tráfego.
+    """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -1205,7 +1266,12 @@ def executar_pipeline_sistema(request: Request) -> Response:
 
 
 class DashboardView(View):
-    """Dashboard público de monitoramento das execuções ETL."""
+    """Renderiza a tela HTML de acompanhamento das execuções ETL.
+
+    Combina a última execução de cada fonte com uma lista filtrável do
+    histórico completo, servindo como visão operacional para quem
+    acompanha o pipeline sem precisar consumir a API diretamente.
+    """
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Renderiza o dashboard com resumo por fonte."""
@@ -1283,7 +1349,13 @@ def _resolver_execucoes_kanban(
 
 
 class KanbanView(View):
-    """Kanban de processamento ETL por fonte, com etapas do pipeline."""
+    """Renderiza o kanban de etapas do pipeline por fonte ou execução.
+
+    Por padrão mostra a última execução de cada fonte lado a lado; o
+    filtro `id_execucao` permite fixar uma execução específica (mesmo
+    que não seja mais a mais recente) para inspecionar suas etapas
+    (`LogEtapaETL`) isoladamente.
+    """
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Renderiza kanban com as etapas (LogEtapaETL) de cada execução."""
