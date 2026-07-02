@@ -22,11 +22,11 @@ class Command(BaseUsuarioCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Registra os argumentos base (identificador, realm, saída)."""
         self.add_arguments_base(parser)
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Executa a sincronização."""
+        """Busca o usuário no CoreSSO e sincroniza roles no Keycloak."""
         identificador = options["identificador"].strip()
         realm = options["realm"]
         caminho = self.resolver_caminho(options, "usuario")

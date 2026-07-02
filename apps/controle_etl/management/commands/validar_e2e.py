@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.controle_etl.models import ExecucaoETL
+from apps.controle_etl.models import ExecucaoETL, LogEtapaETL
 from apps.controle_etl.orquestrador_kc import (
     _resolver_username,
     obter_admin_keycloak,
@@ -82,7 +82,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Registra as flags de lote, realm, saída, chunk e filtros."""
         parser.add_argument(
             "--lote-maximo",
             type=int,
@@ -153,7 +153,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Executa o pipeline reduzido e grava o relatório."""
+        """Extrai, resolve e provisiona uma amostra; grava relatório .md."""
         lote_maximo = options["lote_maximo"]
         realm = options["realm"]
         sis_id = options["sis_id"]
@@ -222,9 +222,14 @@ class Command(BaseCommand):
             )
 
         execucao.refresh_from_db()
+        etapas = execucao.etapas.all()
+        execucao.total_erros = sum(e.registros_erro for e in etapas)
+        tem_falhas = etapas.filter(
+            situacao=LogEtapaETL.Situacao.FALHA
+        ).exists()
         situacao_final = (
             ExecucaoETL.Situacao.FALHA
-            if execucao.total_erros
+            if tem_falhas
             else ExecucaoETL.Situacao.SUCESSO
         )
         execucao.marcar_finalizada(situacao_final)

@@ -21,7 +21,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Registra as flags de fonte, realm, data-referência e lote."""
         parser.add_argument(
             "--fonte",
             type=str,
@@ -52,7 +52,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Cria a execução e dispara o pipeline."""
+        """Cria a ExecucaoETL e roda o pipeline síncrono ou assíncrono."""
         if options["lote_maximo"] is not None:
             settings.ETL_LOTE_MAXIMO = options["lote_maximo"]
 

@@ -151,7 +151,11 @@ class TestValidarE2e:
                 execucao=execucao,
                 nome_etapa=(LogEtapaETL.NomeEtapa.PROVISIONAR_KEYCLOAK),
                 ordem_etapa=4,
-                situacao=LogEtapaETL.Situacao.SUCESSO,
+                situacao=(
+                    LogEtapaETL.Situacao.FALHA
+                    if total_erros
+                    else LogEtapaETL.Situacao.SUCESSO
+                ),
                 registros_entrada=3,
                 registros_saida=3,
                 registros_erro=total_erros,

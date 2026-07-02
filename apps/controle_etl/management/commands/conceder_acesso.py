@@ -22,7 +22,7 @@ class Command(BaseUsuarioCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Herda os argumentos base e adiciona ``--sistema`` e ``--roles``."""
         self.add_arguments_base(parser)
         parser.add_argument(
             "--sistema",
@@ -38,7 +38,7 @@ class Command(BaseUsuarioCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Executa a concessão de acesso."""
+        """Busca o usuário no CoreSSO e concede sistema/roles no Keycloak."""
         identificador = options["identificador"].strip()
         sis_id = options["sistema"]
         nomes_roles = options["roles"]

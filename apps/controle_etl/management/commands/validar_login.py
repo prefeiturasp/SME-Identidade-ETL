@@ -38,7 +38,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Define os argumentos do comando."""
+        """Registra ``username`` e as flags de senha, realm, client e saída."""
         parser.add_argument(
             "username",
             type=str,
@@ -88,7 +88,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Executa o teste de login."""
+        """Reseta a senha, faz login e grava token/userinfo/roles em JSON."""
         import os
 
         username = options["username"]
