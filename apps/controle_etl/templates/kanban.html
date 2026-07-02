@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+{% load formatadores %}
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETL Kanban — SME-Identidade</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" integrity="sha384-XGj909vG7eRM0p9ZAgq6pCcqH8zVsnTfJ3v/u6U9iIBdOd9rW3Xv6R3C1vT6BIM8" crossorigin="anonymous">
+  <style>
+    :root {
+      --color-success: #22c55e;
+      --color-error:   #ef4444;
+      --color-running: #3b82f6;
+      --color-pending: #94a3b8;
+      --sidebar-width: 220px;
+      --col-extracao:  #0ea5e9;
+      --col-resolucao: #a855f7;
+      --col-provisao:  #22c55e;
+      --col-token:     #f59e0b;
+    }
+
+    body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      position: fixed; top: 0; left: 0;
+      width: var(--sidebar-width); height: 100vh;
+      background: #1e293b; border-right: 1px solid #334155;
+      display: flex; flex-direction: column;
+      padding: 1.5rem 1rem; z-index: 100;
+    }
+    .sidebar-logo { font-size: 1rem; font-weight: 700; color: #f8fafc; margin-bottom: .25rem; }
+    .sidebar-sub  { font-size: .7rem; color: #64748b; margin-bottom: 1.5rem; text-transform: uppercase; letter-spacing: 1px; }
+    .sidebar-label { font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; margin-bottom: .5rem; }
+    .sidebar-nav { font-size: .8rem; padding: .4rem .75rem; border-radius: 6px; margin-bottom: .25rem; display: flex; align-items: center; gap: .5rem; color: #94a3b8; text-decoration: none; transition: background .15s; }
+    .sidebar-nav:hover, .sidebar-nav.active { background: #334155; color: #f1f5f9; }
+    .sidebar-nav i { width: 16px; text-align: center; }
+    .sidebar-divider { border-top: 1px solid #334155; margin: .75rem 0; }
+    .sidebar-domain { font-size: .8rem; padding: .35rem .75rem; border-radius: 6px; margin-bottom: .2rem; cursor: pointer; display: flex; align-items: center; gap: .5rem; color: #94a3b8; text-decoration: none; transition: background .15s; }
+    .sidebar-domain:hover { background: #334155; color: #f1f5f9; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot-sucesso     { background: var(--color-success); }
+    .dot-falha       { background: var(--color-error); }
+    .dot-parcial     { background: #f59e0b; }
+    .dot-executando  { background: var(--color-running); box-shadow: 0 0 6px var(--color-running); }
+    .dot-pendente, .dot-cancelado, .dot-default { background: var(--color-pending); }
+    .refresh-badge { margin-top: auto; font-size: .7rem; color: #475569; display: flex; align-items: center; gap: .4rem; }
+    .refresh-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+    /* ── Main ── */
+    .main { margin-left: var(--sidebar-width); padding: 2rem; min-height: 100vh; }
+    .page-title { font-size: 1.35rem; font-weight: 700; color: #f8fafc; margin-bottom: .25rem; }
+    .page-sub { font-size: .8rem; color: #64748b; margin-bottom: 2rem; }
+    .section-title { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; margin-bottom: 1rem; }
+
+    /* ── Filter bar ── */
+    .filter-bar { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.75rem; flex-wrap: wrap; }
+    .filter-bar .form-select { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; font-size: .82rem; border-radius: 8px; padding: .35rem .75rem; }
+    .filter-bar .form-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.2); background: #1e293b; color: #f1f5f9; }
+    .filter-bar option { background: #1e293b; }
+    .filter-form { display: flex; gap: .5rem; align-items: flex-end; flex-wrap: wrap; }
+    .filter-field { display: flex; flex-direction: column; gap: .25rem; }
+    .filter-label { font-size: .65rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
+
+    /* ── Domain block ── */
+    .domain-block { margin-bottom: 2.5rem; }
+    .domain-header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+    .domain-title { font-size: 1rem; font-weight: 700; color: #f1f5f9; text-transform: uppercase; }
+    .pill { display: inline-flex; align-items: center; gap: .3rem; font-size: .7rem; font-weight: 600; padding: .2rem .65rem; border-radius: 20px; text-transform: uppercase; letter-spacing: .5px; }
+    .pill.sucesso     { background: #14532d; color: #4ade80; }
+    .pill.falha       { background: #7f1d1d; color: #fca5a5; }
+    .pill.parcial     { background: #78350f; color: #fde68a; }
+    .pill.cancelado   { background: #334155; color: #cbd5e1; }
+    .pill.executando  { background: #1e3a8a; color: #93c5fd; }
+    .pill.pendente    { background: #334155; color: #cbd5e1; }
+    .exec-meta { font-size: .75rem; color: #64748b; }
+
+    /* ── Kanban columns (etapas) ── */
+    .kanban-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+    @media (max-width: 1100px) { .kanban-row { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px)  { .kanban-row { grid-template-columns: 1fr; } }
+
+    .kcard {
+      background: #1e293b; border: 1px solid #334155;
+      border-radius: 12px; overflow: hidden;
+    }
+    .kcard-header {
+      padding: .6rem 1rem; display: flex; align-items: center; gap: .5rem;
+      font-size: .72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1px; border-bottom: 1px solid #334155;
+    }
+    .kcard-header.extracao  { color: var(--col-extracao);  border-left: 3px solid var(--col-extracao); }
+    .kcard-header.resolucao { color: var(--col-resolucao); border-left: 3px solid var(--col-resolucao); }
+    .kcard-header.provisao  { color: var(--col-provisao);  border-left: 3px solid var(--col-provisao); }
+    .kcard-header.token     { color: var(--col-token);     border-left: 3px solid var(--col-token); }
+    .kcard-body  { padding: .75rem 1rem; }
+    .kcard-total { font-size: 1.6rem; font-weight: 700; color: #f1f5f9; line-height: 1; margin-bottom: .35rem; }
+    .kcard-label { font-size: .7rem; color: #64748b; margin-bottom: .75rem; }
+
+    /* ── Etapas dentro do kcard ── */
+    .ktable-wrap { max-height: 260px; overflow-y: auto; }
+    .ktable { width: 100%; border-collapse: collapse; font-size: .78rem; table-layout: fixed; }
+    .ktable tr { border-bottom: 1px solid #263245; }
+    .ktable tr:last-child { border-bottom: none; }
+    .ktable td { padding: .35rem 0; vertical-align: middle; }
+    .ktable .td-name { color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; width: 100%; }
+    .ktable .td-val  { text-align: right; font-weight: 600; white-space: nowrap; padding-left: .5rem; width: 1%; }
+    .td-val.entrada-color { color: var(--col-extracao); }
+    .td-val.saida-color   { color: var(--col-provisao); }
+    .td-val.erro-color    { color: var(--color-error); }
+    .etapa-pill {
+      display: inline-flex; align-items: center; gap: .25rem;
+      font-size: .62rem; font-weight: 700; padding: .1rem .45rem;
+      border-radius: 10px; text-transform: uppercase; margin-left: .35rem;
+    }
+    .etapa-pill.sucesso    { background: #14532d; color: #4ade80; }
+    .etapa-pill.falha      { background: #7f1d1d; color: #fca5a5; }
+    .etapa-pill.ignorado   { background: #334155; color: #cbd5e1; }
+    .etapa-pill.executando { background: #1e3a8a; color: #93c5fd; }
+
+    /* ── Resumo card ── */
+    .cp-row { display: flex; justify-content: space-between; font-size: .78rem; padding: .25rem 0; border-bottom: 1px solid #263245; }
+    .cp-row:last-child { border-bottom: none; }
+    .cp-key { color: #64748b; }
+    .cp-val { color: #f1f5f9; font-weight: 600; font-family: monospace; font-size: .75rem; }
+
+    .empty-state { text-align: center; padding: 3rem; color: #475569; }
+    .empty-state i { font-size: 2rem; display: block; margin-bottom: .75rem; }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; padding: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <i class="bi bi-cpu me-1"></i> ETL Monitor
+  </div>
+  <div class="sidebar-sub">SME-Identidade</div>
+
+  <div class="sidebar-label">Navegação</div>
+  <a class="sidebar-nav" href="{% url 'dashboard' %}">
+    <i class="bi bi-activity"></i> Execuções
+  </a>
+  <a class="sidebar-nav active" href="{% url 'kanban' %}">
+    <i class="bi bi-kanban"></i> Kanban
+  </a>
+
+  <div class="sidebar-divider"></div>
+
+  {% if todas_fontes %}
+  <div class="sidebar-label">Fontes</div>
+  {% for f in todas_fontes %}
+  <a class="sidebar-domain" href="?fonte={{ f }}">
+    <span class="dot dot-default"></span>
+    {{ f|truncatechars:22 }}
+  </a>
+  {% endfor %}
+  {% endif %}
+
+  <div class="refresh-badge">
+    <span class="refresh-dot"></span>
+    Atualiza manualmente (F5)
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main">
+
+  <div class="page-title"><i class="bi bi-kanban me-2"></i>Kanban de Processamento ETL — Identidade</div>
+  <div class="page-sub">Estágios do pipeline: extração → resolução → provisionamento Keycloak → token-ms</div>
+
+  <!-- Filtros -->
+  <div class="filter-bar">
+    <form method="get" class="filter-form">
+      <div class="filter-field">
+        <label for="id_fonte_kb" class="filter-label">Fonte</label>
+        <select id="id_fonte_kb" name="fonte" class="form-select form-select-sm" onchange="this.form.submit()">
+          <option value="">Todas</option>
+          {% for f in todas_fontes %}
+          <option value="{{ f }}" {% if fonte_filtro == f %}selected{% endif %}>{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="id_execucao_kb" class="filter-label">ID Execução</label>
+        <input id="id_execucao_kb" type="text" name="id_execucao" class="form-control form-control-sm"
+               style="background:#1e293b;border:1px solid #334155;color:#e2e8f0;font-size:.82rem;border-radius:8px"
+               placeholder="UUID da execução" value="{{ id_execucao_filtro }}">
+      </div>
+      <button type="submit" class="btn btn-sm btn-primary" style="border-radius:8px;font-size:.8rem">
+        <i class="bi bi-funnel-fill me-1"></i>Filtrar
+      </button>
+      <a href="{% url 'kanban' %}" class="btn btn-sm" style="border-radius:8px;font-size:.8rem;background:#334155;color:#f1f5f9;border:none">
+        <i class="bi bi-x-lg me-1"></i>Limpar
+      </a>
+    </form>
+  </div>
+
+  {% if fontes_kanban %}
+    {% for item in fontes_kanban %}
+    <div class="domain-block">
+      <div class="domain-header">
+        <span class="domain-title">{{ item.exec.fonte }}</span>
+        <span class="pill {{ item.exec.situacao }}">
+          {% if item.exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
+          {% elif item.exec.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
+          {% elif item.exec.situacao == "parcial" %}<i class="bi bi-exclamation-triangle-fill"></i>
+          {% elif item.exec.situacao == "executando" %}<i class="bi bi-arrow-repeat"></i>
+          {% else %}<i class="bi bi-clock"></i>{% endif %}
+          {{ item.exec.situacao }}
+        </span>
+        <span class="exec-meta">
+          <i class="bi bi-hash"></i>{{ item.exec.id_execucao }}
+          {% if item.exec.iniciado_em %} · <i class="bi bi-play"></i>{{ item.exec.iniciado_em|date:"d/m H:i" }}{% endif %}
+        </span>
+      </div>
+
+      <div class="kanban-row">
+        <!-- Resumo geral -->
+        <div class="kcard">
+          <div class="kcard-header extracao"><i class="bi bi-bar-chart-line me-1"></i>Resumo</div>
+          <div class="kcard-body">
+            <div class="cp-row"><span class="cp-key">Entrada total</span><span class="cp-val">{{ item.total_entrada|numero_br }}</span></div>
+            <div class="cp-row"><span class="cp-key">Saída total</span><span class="cp-val">{{ item.total_saida|numero_br }}</span></div>
+            <div class="cp-row"><span class="cp-key">Erros</span><span class="cp-val" style="color:#f87171">{{ item.total_erro|numero_br }}</span></div>
+            <div class="cp-row"><span class="cp-key">Realm destino</span><span class="cp-val">{{ item.exec.realm_destino }}</span></div>
+          </div>
+        </div>
+
+        <!-- Etapas -->
+        <div class="kcard" style="grid-column: span 3">
+          <div class="kcard-header resolucao"><i class="bi bi-list-task me-1"></i>Etapas do pipeline</div>
+          <div class="kcard-body">
+            {% if item.etapas %}
+            <div class="ktable-wrap">
+              <table class="ktable">
+                <caption class="visually-hidden">Etapas do pipeline</caption>
+                <thead>
+                <tr>
+                  <th>Etapa</th>
+                  <th>Entrada</th>
+                  <th>Saída</th>
+                  <th>Erros</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for etapa in item.etapas %}
+                <tr>
+                  <td class="td-name">
+                    {{ etapa.get_nome_etapa_display }}
+                    <span class="etapa-pill {{ etapa.situacao }}">{{ etapa.situacao }}</span>
+                  </td>
+                  <td class="td-val entrada-color">{{ etapa.registros_entrada|numero_br }}</td>
+                  <td class="td-val saida-color">{{ etapa.registros_saida|numero_br }}</td>
+                  <td class="td-val erro-color">{{ etapa.registros_erro|numero_br }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <div class="kcard-label">Nenhuma etapa registrada para esta execução ainda.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <i class="bi bi-inbox"></i>
+    {{ mensagem_kanban_vazio }}
+  </div>
+  {% endif %}
+
+</main>
+
+</body>
+</html>

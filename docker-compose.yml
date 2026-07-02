@@ -1,0 +1,49 @@
+services:
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: sme_identidade_etl_keydb
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etl_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sme_identidade_etl_worker
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      URL_KEYDB: redis://keydb:6379/0
+    volumes:
+      - .:/app
+    command: python /app/scripts/watch_celery.py
+    restart: unless-stopped
+    depends_on:
+      keydb:
+        condition: service_healthy
+
+  etl_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sme_identidade_etl_api
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      URL_KEYDB: redis://keydb:6379/0
+    volumes:
+      - .:/app
+    ports:
+      - "8001:8001"
+    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8001", "--workers", "3", "--timeout", "120"]
+    restart: unless-stopped
+    depends_on:
+      keydb:
+        condition: service_healthy
