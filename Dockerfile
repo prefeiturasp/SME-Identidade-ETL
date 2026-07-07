@@ -60,9 +60,11 @@ WORKDIR /app
 
 COPY apps /app/apps
 COPY config /app/config
+COPY scripts /app/scripts
 COPY manage.py /app/
 
 RUN python manage.py collectstatic --noinput 2>/dev/null || true \
+    && chmod +x /app/scripts/entrypoint.sh \
     && chown -R app:app /app
 
 USER app
@@ -72,4 +74,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -sf http://localhost:8000/identidade-etl/api/v1/etl/health/ || exit 1
 
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
