@@ -50,3 +50,5 @@ rf
 # SonarQube
 .scannerwork/
 coverage.xml
+sonar-project.properties
+pytest-report.xml

@@ -383,85 +383,103 @@ class TestCheckpointsView:
 class TestConsultaIdentidadeView:
     URL = "/identidade-etl/api/v1/etl/identidades/consultar/"
 
-    def test_endpoint_publico_sem_autenticacao(
+    _ORQUESTRADOR = "apps.controle_etl.orquestrador_kc"
+
+    def test_sem_api_key_retorna_401(
         self,
         cliente_anonimo: APIClient,
     ) -> None:
         resp = cliente_anonimo.get(self.URL + "?cpf=12345678901")
-        assert resp.status_code == status.HTTP_200_OK
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_busca_por_cpf_encontrado(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
-        ControleProvisionamento.objects.create(
-            tipo_entidade="usuario",
-            sistema_origem="se1426",
-            id_origem="12345678901",
-        )
-        resp = cliente_anonimo.get(self.URL + "?cpf=123.456.789-01")
-        assert resp.status_code == status.HTTP_200_OK
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id_origem"] == "12345678901"
+    def test_busca_por_rf_encontrado(self, cliente: APIClient) -> None:
+        conta_kc = {
+            "id": "5c29cc47-41a1-4ef4-994f-c65aae52d456",
+            "username": "7376065",
+            "email": "monica.tang@sme.prefeitura.sp.gov.br",
+            "firstName": "MONICA",
+            "lastName": "CARVALHO TANG",
+            "enabled": True,
+            "attributes": {"rf": ["7376065"], "cpf": ["26930618810"]},
+        }
+        with (
+            patch(
+                f"{self._ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=object(),
+            ),
+            patch(
+                f"{self._ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[conta_kc],
+            ) as mock_buscar,
+        ):
+            resp = cliente.get(self.URL + "?rf=7376065")
 
-    def test_busca_por_rf_encontrado(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
-        ControleProvisionamento.objects.create(
-            tipo_entidade="usuario",
-            sistema_origem="coresso",
-            id_origem="987654",
-        )
-        resp = cliente_anonimo.get(self.URL + "?rf=987654")
         assert resp.status_code == status.HTTP_200_OK
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["sistema_origem"] == "coresso"
+        assert data[0]["kc_user_id"] == conta_kc["id"]
+        assert data[0]["username"] == "7376065"
+        assert data[0]["nome"] == "MONICA CARVALHO TANG"
+        assert data[0]["rf"] == "7376065"
+        assert data[0]["cpf"] == "26930618810"
+        mock_buscar.assert_called_once()
+        args, _ = mock_buscar.call_args
+        assert args[1] == "7376065"
 
-    def test_filtra_por_sistema_origem(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
-        ControleProvisionamento.objects.create(
-            tipo_entidade="usuario",
-            sistema_origem="se1426",
-            id_origem="11111111111",
-        )
-        ControleProvisionamento.objects.create(
-            tipo_entidade="usuario",
-            sistema_origem="coresso",
-            id_origem="11111111111",
-        )
-        resp = cliente_anonimo.get(
-            self.URL + "?cpf=11111111111&sistema_origem=coresso"
-        )
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["sistema_origem"] == "coresso"
+    def test_busca_por_cpf_encontrado(self, cliente: APIClient) -> None:
+        with (
+            patch(
+                f"{self._ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=object(),
+            ),
+            patch(
+                f"{self._ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[
+                    {
+                        "id": "kc-1",
+                        "username": "12345678901",
+                        "attributes": {},
+                        "enabled": True,
+                    }
+                ],
+            ) as mock_buscar,
+        ):
+            resp = cliente.get(self.URL + "?cpf=123.456.789-01")
+
+        assert resp.status_code == status.HTTP_200_OK
+        args, _ = mock_buscar.call_args
+        assert args[2] == "12345678901"
 
     def test_nao_encontrado_retorna_lista_vazia(
-        self,
-        cliente_anonimo: APIClient,
+        self, cliente: APIClient
     ) -> None:
-        resp = cliente_anonimo.get(self.URL + "?cpf=00000000000")
+        with (
+            patch(
+                f"{self._ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=object(),
+            ),
+            patch(
+                f"{self._ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[],
+            ),
+        ):
+            resp = cliente.get(self.URL + "?cpf=00000000000")
+
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json() == []
 
-    def test_busca_por_email_retorna_400(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
-        resp = cliente_anonimo.get(self.URL + "?email=alguem@sme.sp")
+    def test_sem_identificador_retorna_400(self, cliente: APIClient) -> None:
+        resp = cliente.get(self.URL)
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_sem_identificador_retorna_400(
-        self,
-        cliente_anonimo: APIClient,
-    ) -> None:
-        resp = cliente_anonimo.get(self.URL)
-        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    def test_erro_no_keycloak_retorna_502(self, cliente: APIClient) -> None:
+        with patch(
+            f"{self._ORQUESTRADOR}.obter_admin_keycloak",
+            side_effect=Exception("keycloak indisponível"),
+        ):
+            resp = cliente.get(self.URL + "?rf=7376065")
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
 
 
 # ---------------------------------------------------------------------------

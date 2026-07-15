@@ -24,6 +24,13 @@ Todos os modelos de usuário herdam de `_UsuarioStagingBase`, que define:
 `id_execucao`, `fonte`, `id_origem`, `cpf`, `rf`, `nome`, `email`,
 `situacao`, `situacao` (ETL: `extraido` → `pronto` / `erro`), `detalhe_erro`.
 
+`fonte` normalmente reflete a origem da extração (`se1426`, `coresso`,
+`eol_alunos`), mas o endpoint `POST /api/v1/etl/usuario/criar/` também
+materializa registros diretamente com `fonte="api_manual"` — usuários sem
+vínculo prévio no CoreSSO, criados a partir de dados informados na
+requisição em vez de um pipeline de extração. Ver
+[API REST de Controle](../controle/api.md).
+
 ---
 
 ## Tasks de staging

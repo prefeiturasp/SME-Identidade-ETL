@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import uuid
 from typing import Any
 
 from django.conf import settings
@@ -31,9 +32,11 @@ from .serializers import (
     ConcederAcessoSerializer,
     ControleProvisionamentoSerializer,
     CriarExecucaoETLSerializer,
+    CriarUsuarioManualSerializer,
     ExecucaoETLSerializer,
     ExtrairVinculosSerializer,
     HealthStatusSerializer,
+    IdentidadeKeycloakSerializer,
     ListarExecucaoETLSerializer,
     MarcaDaguaExtracaoSerializer,
     PipelineSistemaSerializer,
@@ -341,26 +344,24 @@ class ControleProvisionamentoView(APIView):
 
 @extend_schema(tags=["Identidades"])
 class ConsultaIdentidadeView(APIView):
-    """Consulta pública e somente-leitura do estado de uma identidade.
+    """Consulta o estado real de uma identidade direto no Keycloak.
 
-    Não dispara reprocessamento nem acessa CoreSSO/Keycloak — responde
-    a partir do último `ControleProvisionamento` conhecido, por isso é
-    seguro expor sem autenticação (`AllowAny`) e sem custo de rede externa.
+    Busca a conta por RF, CPF ou e-mail via Keycloak Admin API
+    (mesma lógica de deduplicação usada no upsert,
+    ``_buscar_todas_contas_kc``) — reflete o estado atual do
+    Keycloak, independentemente de qual caminho de upsert criou o
+    usuário (pipeline, ``usuario/criar/``, ``usuario/sincronizar/``
+    ou ``usuario/conceder-acesso/``). Exige autenticação por API Key,
+    já que cada consulta gera uma chamada real ao Keycloak.
     """
-
-    authentication_classes: list = []
-    permission_classes = [AllowAny]
 
     @extend_schema(
         summary="Consulta identidade por CPF, RF ou e-mail",
         description=(
-            "Endpoint público de leitura. Busca no histórico permanente "
-            "de ControleProvisionamento (tipo_entidade=usuario) pelo "
-            "identificador informado (apenas um por requisição: `cpf`, "
-            "`rf` ou `email`), opcionalmente restringindo por "
-            "`sistema_origem` (ex: se1426, coresso). Não dispara "
-            "reprocessamento nem consulta as fontes externas — apenas o "
-            "último estado conhecido de provisionamento."
+            "Busca a conta do usuário diretamente no Keycloak, por RF, "
+            "CPF ou e-mail (ao menos um obrigatório). Retorna todas as "
+            "contas encontradas — normalmente uma, mas pode haver mais "
+            "de uma se existirem contas duplicadas ainda não mescladas."
         ),
         parameters=[
             OpenApiParameter(
@@ -369,63 +370,75 @@ class ConsultaIdentidadeView(APIView):
             OpenApiParameter(
                 "rf", str, description="Registro funcional do usuário"
             ),
+            OpenApiParameter("email", str, description="E-mail do usuário"),
             OpenApiParameter(
-                "email",
+                "realm",
                 str,
-                description=(
-                    "Não suportado: e-mail não é indexado no histórico de "
-                    "provisionamento. Informar retorna 400."
-                ),
-            ),
-            OpenApiParameter(
-                "sistema_origem",
-                str,
-                description="Filtra pelo sistema de origem: se1426 | coresso",
+                description="Realm Keycloak (padrão: KEYCLOAK_REALM)",
             ),
         ],
         responses={
-            200: ControleProvisionamentoSerializer(many=True),
+            200: IdentidadeKeycloakSerializer(many=True),
             400: None,
+            502: None,
         },
     )
     def get(self, request: Request) -> Response:
-        """Busca registros de provisionamento por cpf, rf ou email."""
-        cpf = request.query_params.get("cpf")
-        rf = request.query_params.get("rf")
-        email = request.query_params.get("email")
-        sistema_origem = request.query_params.get("sistema_origem")
+        """Busca a conta do usuário direto no Keycloak."""
+        from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+            _buscar_todas_contas_kc,
+            obter_admin_keycloak,
+        )
 
-        if email and not cpf and not rf:
+        cpf_bruto = request.query_params.get("cpf") or ""
+        cpf = "".join(c for c in cpf_bruto if c.isdigit())
+        rf = (request.query_params.get("rf") or "").strip()
+        email = (request.query_params.get("email") or "").strip()
+        realm = request.query_params.get("realm") or settings.KEYCLOAK_REALM
+
+        if not cpf and not rf and not email:
             return Response(
                 {
                     "detalhe": (
-                        "Busca por e-mail não é suportada: o histórico de "
-                        "provisionamento (ControleProvisionamento) indexa "
-                        "apenas CPF, RF ou matrícula. Informe `cpf` ou `rf`."
+                        "Informe ao menos um identificador:"
+                        " cpf, rf ou email."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not cpf and not rf:
+        try:
+            admin = obter_admin_keycloak(realm=realm)
+            contas = _buscar_todas_contas_kc(admin, rf, cpf, email)
+        except Exception as exc:
+            logger.exception("Falha ao consultar identidade no KC: %s", exc)
             return Response(
-                {"detalhe": "Informe ao menos um identificador: cpf ou rf."},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"detalhe": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        qs = ControleProvisionamento.objects.filter(
-            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
-        )
-        if sistema_origem:
-            qs = qs.filter(sistema_origem=sistema_origem)
-
-        if cpf:
-            cpf_normalizado = "".join(c for c in cpf if c.isdigit())
-            qs = qs.filter(id_origem=cpf_normalizado)
-        elif rf:
-            qs = qs.filter(id_origem=rf.strip())
-
-        dados = ControleProvisionamentoSerializer(qs, many=True).data
+        base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
+        dados = [
+            {
+                "kc_user_id": str(conta.get("id", "")),
+                "username": conta.get("username", ""),
+                "nome": " ".join(
+                    filter(
+                        None,
+                        [conta.get("firstName"), conta.get("lastName")],
+                    )
+                ),
+                "email": conta.get("email"),
+                "ativo": bool(conta.get("enabled")),
+                "cpf": (conta.get("attributes", {}).get("cpf") or [None])[0],
+                "rf": (conta.get("attributes", {}).get("rf") or [None])[0],
+                "kc_url": (
+                    f"{base}/admin/master/console/"
+                    f"#/{realm}/users/{conta.get('id')}/settings"
+                ),
+            }
+            for conta in contas
+        ]
         return Response(dados)
 
 
@@ -993,6 +1006,119 @@ def listar_vinculos(request: Request) -> Response:
             }
         )
     return Response(dados)
+
+
+# ---------------------------------------------------------------------------
+# Criação manual de usuário (sem vínculo prévio no CoreSSO)
+# ---------------------------------------------------------------------------
+
+
+@extend_schema(
+    tags=["Usuário"],
+    request=CriarUsuarioManualSerializer,
+)
+@api_view(["POST"])
+def criar_usuario_manual(request: Request) -> Response:
+    """Cria ou atualiza um usuário no Keycloak a partir de dados diretos.
+
+    Diferente de ``sincronizar_usuario``/``conceder_acesso``, não
+    depende do usuário já existir no CoreSSO — os dados vêm da
+    própria requisição. É materializado como registro de staging
+    (``fonte="api_manual"``) e provisionado pelo mesmo caminho
+    idempotente usado pelo pipeline (``provisionar_usuario_kc``).
+    """
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        _conceder_roles_sistema_kc,
+        obter_admin_keycloak,
+        provisionar_usuario_kc,
+    )
+    from apps.staging.models import (  # noqa: PLC0415
+        UsuarioAlunoStaging,
+        UsuarioServidorStaging,
+        UsuarioTerceiroStaging,
+    )
+
+    serializer = CriarUsuarioManualSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    dados = serializer.validated_data
+
+    modelo: type[Any] = {
+        "servidor": UsuarioServidorStaging,
+        "aluno": UsuarioAlunoStaging,
+        "terceiro": UsuarioTerceiroStaging,
+    }[dados["tipo_usuario"]]
+
+    realm = dados.get("realm") or settings.KEYCLOAK_REALM
+    cpf = dados.get("cpf", "").strip()
+    rf = dados.get("rf", "").strip()
+
+    campos_busca = {"fonte": "api_manual"}
+    if cpf:
+        campos_busca["cpf"] = cpf
+    if rf and modelo is UsuarioServidorStaging:
+        campos_busca["rf"] = rf
+
+    valores_padrao = {
+        "id_execucao": uuid.uuid4(),
+        "nome": dados["nome"],
+        "email": dados.get("email", ""),
+        "situacao": "ativo",
+    }
+    if not cpf and rf:
+        valores_padrao["cpf"] = ""
+    if modelo is UsuarioServidorStaging and rf:
+        valores_padrao["rf"] = rf
+
+    try:
+        usuario, _ = modelo.objects.update_or_create(
+            defaults=valores_padrao,
+            **campos_busca,
+        )
+    except Exception as exc:
+        logger.exception("Falha ao materializar usuário manual: %s", exc)
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        admin = obter_admin_keycloak(realm=realm)
+        resultado = provisionar_usuario_kc(admin, usuario, realm=realm)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao provisionar usuário manual %s: %s",
+            usuario.id,
+            exc,
+        )
+        return Response(
+            {"detalhe": str(exc)},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    sis_id = dados.get("sistema")
+    nomes_roles = dados.get("roles")
+    if sis_id and nomes_roles:
+        try:
+            resultado_roles = _conceder_roles_sistema_kc(
+                admin,
+                resultado["kc_user_id"],
+                sis_id,
+                nomes_roles,
+                username=usuario.nome,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Falha ao conceder acesso ao usuário manual %s: %s",
+                usuario.id,
+                exc,
+            )
+            return Response(
+                {**resultado, "erro_acesso": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        resultado = {**resultado, **resultado_roles}
+
+    return Response(resultado)
 
 
 # ---------------------------------------------------------------------------

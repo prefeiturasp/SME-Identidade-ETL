@@ -121,6 +121,12 @@ urlpatterns = [
         views.listar_vinculos,
         name="etl-vinculos",
     ),
+    # Criação manual de usuário (sem vínculo prévio no CoreSSO)
+    path(
+        "etl/usuario/criar/",
+        views.criar_usuario_manual,
+        name="etl-usuario-criar",
+    ),
     # Sincronização individual de usuário
     path(
         "etl/usuario/sincronizar/",

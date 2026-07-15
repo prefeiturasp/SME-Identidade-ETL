@@ -142,6 +142,19 @@ class ControleProvisionamentoSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class IdentidadeKeycloakSerializer(serializers.Serializer):
+    """Serializa uma conta de usuário consultada diretamente no Keycloak."""
+
+    kc_user_id = serializers.CharField()
+    username = serializers.CharField()
+    nome = serializers.CharField()
+    email = serializers.CharField(allow_null=True)
+    ativo = serializers.BooleanField()
+    cpf = serializers.CharField(allow_null=True)
+    rf = serializers.CharField(allow_null=True)
+    kc_url = serializers.CharField()
+
+
 class MarcaDaguaExtracaoSerializer(serializers.ModelSerializer):
     """Serializa o watermark de extração por fonte."""
 
@@ -201,6 +214,68 @@ class SincronizarUsuarioSerializer(serializers.Serializer):
         required=False,
         help_text=_HT_REALM,
     )
+
+
+class CriarUsuarioManualSerializer(serializers.Serializer):
+    """Valida payload de criação de usuário sem vínculo no CoreSSO.
+
+    Usado quando o usuário ainda não existe em nenhuma fonte legada
+    (SE1426/CoreSSO/EOL) — os dados vêm diretamente da requisição,
+    não de uma extração. É materializado como registro de staging
+    com ``fonte="api_manual"`` e provisionado no Keycloak pelo mesmo
+    caminho (``provisionar_usuario_kc``) usado pelo pipeline.
+
+    ``sistema``/``roles`` são opcionais: quando informados, o
+    permissionamento é concedido na mesma chamada (reaproveitando o
+    núcleo de ``conceder_acesso_kc``), evitando uma segunda
+    requisição só para conceder acesso a um usuário recém-criado.
+    """
+
+    nome = serializers.CharField()
+    cpf = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    rf = serializers.CharField(required=False, allow_blank=True)
+    tipo_usuario = serializers.ChoiceField(
+        choices=["servidor", "aluno", "terceiro"],
+        default="terceiro",
+    )
+    sistema = serializers.IntegerField(
+        required=False,
+        help_text="coresso_sis_id do sistema alvo (opcional).",
+    )
+    roles = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        help_text="Nomes dos roles/perfis a conceder (opcional).",
+    )
+    realm = serializers.CharField(
+        default=settings.KEYCLOAK_REALM,
+        required=False,
+        help_text=_HT_REALM,
+    )
+
+    def validate(self, dados: dict) -> dict:
+        """Exige identificador e, se houver roles, também o sistema.
+
+        Args:
+            dados: Campos já validados individualmente.
+
+        Returns:
+            Os mesmos dados, se a validação cruzada passar.
+
+        Raises:
+            ValidationError: Se nem CPF nem RF forem informados, ou
+                se ``roles`` vier sem ``sistema`` (ou vice-versa).
+        """
+        if not dados.get("cpf") and not dados.get("rf"):
+            raise serializers.ValidationError("Informe ao menos cpf ou rf.")
+        tem_sistema = "sistema" in dados
+        tem_roles = bool(dados.get("roles"))
+        if tem_roles != tem_sistema:
+            raise serializers.ValidationError(
+                "Informe sistema e roles juntos, ou nenhum dos dois."
+            )
+        return dados
 
 
 class ConcederAcessoSerializer(serializers.Serializer):
