@@ -39,6 +39,8 @@ Admin API do Keycloak via `python-keycloak`.
 | `provisionar_role_client_kc(admin, perfil)` | Cria ou atualiza client role a partir de `PerfilCoressoStaging` |
 | `atribuir_client_roles_usuario_kc(admin, vinculos)` | Atribui client roles em streaming com cache |
 | `sincronizar_usuario_kc(admin, dados_coresso)` | Sincroniza um usuário com todos os seus roles |
+| `conceder_acesso_kc(admin, dados_coresso, sis_id, roles)` | Upsert de usuário do CoreSSO + concessão de roles de um sistema |
+| `_conceder_roles_sistema_kc(admin, kc_user_id, sis_id, roles)` | Núcleo de resolução/atribuição de roles — não faz upsert de usuário |
 | `calcular_hash_conteudo(payload)` | SHA-256 para detecção de mudança |
 
 ---
@@ -103,6 +105,55 @@ A função `sincronizar_usuario_kc` recebe os dados do CoreSSO
 1. Cria ou atualiza o usuário no Keycloak
 2. Para cada sistema do usuário, atribui os client roles correspondentes
 3. Retorna resumo com ação, roles atribuídos e link do admin console
+
+---
+
+## Concessão de acesso a sistema
+
+`_conceder_roles_sistema_kc(admin, kc_user_id, sis_id, nomes_roles)` é o
+núcleo reaproveitável de concessão de acesso — recebe um `kc_user_id` já
+existente (upsert feito por quem chama) e:
+
+1. Busca o `SistemaStaging` pelo `coresso_sis_id` informado — se não
+   encontrado ou sem `kc_client_uuid`, retorna só `{"erro": ...}`
+2. Para cada role solicitado, busca o `PerfilCoressoStaging` correspondente
+   (por `nome` ou `kc_role_nome`); se não existir, cria via `_criar_role_kc`
+3. Atribui o client role ao usuário (`admin.assign_client_role`)
+4. Retorna `sistema`, `client_id`, `roles_atribuidos`, `roles_nao_encontrados`
+   e `erros`
+
+Duas rotas da API reaproveitam esse núcleo, cada uma resolvendo o
+`kc_user_id` de um jeito diferente:
+
+```{graphviz}
+digraph G {
+    rankdir=TB;
+    node [shape=box, style="rounded"];
+
+    subgraph cluster_coresso {
+        label="usuario/conceder-acesso/";
+        BUSCA_CS [label="buscar_dados_usuario_coresso"];
+        UPSERT_CS [label="_upsert_coresso_kc"];
+        BUSCA_CS -> UPSERT_CS;
+    }
+
+    subgraph cluster_manual {
+        label="usuario/criar/";
+        STAGING [label="materializa\nUsuarioXStaging\n(fonte=api_manual)"];
+        UPSERT_MAN [label="provisionar_usuario_kc"];
+        STAGING -> UPSERT_MAN;
+    }
+
+    NUCLEO [label="_conceder_roles_sistema_kc\n(kc_user_id, sis_id, roles)"];
+
+    UPSERT_CS -> NUCLEO;
+    UPSERT_MAN -> NUCLEO [label="se sistema/roles\nforem informados"];
+}
+```
+
+Na criação manual (`usuario/criar/`), `sistema`/`roles` são opcionais —
+sem eles, a chamada só cria a identidade; com eles, cria e concede acesso
+na mesma requisição.
 
 ---
 

@@ -1289,46 +1289,45 @@ def _criar_role_kc(
     return perfil
 
 
-def conceder_acesso_kc(
+def _conceder_roles_sistema_kc(
     admin: Any,
-    dados_coresso: dict,
+    kc_user_id: str,
     sis_id: int,
     nomes_roles: list[str],
     *,
-    realm: str = settings.KEYCLOAK_REALM,
+    username: str = "",
 ) -> dict[str, Any]:
-    """Concede acesso a um sistema e roles no Keycloak.
+    """Resolve e atribui client roles de um sistema a um usuário Keycloak.
 
-    Cria/atualiza o usuário e atribui client roles
-    específicos, independentemente dos vínculos no CoreSSO.
+    Núcleo reaproveitável de ``conceder_acesso_kc``: dado um
+    ``kc_user_id`` já existente (upsert feito por quem chama), busca
+    (ou cria, se necessário) os roles do sistema informado e os
+    atribui ao usuário. Não faz upsert de usuário — isso é
+    responsabilidade de quem chama, para poder ser reaproveitado
+    tanto a partir de dados do CoreSSO (``conceder_acesso_kc``)
+    quanto de um usuário criado manualmente
+    (``criar_usuario_manual``, na view).
 
     Args:
         admin: Cliente KeycloakAdmin autenticado.
-        dados_coresso: Resultado de
-            ``buscar_dados_usuario_coresso``.
+        kc_user_id: ID do usuário já upsertado no Keycloak.
         sis_id: ``coresso_sis_id`` do sistema alvo.
         nomes_roles: Nomes dos perfis/roles a conceder.
-        realm: Realm de destino.
+        username: Usado apenas para mensagens de log.
 
     Returns:
-        Dict com ``acao``, ``kc_user_id``, ``sistema``,
-        ``roles_atribuidos``, ``roles_nao_encontrados``
-        e ``erros``.
+        Dict com ``sistema``, ``client_id``, ``roles_atribuidos``,
+        ``roles_nao_encontrados`` e ``erros``. Se o sistema não for
+        encontrado, retorna apenas ``erro``.
     """
     from apps.staging.models import (  # noqa: PLC0415
         PerfilCoressoStaging,
         SistemaStaging,
     )
 
-    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
-    if not kc_user_id:
-        return {"acao": "erro", "motivo": "sem kc_user_id"}
-
     sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
     if not sistema or not sistema.kc_client_uuid:
         return {
-            "acao": acao,
-            "kc_user_id": kc_user_id,
             "erro": (
                 f"Sistema sis_id={sis_id} não encontrado"
                 " ou sem client no Keycloak."
@@ -1383,6 +1382,51 @@ def conceder_acesso_kc(
             )
             erros += 1
 
+    return {
+        "sistema": sistema.nome,
+        "client_id": sistema.kc_client_id,
+        "roles_atribuidos": roles_ok,
+        "roles_nao_encontrados": roles_nao_encontrados,
+        "erros": erros,
+    }
+
+
+def conceder_acesso_kc(
+    admin: Any,
+    dados_coresso: dict,
+    sis_id: int,
+    nomes_roles: list[str],
+    *,
+    realm: str = settings.KEYCLOAK_REALM,
+) -> dict[str, Any]:
+    """Concede acesso a um sistema e roles no Keycloak.
+
+    Cria/atualiza o usuário e atribui client roles
+    específicos, independentemente dos vínculos no CoreSSO.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        dados_coresso: Resultado de
+            ``buscar_dados_usuario_coresso``.
+        sis_id: ``coresso_sis_id`` do sistema alvo.
+        nomes_roles: Nomes dos perfis/roles a conceder.
+        realm: Realm de destino.
+
+    Returns:
+        Dict com ``acao``, ``kc_user_id``, ``sistema``,
+        ``roles_atribuidos``, ``roles_nao_encontrados``
+        e ``erros``.
+    """
+    kc_user_id, acao, username, nome = _upsert_coresso_kc(admin, dados_coresso)
+    if not kc_user_id:
+        return {"acao": "erro", "motivo": "sem kc_user_id"}
+
+    resultado_roles = _conceder_roles_sistema_kc(
+        admin, kc_user_id, sis_id, nomes_roles, username=username
+    )
+    if "erro" in resultado_roles:
+        return {"acao": acao, "kc_user_id": kc_user_id, **resultado_roles}
+
     base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
     return {
         "acao": acao,
@@ -1393,9 +1437,5 @@ def conceder_acesso_kc(
         ),
         "username": username,
         "nome": nome,
-        "sistema": sistema.nome,
-        "client_id": sistema.kc_client_id,
-        "roles_atribuidos": roles_ok,
-        "roles_nao_encontrados": roles_nao_encontrados,
-        "erros": erros,
+        **resultado_roles,
     }
