@@ -146,10 +146,13 @@ Campos:
 }
 ```
 
-Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), a
-requisição é rejeitada com `400` antes de qualquer chamada ao Keycloak.
-Se o usuário for criado mas a concessão de acesso falhar, a resposta é
-`502` incluindo o `kc_user_id` já criado (o usuário não é desfeito).
+Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), ou se o
+`sistema` informado não existir/não tiver client no Keycloak, a requisição é
+rejeitada com `400` **antes de qualquer efeito colateral** — nada é
+materializado em staging nem provisionado no Keycloak. Se o usuário for
+criado mas a concessão de acesso falhar por erro de comunicação com o
+Keycloak (não por sistema inválido, já descartado antes), a resposta é `502`
+incluindo o `kc_user_id` já criado (o usuário não é desfeito).
 
 ---
 
@@ -186,6 +189,10 @@ e atribui todos os client roles dos sistemas associados.
   ]
 }
 ```
+
+Se o `identificador` não for encontrado no CoreSSO, a resposta é `204 No
+Content` (sem corpo) — não `404`, para não ser mascarado por proxies/WAF que
+interceptam respostas 404 com uma página de erro genérica.
 
 ---
 
@@ -228,6 +235,11 @@ roles informados — independentemente dos vínculos reais no CoreSSO
 O núcleo de resolução/atribuição de roles (`_conceder_roles_sistema_kc`)
 é compartilhado com `usuario/criar/` — ver
 [Provisionamento Keycloak](../pipeline/keycloak.md).
+
+Se o `identificador` não for encontrado no CoreSSO, ou o `sistema` informado
+não existir/não tiver client no Keycloak, a resposta é `204 No Content`
+(sem corpo) — mesmo motivo do endpoint de sincronização (evitar
+interceptação de proxies/WAF em respostas de erro).
 
 ---
 

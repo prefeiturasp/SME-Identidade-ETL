@@ -783,9 +783,17 @@ class TestSincronizarUsuario:
         resp = cliente.post(self.URL, {})
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_usuario_nao_encontrado_retorna_404(
+    def test_usuario_nao_encontrado_retorna_204(
         self, cliente: APIClient
     ) -> None:
+        """Retorna 204 (não 404) para não ser mascarado por proxy/WAF.
+
+        Um nginx/WAF em frente ao ETL em QA intercepta qualquer
+        resposta 404 e a substitui por uma página HTML genérica,
+        mascarando o JSON estruturado que a view tentou enviar. 204
+        não tem corpo por definição do protocolo HTTP — sem detalhe
+        no JSON.
+        """
         with patch(
             "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
             return_value=None,
@@ -794,7 +802,8 @@ class TestSincronizarUsuario:
                 self.URL,
                 {"identificador": "inexistente"},
             )
-        assert resp.status_code == status.HTTP_404_NOT_FOUND
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
 
     def test_sincroniza_com_sucesso(self, cliente: APIClient) -> None:
         dados = {

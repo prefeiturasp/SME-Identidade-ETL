@@ -10,6 +10,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.staging.models import (
+    SistemaStaging,
     UsuarioAlunoStaging,
     UsuarioServidorStaging,
     UsuarioTerceiroStaging,
@@ -238,6 +239,11 @@ class TestCriarUsuarioManualView:
         self, cliente: APIClient
     ) -> None:
         """Deve conceder o acesso ao sistema/roles após criar o usuário."""
+        SistemaStaging.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema X",
+            kc_client_uuid="uuid-sistema-x",
+        )
         resultado_criacao = {"acao": "criado", "kc_user_id": "kc-1"}
         resultado_roles = {
             "sistema": "Sistema X",
@@ -285,6 +291,11 @@ class TestCriarUsuarioManualView:
         self, cliente: APIClient
     ) -> None:
         """Deve retornar 502 se falhar ao conceder acesso pós-criação."""
+        SistemaStaging.objects.create(
+            coresso_sis_id=1,
+            nome="Sistema X",
+            kc_client_uuid="uuid-sistema-x",
+        )
         with (
             patch(
                 f"{_ORQUESTRADOR}.obter_admin_keycloak",
@@ -312,3 +323,62 @@ class TestCriarUsuarioManualView:
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
         assert resp.json()["kc_user_id"] == "kc-1"
+
+    def test_sistema_inexistente_retorna_400_sem_criar_usuario(
+        self, cliente: APIClient
+    ) -> None:
+        """Retorna 400 sem tocar em staging/Keycloak quando sistema não existe.
+
+        O sistema é validado antes de qualquer efeito colateral
+        (materialização em staging, provisionamento no Keycloak) —
+        diferente do fluxo de ``conceder_acesso``, onde o usuário já
+        existe de antemão no CoreSSO, aqui é possível e mais barato
+        checar a existência do sistema primeiro.
+        """
+        with (
+            patch(f"{_ORQUESTRADOR}.obter_admin_keycloak") as mock_admin,
+            patch(
+                f"{_ORQUESTRADOR}.provisionar_usuario_kc"
+            ) as mock_provisionar,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "nome": "Fulano",
+                    "cpf": "12345678900",
+                    "sistema": 9999,
+                    "roles": ["Admin"],
+                },
+                format="json",
+            )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "não encontrado" in resp.json()["erro"]
+        assert UsuarioTerceiroStaging.objects.count() == 0
+        mock_admin.assert_not_called()
+        mock_provisionar.assert_not_called()
+
+    def test_sistema_existente_sem_client_retorna_400(
+        self, cliente: APIClient
+    ) -> None:
+        """Retorna 400 se o sistema existe mas sem kc_client_uuid."""
+        SistemaStaging.objects.create(
+            coresso_sis_id=42,
+            nome="Sistema Sem Client",
+            sigla="ssc",
+            kc_client_uuid="",
+        )
+
+        resp = cliente.post(
+            self.URL,
+            {
+                "nome": "Fulano",
+                "cpf": "12345678900",
+                "sistema": 42,
+                "roles": ["Admin"],
+            },
+            format="json",
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert UsuarioTerceiroStaging.objects.count() == 0

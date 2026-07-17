@@ -1033,6 +1033,7 @@ def criar_usuario_manual(request: Request) -> Response:
         provisionar_usuario_kc,
     )
     from apps.staging.models import (  # noqa: PLC0415
+        SistemaStaging,
         UsuarioAlunoStaging,
         UsuarioServidorStaging,
         UsuarioTerceiroStaging,
@@ -1041,6 +1042,21 @@ def criar_usuario_manual(request: Request) -> Response:
     serializer = CriarUsuarioManualSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     dados = serializer.validated_data
+
+    sis_id = dados.get("sistema")
+    nomes_roles = dados.get("roles")
+    if sis_id and nomes_roles:
+        sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
+        if not sistema or not sistema.kc_client_uuid:
+            return Response(
+                {
+                    "erro": (
+                        f"Sistema sis_id={sis_id} não encontrado"
+                        " ou sem client no Keycloak."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     modelo: type[Any] = {
         "servidor": UsuarioServidorStaging,
@@ -1095,9 +1111,9 @@ def criar_usuario_manual(request: Request) -> Response:
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    sis_id = dados.get("sistema")
-    nomes_roles = dados.get("roles")
     if sis_id and nomes_roles:
+        # Sistema já validado no início da view — _conceder_roles_sistema_kc
+        # não deve mais retornar "erro" de sistema inexistente aqui.
         try:
             resultado_roles = _conceder_roles_sistema_kc(
                 admin,
@@ -1170,14 +1186,7 @@ def sincronizar_usuario(request: Request) -> Response:
         )
 
     if not dados:
-        return Response(
-            {
-                "detalhe": (
-                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
-                )
-            },
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     try:
         admin = obter_admin_keycloak(realm=realm)
@@ -1243,14 +1252,7 @@ def conceder_acesso(request: Request) -> Response:
         )
 
     if not dados:
-        return Response(
-            {
-                "detalhe": (
-                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
-                )
-            },
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     try:
         admin = obter_admin_keycloak(realm=realm)
@@ -1267,6 +1269,9 @@ def conceder_acesso(request: Request) -> Response:
             {"detalhe": str(exc)},
             status=status.HTTP_502_BAD_GATEWAY,
         )
+
+    if "erro" in resultado and "sistema" not in resultado:
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     return Response(resultado)
 
