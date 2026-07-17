@@ -187,6 +187,10 @@ e atribui todos os client roles dos sistemas associados.
 }
 ```
 
+Se o `identificador` não for encontrado no CoreSSO, a resposta é `204 No
+Content` (sem corpo) — não `404`, para não ser mascarado por proxies/WAF que
+interceptam respostas 404 com uma página de erro genérica.
+
 ---
 
 ## Concessão de Acesso a Sistema
@@ -228,6 +232,11 @@ roles informados — independentemente dos vínculos reais no CoreSSO
 O núcleo de resolução/atribuição de roles (`_conceder_roles_sistema_kc`)
 é compartilhado com `usuario/criar/` — ver
 [Provisionamento Keycloak](../pipeline/keycloak.md).
+
+Se o `identificador` não for encontrado no CoreSSO, ou o `sistema` informado
+não existir/não tiver client no Keycloak, a resposta é `204 No Content`
+(sem corpo) — mesmo motivo do endpoint de sincronização (evitar
+interceptação de proxies/WAF em respostas de erro).
 
 ---
 

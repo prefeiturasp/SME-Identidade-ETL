@@ -368,14 +368,16 @@ class TestConcederAcessoView:
         resp = cliente.post(self.URL, {}, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_usuario_nao_encontrado_retorna_200_com_detalhe(
+    def test_usuario_nao_encontrado_retorna_204(
         self, cliente: APIClient
     ) -> None:
-        """Retorna 200 (não 404) para não ser mascarado por proxy/WAF.
+        """Retorna 204 (não 404) para não ser mascarado por proxy/WAF.
 
         Um nginx/WAF em frente ao ETL em QA intercepta qualquer
         resposta 404 e a substitui por uma página HTML genérica,
-        mascarando o JSON estruturado que a view tentou enviar.
+        mascarando o JSON estruturado que a view tentou enviar. 204
+        não tem corpo por definição do protocolo HTTP — sem detalhe
+        no JSON.
         """
         with patch(
             f"{_EXTRACAO}.buscar_dados_usuario_coresso",
@@ -390,15 +392,17 @@ class TestConcederAcessoView:
                 },
                 format="json",
             )
-        assert resp.status_code == status.HTTP_200_OK
-        assert "não encontrado" in resp.json()["detalhe"]
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
 
-    def test_sistema_inexistente_retorna_400(self, cliente: APIClient) -> None:
-        """Retorna 400 quando o sistema não existe/não tem client.
+    def test_sistema_inexistente_retorna_204(self, cliente: APIClient) -> None:
+        """Retorna 204 quando o sistema não existe/não tem client.
 
         ``conceder_acesso_kc`` retorna um dict só com ``erro`` (sem
         ``sistema``) nesse caso — a view precisa distinguir isso do
-        retorno de sucesso, que sempre inclui ``sistema``.
+        retorno de sucesso, que sempre inclui ``sistema``. Tratado
+        como "nada a conceder" (204, sem corpo), não como erro de
+        validação do payload.
         """
         resultado_erro = {
             "acao": "criado",
@@ -438,8 +442,8 @@ class TestConcederAcessoView:
                 },
                 format="json",
             )
-        assert resp.status_code == status.HTTP_400_BAD_REQUEST
-        assert "não encontrado" in resp.json()["erro"]
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
 
     def test_sucesso(self, cliente: APIClient) -> None:
         resultado = {

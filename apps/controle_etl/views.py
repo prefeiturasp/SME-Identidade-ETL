@@ -1172,14 +1172,7 @@ def sincronizar_usuario(request: Request) -> Response:
         )
 
     if not dados:
-        return Response(
-            {
-                "detalhe": (
-                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
-                )
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     try:
         admin = obter_admin_keycloak(realm=realm)
@@ -1245,14 +1238,7 @@ def conceder_acesso(request: Request) -> Response:
         )
 
     if not dados:
-        return Response(
-            {
-                "detalhe": (
-                    f"Usuário '{identificador}'" " não encontrado no CoreSSO."
-                )
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     try:
         admin = obter_admin_keycloak(realm=realm)
@@ -1271,7 +1257,7 @@ def conceder_acesso(request: Request) -> Response:
         )
 
     if "erro" in resultado and "sistema" not in resultado:
-        return Response(resultado, status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     return Response(resultado)
 
