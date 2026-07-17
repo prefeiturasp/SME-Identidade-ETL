@@ -1210,6 +1210,74 @@ def sincronizar_usuario(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+def _conceder_acesso_sem_coresso(
+    admin: Any,
+    identificador: str,
+    sis_id: int,
+    nomes_roles: list[str],
+    *,
+    realm: str,
+) -> dict[str, Any] | None:
+    """Concede acesso a um usuário que só existe no Keycloak.
+
+    Fallback de ``conceder_acesso`` para usuários materializados via
+    ``criar_usuario_manual`` (``fonte="api_manual"``), que nunca
+    tiveram vínculo no CoreSSO — buscar por lá sempre retornaria
+    vazio. Localiza a conta direto no Keycloak por RF/CPF/email
+    (mesma busca de ``identidades/consultar/``) e concede o acesso
+    via ``_conceder_roles_sistema_kc``, sem upsert/sincronização.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        identificador: RF, CPF ou email do usuário.
+        sis_id: ``coresso_sis_id`` do sistema alvo.
+        nomes_roles: Nomes dos perfis/roles a conceder.
+        realm: Realm de destino.
+
+    Returns:
+        Dict com ``acao``, ``kc_user_id`` e o resultado da
+        concessão de roles, ou ``None`` se a conta não existir
+        também no Keycloak.
+    """
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        _buscar_todas_contas_kc,
+        _conceder_roles_sistema_kc,
+    )
+
+    ident = identificador.strip()
+    cpf = "".join(c for c in ident if c.isdigit()) if "@" not in ident else ""
+    rf = ident if "@" not in ident else ""
+    email = ident if "@" in ident else ""
+
+    contas = _buscar_todas_contas_kc(admin, rf, cpf, email)
+    if not contas:
+        return None
+
+    kc_user_id = str(contas[0]["id"])
+    resultado_roles = _conceder_roles_sistema_kc(
+        admin,
+        kc_user_id,
+        sis_id,
+        nomes_roles,
+        username=contas[0].get("username", ""),
+    )
+    if "erro" in resultado_roles:
+        return {"acao": "atualizado", "kc_user_id": kc_user_id, **resultado_roles}
+
+    base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
+    return {
+        "acao": "atualizado",
+        "kc_user_id": kc_user_id,
+        "kc_url": (
+            f"{base}/admin/master/console/"
+            + f"#/{realm}/users/{kc_user_id}/settings"
+        ),
+        "username": contas[0].get("username", ""),
+        "nome": contas[0].get("firstName", ""),
+        **resultado_roles,
+    }
+
+
 @extend_schema(
     tags=["Usuário"],
     request=ConcederAcessoSerializer,
@@ -1218,8 +1286,12 @@ def sincronizar_usuario(request: Request) -> Response:
 def conceder_acesso(request: Request) -> Response:
     """Concede acesso a um sistema e roles no Keycloak.
 
-    Busca o usuário no CoreSSO, cria/atualiza no Keycloak
-    e atribui os client roles informados.
+    Busca o usuário no CoreSSO, cria/atualiza no Keycloak e atribui
+    os client roles informados. Se o usuário não existir no CoreSSO
+    (ex.: criado via ``usuario/criar/``, sem vínculo prévio), busca
+    a conta diretamente no Keycloak e concede o acesso sem
+    sincronizar — só cai em ``204`` se não existir em nenhum dos
+    dois.
     """
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
         conceder_acesso_kc,
@@ -1251,14 +1323,16 @@ def conceder_acesso(request: Request) -> Response:
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    if not dados:
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
     try:
         admin = obter_admin_keycloak(realm=realm)
-        resultado = conceder_acesso_kc(
-            admin, dados, sis_id, nomes_roles, realm=realm
-        )
+        if dados:
+            resultado = conceder_acesso_kc(
+                admin, dados, sis_id, nomes_roles, realm=realm
+            )
+        else:
+            resultado = _conceder_acesso_sem_coresso(
+                admin, identificador, sis_id, nomes_roles, realm=realm
+            )
     except Exception as exc:
         logger.exception(
             "Falha ao conceder acesso %s: %s",
@@ -1269,6 +1343,9 @@ def conceder_acesso(request: Request) -> Response:
             {"detalhe": str(exc)},
             status=status.HTTP_502_BAD_GATEWAY,
         )
+
+    if resultado is None:
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     if "erro" in resultado and "sistema" not in resultado:
         return Response(status=status.HTTP_204_NO_CONTENT)
