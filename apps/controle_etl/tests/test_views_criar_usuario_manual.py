@@ -312,3 +312,44 @@ class TestCriarUsuarioManualView:
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
         assert resp.json()["kc_user_id"] == "kc-1"
+
+    def test_sistema_inexistente_retorna_400(self, cliente: APIClient) -> None:
+        """Retorna 400 quando o sistema não existe/não tem client.
+
+        ``_conceder_roles_sistema_kc`` retorna um dict só com
+        ``erro`` (sem ``sistema``) nesse caso.
+        """
+        resultado_criacao = {"acao": "criado", "kc_user_id": "kc-1"}
+        resultado_roles = {
+            "erro": (
+                "Sistema sis_id=9999 não encontrado"
+                " ou sem client no Keycloak."
+            ),
+        }
+        with (
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.provisionar_usuario_kc",
+                return_value=resultado_criacao,
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._conceder_roles_sistema_kc",
+                return_value=resultado_roles,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "nome": "Fulano",
+                    "cpf": "12345678900",
+                    "sistema": 9999,
+                    "roles": ["Admin"],
+                },
+                format="json",
+            )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "não encontrado" in resp.json()["erro"]

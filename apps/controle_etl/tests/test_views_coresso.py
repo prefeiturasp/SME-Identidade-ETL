@@ -368,7 +368,15 @@ class TestConcederAcessoView:
         resp = cliente.post(self.URL, {}, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_usuario_nao_encontrado(self, cliente: APIClient) -> None:
+    def test_usuario_nao_encontrado_retorna_200_com_detalhe(
+        self, cliente: APIClient
+    ) -> None:
+        """Retorna 200 (não 404) para não ser mascarado por proxy/WAF.
+
+        Um nginx/WAF em frente ao ETL em QA intercepta qualquer
+        resposta 404 e a substitui por uma página HTML genérica,
+        mascarando o JSON estruturado que a view tentou enviar.
+        """
         with patch(
             f"{_EXTRACAO}.buscar_dados_usuario_coresso",
             return_value=None,
@@ -382,7 +390,56 @@ class TestConcederAcessoView:
                 },
                 format="json",
             )
-        assert resp.status_code == status.HTTP_404_NOT_FOUND
+        assert resp.status_code == status.HTTP_200_OK
+        assert "não encontrado" in resp.json()["detalhe"]
+
+    def test_sistema_inexistente_retorna_400(self, cliente: APIClient) -> None:
+        """Retorna 400 quando o sistema não existe/não tem client.
+
+        ``conceder_acesso_kc`` retorna um dict só com ``erro`` (sem
+        ``sistema``) nesse caso — a view precisa distinguir isso do
+        retorno de sucesso, que sempre inclui ``sistema``.
+        """
+        resultado_erro = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "erro": (
+                "Sistema sis_id=9999 não encontrado"
+                " ou sem client no Keycloak."
+            ),
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value={
+                    "login": "7777777",
+                    "cpf": "",
+                    "nome": "Teste",
+                    "email": "",
+                    "situacao": "ativo",
+                    "sistemas": {},
+                },
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.conceder_acesso_kc",
+                return_value=resultado_erro,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 9999,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "não encontrado" in resp.json()["erro"]
 
     def test_sucesso(self, cliente: APIClient) -> None:
         resultado = {

@@ -1117,6 +1117,8 @@ def criar_usuario_manual(request: Request) -> Response:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         resultado = {**resultado, **resultado_roles}
+        if "erro" in resultado_roles:
+            return Response(resultado, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(resultado)
 
@@ -1176,7 +1178,7 @@ def sincronizar_usuario(request: Request) -> Response:
                     f"Usuário '{identificador}'" " não encontrado no CoreSSO."
                 )
             },
-            status=status.HTTP_404_NOT_FOUND,
+            status=status.HTTP_200_OK,
         )
 
     try:
@@ -1249,7 +1251,7 @@ def conceder_acesso(request: Request) -> Response:
                     f"Usuário '{identificador}'" " não encontrado no CoreSSO."
                 )
             },
-            status=status.HTTP_404_NOT_FOUND,
+            status=status.HTTP_200_OK,
         )
 
     try:
@@ -1267,6 +1269,9 @@ def conceder_acesso(request: Request) -> Response:
             {"detalhe": str(exc)},
             status=status.HTTP_502_BAD_GATEWAY,
         )
+
+    if "erro" in resultado and "sistema" not in resultado:
+        return Response(resultado, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(resultado)
 
