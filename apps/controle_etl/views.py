@@ -1033,6 +1033,7 @@ def criar_usuario_manual(request: Request) -> Response:
         provisionar_usuario_kc,
     )
     from apps.staging.models import (  # noqa: PLC0415
+        SistemaStaging,
         UsuarioAlunoStaging,
         UsuarioServidorStaging,
         UsuarioTerceiroStaging,
@@ -1041,6 +1042,21 @@ def criar_usuario_manual(request: Request) -> Response:
     serializer = CriarUsuarioManualSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     dados = serializer.validated_data
+
+    sis_id = dados.get("sistema")
+    nomes_roles = dados.get("roles")
+    if sis_id and nomes_roles:
+        sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
+        if not sistema or not sistema.kc_client_uuid:
+            return Response(
+                {
+                    "erro": (
+                        f"Sistema sis_id={sis_id} não encontrado"
+                        " ou sem client no Keycloak."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     modelo: type[Any] = {
         "servidor": UsuarioServidorStaging,
@@ -1095,9 +1111,9 @@ def criar_usuario_manual(request: Request) -> Response:
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    sis_id = dados.get("sistema")
-    nomes_roles = dados.get("roles")
     if sis_id and nomes_roles:
+        # Sistema já validado no início da view — _conceder_roles_sistema_kc
+        # não deve mais retornar "erro" de sistema inexistente aqui.
         try:
             resultado_roles = _conceder_roles_sistema_kc(
                 admin,
@@ -1117,8 +1133,6 @@ def criar_usuario_manual(request: Request) -> Response:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         resultado = {**resultado, **resultado_roles}
-        if "erro" in resultado_roles:
-            return Response(resultado, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(resultado)
 

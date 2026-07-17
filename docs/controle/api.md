@@ -146,10 +146,13 @@ Campos:
 }
 ```
 
-Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), a
-requisição é rejeitada com `400` antes de qualquer chamada ao Keycloak.
-Se o usuário for criado mas a concessão de acesso falhar, a resposta é
-`502` incluindo o `kc_user_id` já criado (o usuário não é desfeito).
+Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), ou se o
+`sistema` informado não existir/não tiver client no Keycloak, a requisição é
+rejeitada com `400` **antes de qualquer efeito colateral** — nada é
+materializado em staging nem provisionado no Keycloak. Se o usuário for
+criado mas a concessão de acesso falhar por erro de comunicação com o
+Keycloak (não por sistema inválido, já descartado antes), a resposta é `502`
+incluindo o `kc_user_id` já criado (o usuário não é desfeito).
 
 ---
 
