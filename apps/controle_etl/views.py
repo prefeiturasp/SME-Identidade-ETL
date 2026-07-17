@@ -1071,7 +1071,7 @@ def criar_usuario_manual(request: Request) -> Response:
     campos_busca = {"fonte": "api_manual"}
     if cpf:
         campos_busca["cpf"] = cpf
-    if rf and modelo is UsuarioServidorStaging:
+    if rf:
         campos_busca["rf"] = rf
 
     valores_padrao = {
@@ -1082,7 +1082,7 @@ def criar_usuario_manual(request: Request) -> Response:
     }
     if not cpf and rf:
         valores_padrao["cpf"] = ""
-    if modelo is UsuarioServidorStaging and rf:
+    if rf:
         valores_padrao["rf"] = rf
 
     try:

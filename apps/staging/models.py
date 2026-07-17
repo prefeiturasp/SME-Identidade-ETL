@@ -14,6 +14,7 @@ class _UsuarioStagingBase(models.Model):
     id_execucao = models.UUIDField(db_index=True)
     fonte = models.CharField(max_length=50)
     cpf = models.CharField(max_length=11, blank=True, null=True)
+    rf = models.CharField(max_length=50, blank=True, null=True, db_index=True)
     nome = models.CharField(max_length=255, blank=True, null=True)
     email = models.CharField(max_length=255, blank=True, null=True)
     situacao = models.CharField(max_length=50, blank=True, null=True)
@@ -33,7 +34,6 @@ class _UsuarioStagingBase(models.Model):
 class UsuarioServidorStaging(_UsuarioStagingBase):
     """Servidor público extraído do SE1426 ou CoreSSO."""
 
-    rf = models.CharField(max_length=50, blank=True, null=True, db_index=True)
     matricula = models.CharField(max_length=50, blank=True, null=True)
     cargo = models.CharField(max_length=100, blank=True, null=True)
     funcao = models.CharField(max_length=100, blank=True, null=True)
