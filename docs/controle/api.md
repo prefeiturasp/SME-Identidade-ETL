@@ -76,6 +76,86 @@ Fontes válidas: `todos`, `se1426`, `coresso`, `eol_alunos`.
 
 ---
 
+## Criação Manual de Usuário
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `POST` | `/api/v1/etl/usuario/criar/` | Cria/atualiza um usuário a partir de dados diretos |
+
+Diferente de `usuario/sincronizar/` e `usuario/conceder-acesso/`, **não
+depende do usuário já existir no CoreSSO** — os dados vêm da própria
+requisição. Usado para usuários que ainda não estão em nenhuma fonte
+legada (ex.: parceiro externo, cadastro manual via API).
+
+O registro é materializado em staging com `fonte="api_manual"` (rastreável
+em `ControleProvisionamento.sistema_origem`) e provisionado pelo mesmo
+caminho idempotente do pipeline (`provisionar_usuario_kc`) — upsert por
+CPF/RF, hash de conteúdo, sem duplicação de lógica.
+
+`sistema`/`roles` são **opcionais**: quando informados juntos, o acesso é
+concedido na mesma chamada, reaproveitando o núcleo de
+`usuario/conceder-acesso/` (`_conceder_roles_sistema_kc`) — evita uma
+segunda requisição só para permissionar um usuário recém-criado.
+
+```json
+{
+  "nome": "Fulano de Tal",
+  "cpf": "12345678900",
+  "email": "fulano@externo.com",
+  "tipo_usuario": "terceiro",
+  "sistema": 1008,
+  "roles": ["COTIC"],
+  "realm": "sme-apps"
+}
+```
+
+Campos:
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `nome` | Sim | Nome do usuário |
+| `cpf` / `rf` | Ao menos um | Identificador — `rf` só é persistido para `tipo_usuario="servidor"` |
+| `email` | Não | E-mail do usuário |
+| `tipo_usuario` | Não (`terceiro`) | `servidor`, `aluno` ou `terceiro` — define o model de staging usado |
+| `sistema` | Só com `roles` | `coresso_sis_id` do sistema a conceder acesso |
+| `roles` | Só com `sistema` | Nomes dos roles/perfis a conceder no sistema |
+| `realm` | Não | Realm Keycloak de destino |
+
+**Retorno (sem `sistema`/`roles`):**
+
+```json
+{
+  "acao": "criado",
+  "kc_user_id": "307506e4-...",
+  "hash_conteudo": "cf931569..."
+}
+```
+
+**Retorno (com `sistema`/`roles`):**
+
+```json
+{
+  "acao": "criado",
+  "kc_user_id": "6dbda0a5-...",
+  "hash_conteudo": "42e9e153...",
+  "sistema": "Auto Serviço",
+  "client_id": "auto-servico-qa",
+  "roles_atribuidos": ["COTIC"],
+  "roles_nao_encontrados": [],
+  "erros": 0
+}
+```
+
+Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), ou se o
+`sistema` informado não existir/não tiver client no Keycloak, a requisição é
+rejeitada com `400` **antes de qualquer efeito colateral** — nada é
+materializado em staging nem provisionado no Keycloak. Se o usuário for
+criado mas a concessão de acesso falhar por erro de comunicação com o
+Keycloak (não por sistema inválido, já descartado antes), a resposta é `502`
+incluindo o `kc_user_id` já criado (o usuário não é desfeito).
+
+---
+
 ## Sincronização Individual de Usuário
 
 | Método | Endpoint | Descrição |
@@ -110,6 +190,57 @@ e atribui todos os client roles dos sistemas associados.
 }
 ```
 
+Se o `identificador` não for encontrado no CoreSSO, a resposta é `204 No
+Content` (sem corpo) — não `404`, para não ser mascarado por proxies/WAF que
+interceptam respostas 404 com uma página de erro genérica.
+
+---
+
+## Concessão de Acesso a Sistema
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `POST` | `/api/v1/etl/usuario/conceder-acesso/` | Concede acesso a um sistema e roles específicos |
+
+Busca o usuário no CoreSSO, cria/atualiza no Keycloak e atribui os client
+roles informados — independentemente dos vínculos reais no CoreSSO
+(concessão manual, fora do fluxo de reconciliação automática).
+
+```json
+{
+  "identificador": "6913261",
+  "sistema": 1008,
+  "roles": ["COTIC"],
+  "realm": "sme-apps"
+}
+```
+
+**Retorno:**
+
+```json
+{
+  "acao": "atualizado",
+  "kc_user_id": "b431df2f-...",
+  "kc_url": "https://kc/.../users/.../settings",
+  "username": "6913261",
+  "nome": "ANGELA REGINA SAMPAIO NUNES",
+  "sistema": "Auto Serviço",
+  "client_id": "auto-servico-qa",
+  "roles_atribuidos": ["COTIC"],
+  "roles_nao_encontrados": [],
+  "erros": 0
+}
+```
+
+O núcleo de resolução/atribuição de roles (`_conceder_roles_sistema_kc`)
+é compartilhado com `usuario/criar/` — ver
+[Provisionamento Keycloak](../pipeline/keycloak.md).
+
+Se o `identificador` não for encontrado no CoreSSO, ou o `sistema` informado
+não existir/não tiver client no Keycloak, a resposta é `204 No Content`
+(sem corpo) — mesmo motivo do endpoint de sincronização (evitar
+interceptação de proxies/WAF em respostas de erro).
+
 ---
 
 ## Pipeline Completo por Sistema
@@ -140,9 +271,46 @@ roles → atribuir vínculos — tudo para um sistema específico.
 | `GET` | `/api/v1/etl/health/` | Health check (público) |
 | `GET` | `/api/v1/etl/estatisticas/` | Estatísticas agregadas |
 | `GET` | `/api/v1/etl/provisionamento/` | Registros de idempotência |
-| `GET` | `/api/v1/etl/identidades/consultar/` | Busca identidade por CPF/RF |
+| `GET` | `/api/v1/etl/identidades/consultar/` | Busca identidade direto no Keycloak por CPF/RF/e-mail |
 | `GET` | `/api/v1/etl/checkpoints/` | Checkpoints de retomada |
 | `GET` | `/api/v1/etl/tentativas/` | Rastreio de tentativas |
+
+### Consulta de identidade
+
+`identidades/consultar/` busca a conta **diretamente no Keycloak** (não
+mais no histórico local `ControleProvisionamento`) — reflete o estado
+real, independentemente de qual caminho de upsert criou o usuário
+(pipeline, `usuario/criar/`, `usuario/sincronizar/` ou
+`usuario/conceder-acesso/`). Por gerar uma chamada real ao Keycloak a cada
+consulta, **exige `AutenticacaoApiKey`** (deixou de ser público).
+
+```
+GET /api/v1/etl/identidades/consultar/?rf=7376065
+GET /api/v1/etl/identidades/consultar/?cpf=123.456.789-01
+GET /api/v1/etl/identidades/consultar/?email=fulano@sme.sp.gov.br&realm=COTIC
+```
+
+**Retorno:**
+
+```json
+[
+  {
+    "kc_user_id": "5c29cc47-...",
+    "username": "7376065",
+    "nome": "MONICA CARVALHO TANG",
+    "email": "monica.tang@sme.prefeitura.sp.gov.br",
+    "ativo": true,
+    "cpf": "26930618810",
+    "rf": "7376065",
+    "kc_url": "https://kc/.../users/.../settings"
+  }
+]
+```
+
+Retorna uma lista (pode haver mais de uma conta se existirem duplicatas
+ainda não mescladas no Keycloak) ou `[]` se não encontrar. `400` se
+nenhum identificador for informado; `502` se o Keycloak estiver
+inacessível.
 
 ---
 

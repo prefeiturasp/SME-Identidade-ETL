@@ -368,10 +368,32 @@ class TestConcederAcessoView:
         resp = cliente.post(self.URL, {}, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_usuario_nao_encontrado(self, cliente: APIClient) -> None:
-        with patch(
-            f"{_EXTRACAO}.buscar_dados_usuario_coresso",
-            return_value=None,
+    def test_usuario_nao_encontrado_retorna_204(
+        self, cliente: APIClient
+    ) -> None:
+        """Retorna 204 (não 404) para não ser mascarado por proxy/WAF.
+
+        Um nginx/WAF em frente ao ETL em QA intercepta qualquer
+        resposta 404 e a substitui por uma página HTML genérica,
+        mascarando o JSON estruturado que a view tentou enviar. 204
+        não tem corpo por definição do protocolo HTTP — sem detalhe
+        no JSON. Só ocorre quando o usuário não existe nem no
+        CoreSSO nem no Keycloak (ver ``test_sem_coresso_...`` abaixo
+        para o fallback).
+        """
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value=None,
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[],
+            ),
         ):
             resp = cliente.post(
                 self.URL,
@@ -382,7 +404,152 @@ class TestConcederAcessoView:
                 },
                 format="json",
             )
-        assert resp.status_code == status.HTTP_404_NOT_FOUND
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
+
+    def test_sem_coresso_mas_com_keycloak_concede_sem_sincronizar(
+        self, cliente: APIClient
+    ) -> None:
+        """Usuário só existe no Keycloak (ex.: criado via ``usuario/criar/``).
+
+        Quando ``buscar_dados_usuario_coresso`` não encontra vínculo
+        no CoreSSO, a view busca a conta direto no Keycloak antes de
+        desistir com 204 — concede o acesso ao ``kc_user_id`` já
+        existente, sem upsert/sincronização.
+        """
+        conta_kc = {
+            "id": "kc-existente",
+            "username": "9000009",
+            "firstName": "Fulano",
+        }
+        resultado_roles = {
+            "sistema": "Auto Serviço",
+            "client_id": "auto-servico-qa",
+            "roles_atribuidos": ["COTIC"],
+            "roles_nao_encontrados": [],
+            "erros": 0,
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value=None,
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[conta_kc],
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._conceder_roles_sistema_kc",
+                return_value=resultado_roles,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "9000009",
+                    "sistema": 1008,
+                    "roles": ["COTIC"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        corpo = resp.json()
+        assert corpo["kc_user_id"] == "kc-existente"
+        assert corpo["roles_atribuidos"] == ["COTIC"]
+
+    def test_sem_coresso_e_sem_keycloak_sistema_inexistente_retorna_204(
+        self, cliente: APIClient
+    ) -> None:
+        """Fallback do Keycloak também trata sistema sem client como 204."""
+        conta_kc = {"id": "kc-existente", "username": "9000009"}
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value=None,
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[conta_kc],
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._conceder_roles_sistema_kc",
+                return_value={
+                    "erro": (
+                        "Sistema sis_id=9999 não encontrado"
+                        " ou sem client no Keycloak."
+                    )
+                },
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "9000009",
+                    "sistema": 9999,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
+
+    def test_sistema_inexistente_retorna_204(self, cliente: APIClient) -> None:
+        """Retorna 204 quando o sistema não existe/não tem client.
+
+        ``conceder_acesso_kc`` retorna um dict só com ``erro`` (sem
+        ``sistema``) nesse caso — a view precisa distinguir isso do
+        retorno de sucesso, que sempre inclui ``sistema``. Tratado
+        como "nada a conceder" (204, sem corpo), não como erro de
+        validação do payload.
+        """
+        resultado_erro = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "erro": (
+                "Sistema sis_id=9999 não encontrado"
+                " ou sem client no Keycloak."
+            ),
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value={
+                    "login": "7777777",
+                    "cpf": "",
+                    "nome": "Teste",
+                    "email": "",
+                    "situacao": "ativo",
+                    "sistemas": {},
+                },
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.conceder_acesso_kc",
+                return_value=resultado_erro,
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 9999,
+                    "roles": ["X"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        assert not resp.content
 
     def test_sucesso(self, cliente: APIClient) -> None:
         resultado = {

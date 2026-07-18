@@ -29,6 +29,8 @@ htmlcov/
 
 # Env files
 .env
+.env-*
+!.env.example
 
 # IDEs
 .vscode/
@@ -44,3 +46,9 @@ validacao.md
 validacao_e2e/
 validacao_login/
 rf
+
+# SonarQube
+.scannerwork/
+coverage.xml
+sonar-project.properties
+pytest-report.xml
