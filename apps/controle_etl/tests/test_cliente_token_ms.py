@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from apps.controle_etl.cliente_token_ms import enviar_lote, enviar_todos
+from apps.controle_etl.cliente_token_ms import (
+    enviar_lote,
+    enviar_perfil,
+    enviar_todos,
+)
 
 # ---------------------------------------------------------------------------
 # enviar_lote
@@ -30,8 +34,8 @@ class TestEnviarLote:
     def test_envia_post_com_payload_correto(self, settings: Any) -> None:
         """Verifica que o POST é enviado com id_execucao e usuários."""
         settings.TOKEN_MS_URL = "http://token-ms"
-        settings.TOKEN_MS_TOKEN = "tok"
-        settings.TOKEN_MS_TOKEN_INTERNO = ""
+        settings.TOKEN_MS_API_KEY = "tok"
+        settings.TOKEN_MS_API_KEY_HEADER = "X-API-Key"
         settings.TOKEN_MS_TIMEOUT = 30
 
         resp = self._mock_ok()
@@ -59,8 +63,7 @@ class TestEnviarLote:
     ) -> None:
         """Verifica que uma resposta 204 sem corpo retorna situação ok."""
         settings.TOKEN_MS_URL = "http://token-ms"
-        settings.TOKEN_MS_TOKEN = ""
-        settings.TOKEN_MS_TOKEN_INTERNO = ""
+        settings.TOKEN_MS_API_KEY = ""
         settings.TOKEN_MS_TIMEOUT = 30
 
         resp = MagicMock(spec=httpx.Response)
@@ -85,8 +88,7 @@ class TestEnviarLote:
     ) -> None:
         """Verifica que erro 503 persistente propaga HTTPStatusError."""
         settings.TOKEN_MS_URL = "http://token-ms"
-        settings.TOKEN_MS_TOKEN = ""
-        settings.TOKEN_MS_TOKEN_INTERNO = ""
+        settings.TOKEN_MS_API_KEY = ""
         settings.TOKEN_MS_TIMEOUT = 30
 
         resp = MagicMock(spec=httpx.Response)
@@ -108,14 +110,60 @@ class TestEnviarLote:
             with pytest.raises(httpx.HTTPStatusError):
                 enviar_lote([], id_execucao="exec-3")
 
-    def test_usa_token_interno_se_disponivel(
+    def test_status_nao_retriavel_propaga_sem_esperar(
         self,
         settings: Any,
     ) -> None:
-        """Verifica que X-Internal-Token é usado quando configurado."""
+        """Verifica que erro 400 propaga imediatamente, sem retry.
+
+        Um payload malformado (ex.: ``id_execucao`` inválido) nunca
+        vai se resolver sozinho repetindo a chamada — a exceção deve
+        propagar já na primeira tentativa, sem consumir o backoff
+        exponencial nem as demais tentativas.
+        """
         settings.TOKEN_MS_URL = "http://token-ms"
-        settings.TOKEN_MS_TOKEN = "ext-tok"
-        settings.TOKEN_MS_TOKEN_INTERNO = "int-tok"
+        settings.TOKEN_MS_API_KEY = ""
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 400
+        resp.request = MagicMock()
+
+        def raise_400(*a: Any, **kw: Any) -> None:
+            raise httpx.HTTPStatusError(
+                "400", request=resp.request, response=resp
+            )
+
+        with (
+            patch("httpx.Client") as mock_cls,
+            patch("time.sleep") as mock_sleep,
+        ):
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.post.side_effect = raise_400
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(httpx.HTTPStatusError):
+                enviar_lote([], id_execucao="exec-3b")
+
+        mock_client.post.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_usa_header_x_api_key_quando_configurado(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica que o header X-API-Key é usado quando configurado.
+
+        O token-ms autentica requisições pelo header configurável em
+        ``API_KEY_HEADER`` (padrão ``X-API-Key``), não pelo antigo
+        ``X-Internal-Token`` — trava a regressão desse gap de
+        integração.
+        """
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = "chave-teste"
+        settings.TOKEN_MS_API_KEY_HEADER = "X-API-Key"
         settings.TOKEN_MS_TIMEOUT = 30
 
         resp = MagicMock(spec=httpx.Response)
@@ -134,7 +182,170 @@ class TestEnviarLote:
             enviar_lote([], id_execucao="exec-4")
 
         headers = mock_client.post.call_args.kwargs.get("headers", {})
-        assert headers.get("X-Internal-Token") == "int-tok"
+        assert headers.get("X-API-Key") == "chave-teste"
+        assert "X-Internal-Token" not in headers
+
+    def test_nao_envia_header_de_api_key_quando_nao_configurado(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica que nenhum header de API Key é enviado sem chave."""
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = ""
+        settings.TOKEN_MS_API_KEY_HEADER = "X-API-Key"
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {}
+        resp.raise_for_status.return_value = None
+
+        with patch("httpx.Client") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.post.return_value = resp
+            mock_cls.return_value = mock_client
+
+            enviar_lote([], id_execucao="exec-4b")
+
+        headers = mock_client.post.call_args.kwargs.get("headers", {})
+        assert "X-API-Key" not in headers
+
+
+# ---------------------------------------------------------------------------
+# enviar_perfil
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestEnviarPerfil:
+    """Testa a sincronização de perfis de um usuário no token-ms."""
+
+    def test_envia_put_com_payload_e_usuario_id_corretos(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica o PUT em /perfis/{usuario_id}/ com o payload dado."""
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = ""
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.raise_for_status.return_value = None
+
+        payload = {
+            "login": "1234567",
+            "nome": "Fulano",
+            "situacao": "ativo",
+            "perfis": [],
+            "permissoes": [],
+        }
+
+        with patch("httpx.Client") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.put.return_value = resp
+            mock_cls.return_value = mock_client
+
+            resultado = enviar_perfil("kc-uuid-1", payload)
+
+        mock_client.put.assert_called_once()
+        args, kwargs = mock_client.put.call_args
+        assert args[0] == "http://token-ms/api/v1/perfis/kc-uuid-1/"
+        assert kwargs["json"] == payload
+        assert resultado == {"situacao": "ok"}
+
+    def test_status_nao_retriavel_propaga_sem_esperar(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica que erro 400 propaga imediatamente, sem retry."""
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = ""
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 400
+        resp.request = MagicMock()
+
+        def raise_400(*a: Any, **kw: Any) -> None:
+            raise httpx.HTTPStatusError(
+                "400", request=resp.request, response=resp
+            )
+
+        with (
+            patch("httpx.Client") as mock_cls,
+            patch("time.sleep") as mock_sleep,
+        ):
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.put.side_effect = raise_400
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(httpx.HTTPStatusError):
+                enviar_perfil("kc-uuid-2", {})
+
+        mock_client.put.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_status_retriavel_levanta_excecao_apos_tentativas(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica que erro 503 persistente propaga HTTPStatusError."""
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = ""
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 503
+        resp.request = MagicMock()
+
+        def raise_503(*a: Any, **kw: Any) -> None:
+            raise httpx.HTTPStatusError(
+                "503", request=resp.request, response=resp
+            )
+
+        with patch("httpx.Client") as mock_cls, patch("time.sleep"):
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.put.side_effect = raise_503
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(httpx.HTTPStatusError):
+                enviar_perfil("kc-uuid-3", {})
+
+    def test_usa_header_x_api_key_quando_configurado(
+        self,
+        settings: Any,
+    ) -> None:
+        """Verifica que o header X-API-Key é usado no PUT de perfil."""
+        settings.TOKEN_MS_URL = "http://token-ms"
+        settings.TOKEN_MS_API_KEY = "chave-teste"
+        settings.TOKEN_MS_API_KEY_HEADER = "X-API-Key"
+        settings.TOKEN_MS_TIMEOUT = 30
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.raise_for_status.return_value = None
+
+        with patch("httpx.Client") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.put.return_value = resp
+            mock_cls.return_value = mock_client
+
+            enviar_perfil("kc-uuid-4", {})
+
+        headers = mock_client.put.call_args.kwargs.get("headers", {})
+        assert headers.get("X-API-Key") == "chave-teste"
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +360,7 @@ class TestEnviarTodos:
     def test_divide_em_lotes_corretos(self, settings: Any) -> None:
         """Verifica que os usuários são divididos no nº correto de lotes."""
         settings.TOKEN_MS_URL = "http://token-ms"
-        settings.TOKEN_MS_TOKEN = ""
-        settings.TOKEN_MS_TOKEN_INTERNO = ""
+        settings.TOKEN_MS_API_KEY = ""
         settings.TOKEN_MS_TIMEOUT = 30
         settings.TOKEN_MS_TAMANHO_LOTE = 500
 

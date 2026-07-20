@@ -567,6 +567,74 @@ def task_provisionar_identidade_keycloak(
 # ---------------------------------------------------------------------------
 
 
+def _sincronizar_perfis_execucao(
+    id_execucao: str, realm_destino: str | None
+) -> dict:
+    """Sincroniza a projeção de perfis de cada usuário da execução.
+
+    Falha ao sincronizar o perfil de um usuário não impede os demais
+    — cada chamada ``PUT /perfis/{kc_user_id}/`` é isolada, então um
+    erro pontual (ex.: usuário sem vínculos CoreSSO) só é contado e
+    logado, sem interromper o restante do lote nem propagar para o
+    push-batch de atributos complementares (responsabilidade distinta
+    já concluída antes desta chamada).
+
+    Args:
+        id_execucao: UUID da ExecucaoETL associada.
+        realm_destino: Realm Keycloak da execução.
+
+    Returns:
+        Dicionário com ``sincronizados`` e ``erros``.
+    """
+    from apps.controle_etl.cliente_token_ms import enviar_perfil
+    from apps.controle_etl.orquestrador_kc import (
+        construir_payload_perfil_token_ms,
+        obter_admin_keycloak,
+        resolver_kc_user_id_de_usuario,
+    )
+    from apps.staging.models import (
+        UsuarioAlunoStaging,
+        UsuarioServidorStaging,
+        UsuarioTerceiroStaging,
+    )
+
+    admin = obter_admin_keycloak(realm=realm_destino)
+    cache_kc_user_id: dict[str, str | None] = {}
+    sincronizados = erros = 0
+
+    for modelo in (
+        UsuarioServidorStaging,
+        UsuarioAlunoStaging,
+        UsuarioTerceiroStaging,
+    ):
+        qs = modelo.objects.filter(
+            id_execucao=id_execucao,
+            situacao__in=["pronto", "carregado"],
+        )
+        for u in qs.iterator(chunk_size=1000):
+            kc_user_id = resolver_kc_user_id_de_usuario(
+                admin, u, cache_kc_user_id
+            )
+            payload_perfil = (
+                construir_payload_perfil_token_ms(u) if kc_user_id else None
+            )
+            if not kc_user_id or payload_perfil is None:
+                continue
+
+            try:
+                enviar_perfil(kc_user_id, payload_perfil)
+                sincronizados += 1
+            except Exception:
+                erros += 1
+                logger.exception(
+                    "[%s] falha ao sincronizar perfil de %s",
+                    id_execucao,
+                    kc_user_id,
+                )
+
+    return {"sincronizados": sincronizados, "erros": erros}
+
+
 @shared_task(
     bind=True,
     name="task_carregar_atributos_token",
@@ -624,21 +692,37 @@ def task_carregar_atributos_token(
                 for u in qs.iterator(chunk_size=1000):
                     yield construir_payload_token_ms(u)
 
+        # Sincroniza perfis antes do push-batch: cria/atualiza a
+        # ProjecaoUsuario no token-ms para que o vínculo oportunista
+        # de AtributoComplementarUsuario (feito no push-batch, por
+        # rf/cpf) já a encontre, em vez de ficar usuario=None.
+        metricas_perfis = _sincronizar_perfis_execucao(
+            id_execucao, execucao.realm_destino
+        )
         metricas = enviar_todos(_payloads(), id_execucao=id_execucao)
+        metricas["perfis_sincronizados"] = metricas_perfis["sincronizados"]
+        metricas["perfis_erros"] = metricas_perfis["erros"]
 
         etapa.registros_entrada = metricas["enviados"]
         etapa.registros_saida = metricas["enviados"]
-        etapa.metadados = {"lotes": metricas["lotes"]}
+        etapa.metadados = {
+            "lotes": metricas["lotes"],
+            "perfis_sincronizados": metricas["perfis_sincronizados"],
+            "perfis_erros": metricas["perfis_erros"],
+        }
         etapa.situacao = LogEtapaETL.Situacao.SUCESSO
         etapa.finalizado_em = timezone.now()
         etapa.save()
 
         logger.info(
             "[%s] task_carregar_atributos_token"
-            " — %d usuários em %d lotes (%.1fs)",
+            " — %d usuários em %d lotes,"
+            " %d perfis sincronizados (%d erros) (%.1fs)",
             id_execucao,
             metricas["enviados"],
             metricas["lotes"],
+            metricas["perfis_sincronizados"],
+            metricas["perfis_erros"],
             time.monotonic() - inicio,
         )
         return metricas

@@ -185,7 +185,8 @@ KEYCLOAK_SUFIXO_CLIENT=dev   # sufixo do clientId: {sigla}-{sufixo}
 
 # token-ms
 TOKEN_MS_URL=
-TOKEN_MS_TOKEN_INTERNO=
+TOKEN_MS_API_KEY=
+TOKEN_MS_API_KEY_HEADER=X-API-Key
 
 # Flags e controle de volume
 ETL_CARGA_KEYCLOAK_BULK_HABILITADO=false

@@ -194,6 +194,14 @@ Se o `identificador` não for encontrado no CoreSSO, a resposta é `204 No
 Content` (sem corpo) — não `404`, para não ser mascarado por proxies/WAF que
 interceptam respostas 404 com uma página de erro genérica.
 
+**Token-MS**: além do Keycloak, esta rota também atualiza a projeção de
+perfis e permissões no token-ms (`PUT /perfis/{kc_user_id}/`), a partir dos
+mesmos dados já buscados no CoreSSO — ver
+[Carga de atributos complementares](../pipeline/token_ms.md). A sincronização
+é *best-effort*: uma falha de comunicação com o token-ms é registrada em log,
+mas não altera o status HTTP nem o corpo da resposta, já que o Keycloak
+(etapa crítica) já foi atualizado com sucesso.
+
 ---
 
 ## Concessão de Acesso a Sistema
@@ -240,6 +248,13 @@ Se o `identificador` não for encontrado no CoreSSO, ou o `sistema` informado
 não existir/não tiver client no Keycloak, a resposta é `204 No Content`
 (sem corpo) — mesmo motivo do endpoint de sincronização (evitar
 interceptação de proxies/WAF em respostas de erro).
+
+**Token-MS**: quando o usuário existe no CoreSSO, esta rota também atualiza
+perfis/permissões no token-ms na mesma chamada, mesma lógica *best-effort*
+de `usuario/sincronizar/`. No fallback sem CoreSSO
+(`_conceder_acesso_sem_coresso`, usuário criado via `usuario/criar/` sem
+vínculo prévio) não há grupos para montar um payload de perfil — o token-ms
+não é chamado nesse caminho.
 
 ---
 
