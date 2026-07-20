@@ -581,6 +581,114 @@ class TestConcederAcessoView:
                 f"{_ORQUESTRADOR}.conceder_acesso_kc",
                 return_value=resultado,
             ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+            ) as mock_enviar_perfil,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "7777777",
+                    "sistema": 1,
+                    "roles": ["Admin"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["acao"] == "criado"
+        mock_enviar_perfil.assert_called_once()
+        assert mock_enviar_perfil.call_args.args[0] == "kc-1"
+        assert mock_enviar_perfil.call_args.args[1]["rf"] == "7777777"
+
+    def test_sem_coresso_nao_chama_token_ms(self, cliente: APIClient) -> None:
+        """Fallback sem CoreSSO não tenta sincronizar perfis no token-ms.
+
+        Sem ``dados`` do CoreSSO não há grupos/vínculos para montar
+        um payload de perfil — a decisão de escopo é não chamar o
+        token-ms nesse caminho.
+        """
+        conta_kc = {
+            "id": "kc-existente",
+            "username": "9000009",
+            "firstName": "Fulano",
+        }
+        resultado_roles = {
+            "sistema": "Auto Serviço",
+            "client_id": "auto-servico-qa",
+            "roles_atribuidos": ["COTIC"],
+            "roles_nao_encontrados": [],
+            "erros": 0,
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value=None,
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._buscar_todas_contas_kc",
+                return_value=[conta_kc],
+            ),
+            patch(
+                f"{_ORQUESTRADOR}._conceder_roles_sistema_kc",
+                return_value=resultado_roles,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+            ) as mock_enviar_perfil,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {
+                    "identificador": "9000009",
+                    "sistema": 1008,
+                    "roles": ["COTIC"],
+                },
+                format="json",
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        mock_enviar_perfil.assert_not_called()
+
+    def test_falha_no_token_ms_nao_afeta_status_http(
+        self, cliente: APIClient
+    ) -> None:
+        """Falha ao sincronizar no token-ms não muda a resposta HTTP."""
+        resultado = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "username": "7777777",
+            "sistema": "Teste",
+            "roles_atribuidos": ["Admin"],
+            "roles_nao_encontrados": [],
+            "erros": 0,
+        }
+        with (
+            patch(
+                f"{_EXTRACAO}.buscar_dados_usuario_coresso",
+                return_value={
+                    "login": "7777777",
+                    "cpf": "",
+                    "nome": "Teste",
+                    "email": "",
+                    "situacao": "ativo",
+                    "sistemas": {},
+                },
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.obter_admin_keycloak",
+                return_value=MagicMock(),
+            ),
+            patch(
+                f"{_ORQUESTRADOR}.conceder_acesso_kc",
+                return_value=resultado,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+                side_effect=ConnectionError("token-ms indisponível"),
+            ),
         ):
             resp = cliente.post(
                 self.URL,

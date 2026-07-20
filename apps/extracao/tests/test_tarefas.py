@@ -19,6 +19,7 @@ from apps.extracao.tasks import (
     _string_conexao_se1426,
     buscar_dados_usuario_coresso,
     buscar_grupos_coresso_por_login,
+    buscar_permissoes_usuario_coresso,
     extrair_coresso,
     extrair_eol_alunos,
     extrair_perfis_coresso,
@@ -1269,3 +1270,66 @@ class TestBuscarDadosUsuarioCoresso:
         assert r is not None
         assert r["email"] == "joao@sme.sp"
         assert r["cpf"] == "11122233344"
+
+
+class TestBuscarPermissoesUsuarioCoresso:
+    """Testes de buscar_permissoes_usuario_coresso."""
+
+    def test_sem_servidor_retorna_lista_vazia(self, settings: Any) -> None:
+        """Verifica que retorna vazio sem CORESSO_DB_SERVIDOR configurado."""
+        settings.CORESSO_DB_SERVIDOR = ""
+        assert buscar_permissoes_usuario_coresso(["g1"]) == []
+
+    def test_sem_gru_ids_retorna_lista_vazia_sem_conectar(
+        self, settings: Any
+    ) -> None:
+        """Verifica que não conecta ao banco se não houver grupos."""
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        with patch("pyodbc.connect") as mock_connect:
+            assert buscar_permissoes_usuario_coresso([]) == []
+        mock_connect.assert_not_called()
+
+    def test_retorna_permissoes_por_modulo(self, settings: Any) -> None:
+        """Verifica que a query retorna as permissões por módulo."""
+        settings.CORESSO_DB_SERVIDOR = "srv"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        colunas = [
+            "sis_id",
+            "sis_nome",
+            "mod_id",
+            "mod_nome",
+            "consultar",
+            "inserir",
+            "alterar",
+            "excluir",
+        ]
+        linhas = [
+            (1, "CoreSSO", 3, "Usuários", True, True, False, False),
+        ]
+        mock_cursor = MagicMock()
+        mock_cursor.description = [(c,) for c in colunas]
+        mock_cursor.fetchall.return_value = linhas
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = buscar_permissoes_usuario_coresso(["g1", "g2"])
+
+        assert resultado == [
+            {
+                "sis_id": 1,
+                "sis_nome": "CoreSSO",
+                "mod_id": 3,
+                "mod_nome": "Usuários",
+                "consultar": True,
+                "inserir": True,
+                "alterar": False,
+                "excluir": False,
+            }
+        ]
+        chamada = mock_cursor.execute.call_args
+        assert chamada.args[1] == ("g1", "g2")

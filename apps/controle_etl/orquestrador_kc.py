@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -257,6 +258,184 @@ def construir_payload_token_ms(usuario: Any) -> dict[str, Any]:
         "fonte": usuario.fonte,
         "id_execucao": str(usuario.id_execucao),
     }
+
+
+def resolver_kc_user_id_de_usuario(
+    admin: Any,
+    usuario: Any,
+    cache: dict[str, str | None] | None = None,
+) -> str | None:
+    """Resolve o UUID do usuário no Keycloak a partir do staging.
+
+    Reaproveita a mesma resolução de username usada no upsert
+    (``_resolver_username``) e a busca por username exato já usada em
+    ``atribuir_client_roles_usuario_kc`` (``_resolver_kc_user_id``),
+    para uso por chamadores externos que precisam do ``kc_user_id``
+    sem repetir a lógica de qual campo identifica o usuário.
+
+    Args:
+        admin: Cliente KeycloakAdmin autenticado.
+        usuario: Instância de staging.
+        cache: Cache opcional de username → kc_user_id, para reuso
+            entre múltiplas chamadas na mesma execução.
+
+    Returns:
+        UUID do usuário no Keycloak, ou ``None`` se não encontrado.
+    """
+    return _resolver_kc_user_id(
+        admin, _resolver_username(usuario), cache if cache is not None else {}
+    )
+
+
+def _montar_permissoes(gru_ids: list[str]) -> list[dict[str, Any]]:
+    """Busca e deduplica as permissões de módulo dos grupos informados.
+
+    Um usuário pode ter mais de um grupo concedendo permissão ao
+    mesmo módulo — nesse caso, as flags são combinadas por OR lógico
+    (basta um grupo conceder a ação para o usuário tê-la).
+
+    Args:
+        gru_ids: IDs dos grupos CoreSSO do usuário.
+
+    Returns:
+        Lista de permissões por módulo, deduplicada por
+        ``(sistema_id, modulo_id)``.
+    """
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        buscar_permissoes_usuario_coresso,
+    )
+
+    permissoes: dict[tuple[Any, Any], dict[str, Any]] = {}
+    for linha in buscar_permissoes_usuario_coresso(gru_ids):
+        chave = (linha["sis_id"], linha["mod_id"])
+        atual = permissoes.setdefault(
+            chave,
+            {
+                "sistema_id": linha["sis_id"],
+                "sistema_nome": (linha["sis_nome"] or "").strip(),
+                "modulo_id": linha["mod_id"],
+                "modulo_nome": (linha["mod_nome"] or "").strip(),
+                "consultar": False,
+                "inserir": False,
+                "alterar": False,
+                "excluir": False,
+            },
+        )
+        atual["consultar"] = atual["consultar"] or bool(linha["consultar"])
+        atual["inserir"] = atual["inserir"] or bool(linha["inserir"])
+        atual["alterar"] = atual["alterar"] or bool(linha["alterar"])
+        atual["excluir"] = atual["excluir"] or bool(linha["excluir"])
+
+    return list(permissoes.values())
+
+
+def montar_payload_perfil(
+    dados: dict[str, Any],
+    *,
+    identificador: str,
+    rf: str | None = None,
+    nome: str | None = None,
+    cpf: str | None = None,
+    email: str | None = None,
+    dre: str | None = None,
+    contrato_externo: bool = False,
+) -> dict[str, Any]:
+    """Constrói o payload de projeção de perfis a partir de dados do CoreSSO.
+
+    Converte os vínculos usuário↔grupo já buscados (``dados``, no
+    formato de ``buscar_dados_usuario_coresso``) em ``perfis``, e
+    resolve ``permissoes`` a partir de ``SYS_GrupoPermissao``/
+    ``SYS_Modulo`` para os mesmos grupos — sem fazer nenhuma nova
+    consulta ao CoreSSO. Usada tanto por
+    ``construir_payload_perfil_token_ms`` (pipeline agendado, a
+    partir de staging) quanto pelas views HTTP avulsas de
+    sincronização/concessão de acesso, que já têm ``dados`` em mãos
+    antes de chamar esta função.
+
+    Args:
+        dados: Resultado de ``buscar_dados_usuario_coresso``.
+        identificador: RF, CPF ou email usado na busca — usado como
+            ``login`` de fallback se o CoreSSO não retornar um.
+        rf: RF do usuário, se conhecido pelo chamador.
+        nome: Nome de fallback, usado se ``dados["nome"]`` for vazio.
+        cpf: CPF de fallback, usado se ``dados["cpf"]`` for vazio.
+        email: E-mail de fallback, usado se ``dados["email"]`` for
+            vazio.
+        dre: Código da DRE, se conhecido pelo chamador.
+        contrato_externo: Se o usuário é de contrato externo
+            (terceiro).
+
+    Returns:
+        Payload completo de ``ProjecaoUsuarioSerializer`` do token-ms.
+    """
+    grupos = [
+        grupo
+        for sistema in dados["sistemas"].values()
+        for grupo in sistema["grupos"]
+    ]
+    perfis = [
+        {"id": str(uuid.uuid4()), "nome": grupo["nome"], "ativo": True}
+        for grupo in grupos
+    ]
+    gru_ids = [grupo["gru_id"] for grupo in grupos]
+
+    return {
+        "login": dados["login"] or identificador,
+        "rf": rf,
+        "nome": dados["nome"] or nome,
+        "cpf": dados["cpf"] or cpf,
+        "email": dados["email"] or email,
+        "situacao": dados["situacao"],
+        "dre_codigo": dre,
+        "contrato_externo": contrato_externo,
+        "perfis": perfis,
+        "permissoes": _montar_permissoes(gru_ids),
+    }
+
+
+def construir_payload_perfil_token_ms(usuario: Any) -> dict[str, Any] | None:
+    """Constrói o payload de projeção de perfis para o token-ms.
+
+    Wrapper de ``montar_payload_perfil`` para uso no pipeline
+    agendado: busca os vínculos usuário↔grupo do CoreSSO
+    (``buscar_dados_usuario_coresso``) a partir de um registro de
+    staging — a mesma fonte já usada por ``sincronizar_usuario``. A
+    query de origem já filtra apenas grupos com ``gru_situacao = 1``,
+    então todo vínculo retornado está ativo.
+
+    Args:
+        usuario: Instância de staging (mesmo objeto usado em
+            ``construir_payload_token_ms``).
+
+    Returns:
+        Payload completo de ``ProjecaoUsuarioSerializer`` do token-ms,
+        ou ``None`` se o usuário não for encontrado no CoreSSO (ex.:
+        usuário de fonte EOL_DB/aluno, sem vínculos de sistema).
+    """
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        buscar_dados_usuario_coresso,
+    )
+
+    identificador = (
+        getattr(usuario, "rf", None) or usuario.cpf or usuario.email
+    )
+    if not identificador:
+        return None
+
+    dados = buscar_dados_usuario_coresso(identificador)
+    if not dados:
+        return None
+
+    return montar_payload_perfil(
+        dados,
+        identificador=identificador,
+        rf=getattr(usuario, "rf", None),
+        nome=usuario.nome,
+        cpf=usuario.cpf,
+        email=usuario.email,
+        dre=getattr(usuario, "dre", None),
+        contrato_externo=_inferir_tipo_usuario(usuario) == "terceiro",
+    )
 
 
 def calcular_hash_conteudo(payload: dict) -> str:

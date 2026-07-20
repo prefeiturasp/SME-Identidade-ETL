@@ -32,8 +32,11 @@ from apps.controle_etl.orquestrador_kc import (
     calcular_hash_conteudo,
     conceder_acesso_kc,
     construir_payload_kc,
+    construir_payload_perfil_token_ms,
     construir_payload_token_ms,
+    montar_payload_perfil,
     provisionar_usuarios_kc_em_paralelo,
+    resolver_kc_user_id_de_usuario,
     sincronizar_usuario_kc,
 )
 
@@ -365,6 +368,360 @@ class TestConstruirPayloadTokenMs:
         u.id_execucao = "abc-123"
         payload = construir_payload_token_ms(u)
         assert isinstance(payload["id_execucao"], str)
+
+
+# ---------------------------------------------------------------------------
+# resolver_kc_user_id_de_usuario
+# ---------------------------------------------------------------------------
+
+
+class TestResolverKcUserIdDeUsuario:
+    """Testa a resolução do kc_user_id a partir de um usuário staging."""
+
+    def test_retorna_id_quando_encontrado(self) -> None:
+        """Verifica que resolve o UUID pelo username derivado do RF."""
+        u = _usuario(rf="1234567")
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-9"}]
+
+        assert resolver_kc_user_id_de_usuario(admin, u) == "kc-9"
+        admin.get_users.assert_called_once_with(
+            {"username": "1234567", "exact": True}
+        )
+
+    def test_retorna_none_quando_nao_encontrado(self) -> None:
+        """Verifica que retorna None sem lançar exceção."""
+        u = _usuario(rf="1234567")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+
+        assert resolver_kc_user_id_de_usuario(admin, u) is None
+
+    def test_reusa_cache_entre_chamadas(self) -> None:
+        """Verifica que não consulta o Keycloak duas vezes p/ o mesmo user."""
+        u = _usuario(rf="1234567")
+        admin = MagicMock()
+        admin.get_users.return_value = [{"id": "kc-9"}]
+        cache: dict = {}
+
+        resolver_kc_user_id_de_usuario(admin, u, cache)
+        resolver_kc_user_id_de_usuario(admin, u, cache)
+
+        admin.get_users.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# montar_payload_perfil
+# ---------------------------------------------------------------------------
+
+
+class TestMontarPayloadPerfil:
+    """Testa a montagem do payload de perfil a partir de dados já buscados.
+
+    Diferente de ``construir_payload_perfil_token_ms``, não recebe
+    staging nem consulta o CoreSSO — usada pelas views HTTP avulsas
+    (``sincronizar_usuario``, ``conceder_acesso``), que já têm
+    ``dados`` em mãos.
+    """
+
+    def test_monta_perfis_e_login_a_partir_de_dados(self) -> None:
+        """Verifica que perfis vêm dos grupos de ``dados``, sem staging."""
+        dados = {
+            "login": "1234567",
+            "cpf": "12345678901",
+            "nome": "Ana Lima",
+            "email": "ana@sme.sp.gov.br",
+            "situacao": "ativo",
+            "sistemas": {
+                1: {
+                    "sis_id": 1,
+                    "nome": "CoreSSO",
+                    "grupos": [{"gru_id": "g1", "nome": "Administrador"}],
+                },
+            },
+        }
+        with patch(
+            "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+            return_value=[],
+        ):
+            payload = montar_payload_perfil(dados, identificador="1234567")
+
+        assert payload["login"] == "1234567"
+        assert payload["situacao"] == "ativo"
+        assert payload["permissoes"] == []
+        assert [p["nome"] for p in payload["perfis"]] == ["Administrador"]
+
+    def test_usa_identificador_como_login_de_fallback(self) -> None:
+        """Verifica o fallback de login quando dados["login"] é vazio."""
+        dados = {
+            "login": "",
+            "cpf": "",
+            "nome": "",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        with patch(
+            "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+            return_value=[],
+        ):
+            payload = montar_payload_perfil(
+                dados, identificador="ana@sme.sp.gov.br"
+            )
+
+        assert payload["login"] == "ana@sme.sp.gov.br"
+
+    def test_aplica_fallback_de_nome_cpf_email(self) -> None:
+        """Verifica que nome/cpf/email de fallback são usados se vazios."""
+        dados = {
+            "login": "1234567",
+            "cpf": "",
+            "nome": "",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        with patch(
+            "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+            return_value=[],
+        ):
+            payload = montar_payload_perfil(
+                dados,
+                identificador="1234567",
+                nome="Nome Fallback",
+                cpf="99999999999",
+                email="fallback@sme.sp.gov.br",
+                rf="1234567",
+                dre="DRE01",
+                contrato_externo=True,
+            )
+
+        assert payload["nome"] == "Nome Fallback"
+        assert payload["cpf"] == "99999999999"
+        assert payload["email"] == "fallback@sme.sp.gov.br"
+        assert payload["rf"] == "1234567"
+        assert payload["dre_codigo"] == "DRE01"
+        assert payload["contrato_externo"] is True
+
+
+# ---------------------------------------------------------------------------
+# construir_payload_perfil_token_ms
+# ---------------------------------------------------------------------------
+
+
+class TestConstruirPayloadPerfilTokenMs:
+    """Testa a construção do payload de perfis para o token-ms."""
+
+    def test_retorna_none_sem_identificador(self) -> None:
+        """Verifica que retorna None quando não há rf/cpf/email."""
+        u = _usuario(rf="", cpf="", email="")
+        assert construir_payload_perfil_token_ms(u) is None
+
+    def test_retorna_none_quando_nao_encontrado_no_coresso(self) -> None:
+        """Verifica que retorna None quando o CoreSSO não retorna dados."""
+        u = _usuario()
+        with patch(
+            "apps.extracao.tasks.buscar_dados_usuario_coresso",
+            return_value=None,
+        ):
+            assert construir_payload_perfil_token_ms(u) is None
+
+    def test_monta_perfis_a_partir_dos_grupos_coresso(self) -> None:
+        """Verifica que cada grupo/sistema do CoreSSO vira um perfil."""
+        u = _usuario(rf="1234567")
+        dados_coresso = {
+            "login": "1234567",
+            "cpf": "12345678901",
+            "nome": "Ana Lima",
+            "email": "ana@sme.sp.gov.br",
+            "situacao": "ativo",
+            "sistemas": {
+                1: {
+                    "sis_id": 1,
+                    "nome": "CoreSSO",
+                    "grupos": [{"gru_id": "g1", "nome": "Administrador"}],
+                },
+                2: {
+                    "sis_id": 2,
+                    "nome": "Novo SGP",
+                    "grupos": [
+                        {"gru_id": "g2", "nome": "Professor"},
+                        {"gru_id": "g3", "nome": "Coordenador"},
+                    ],
+                },
+            },
+        }
+        with (
+            patch(
+                "apps.extracao.tasks.buscar_dados_usuario_coresso",
+                return_value=dados_coresso,
+            ),
+            patch(
+                "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+                return_value=[],
+            ),
+        ):
+            payload = construir_payload_perfil_token_ms(u)
+
+        assert payload is not None
+        assert payload["login"] == "1234567"
+        assert payload["situacao"] == "ativo"
+        assert payload["permissoes"] == []
+        nomes_perfis = sorted(p["nome"] for p in payload["perfis"])
+        assert nomes_perfis == ["Administrador", "Coordenador", "Professor"]
+        assert all(p["ativo"] for p in payload["perfis"])
+        assert all("id" in p for p in payload["perfis"])
+
+    def test_perfis_vazios_quando_usuario_sem_vinculos(self) -> None:
+        """Verifica payload com perfis=[] quando o usuário não tem grupos."""
+        u = _usuario(rf="1234567")
+        dados_coresso = {
+            "login": "1234567",
+            "cpf": "12345678901",
+            "nome": "Ana Lima",
+            "email": "ana@sme.sp.gov.br",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        with (
+            patch(
+                "apps.extracao.tasks.buscar_dados_usuario_coresso",
+                return_value=dados_coresso,
+            ),
+            patch(
+                "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+                return_value=[],
+            ) as mock_permissoes,
+        ):
+            payload = construir_payload_perfil_token_ms(u)
+
+        assert payload is not None
+        assert payload["perfis"] == []
+        assert payload["permissoes"] == []
+        mock_permissoes.assert_called_once_with([])
+
+    def test_monta_permissoes_a_partir_de_sys_grupopermissao(self) -> None:
+        """Verifica que permissões vêm agrupadas por sistema/módulo."""
+        u = _usuario(rf="1234567")
+        dados_coresso = {
+            "login": "1234567",
+            "cpf": "12345678901",
+            "nome": "Ana Lima",
+            "email": "ana@sme.sp.gov.br",
+            "situacao": "ativo",
+            "sistemas": {
+                1: {
+                    "sis_id": 1,
+                    "nome": "CoreSSO",
+                    "grupos": [{"gru_id": "g1", "nome": "Administrador"}],
+                },
+            },
+        }
+        permissoes_coresso = [
+            {
+                "sis_id": 1,
+                "sis_nome": "CoreSSO",
+                "mod_id": 3,
+                "mod_nome": "Usuários",
+                "consultar": True,
+                "inserir": True,
+                "alterar": True,
+                "excluir": True,
+            },
+        ]
+        with (
+            patch(
+                "apps.extracao.tasks.buscar_dados_usuario_coresso",
+                return_value=dados_coresso,
+            ),
+            patch(
+                "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+                return_value=permissoes_coresso,
+            ) as mock_permissoes,
+        ):
+            payload = construir_payload_perfil_token_ms(u)
+
+        assert payload is not None
+        assert payload["permissoes"] == [
+            {
+                "sistema_id": 1,
+                "sistema_nome": "CoreSSO",
+                "modulo_id": 3,
+                "modulo_nome": "Usuários",
+                "consultar": True,
+                "inserir": True,
+                "alterar": True,
+                "excluir": True,
+            }
+        ]
+        mock_permissoes.assert_called_once_with(["g1"])
+
+    def test_deduplica_permissoes_do_mesmo_modulo_entre_grupos(self) -> None:
+        """Verifica que módulo repetido em grupos diferentes vira 1 item.
+
+        Duas linhas para o mesmo (sistema, módulo) — cada uma vinda de
+        um grupo diferente do usuário — devem virar uma única entrada
+        no payload, com as flags combinadas por OR lógico.
+        """
+        u = _usuario(rf="1234567")
+        dados_coresso = {
+            "login": "1234567",
+            "cpf": "12345678901",
+            "nome": "Ana Lima",
+            "email": "ana@sme.sp.gov.br",
+            "situacao": "ativo",
+            "sistemas": {
+                1: {
+                    "sis_id": 1,
+                    "nome": "CoreSSO",
+                    "grupos": [
+                        {"gru_id": "g1", "nome": "Consulta"},
+                        {"gru_id": "g2", "nome": "Edição"},
+                    ],
+                },
+            },
+        }
+        permissoes_coresso = [
+            {
+                "sis_id": 1,
+                "sis_nome": "CoreSSO",
+                "mod_id": 3,
+                "mod_nome": "Usuários",
+                "consultar": True,
+                "inserir": False,
+                "alterar": False,
+                "excluir": False,
+            },
+            {
+                "sis_id": 1,
+                "sis_nome": "CoreSSO",
+                "mod_id": 3,
+                "mod_nome": "Usuários",
+                "consultar": False,
+                "inserir": True,
+                "alterar": True,
+                "excluir": False,
+            },
+        ]
+        with (
+            patch(
+                "apps.extracao.tasks.buscar_dados_usuario_coresso",
+                return_value=dados_coresso,
+            ),
+            patch(
+                "apps.extracao.tasks.buscar_permissoes_usuario_coresso",
+                return_value=permissoes_coresso,
+            ),
+        ):
+            payload = construir_payload_perfil_token_ms(u)
+
+        assert payload is not None
+        assert len(payload["permissoes"]) == 1
+        permissao = payload["permissoes"][0]
+        assert permissao["consultar"] is True
+        assert permissao["inserir"] is True
+        assert permissao["alterar"] is True
+        assert permissao["excluir"] is False
 
 
 # ---------------------------------------------------------------------------

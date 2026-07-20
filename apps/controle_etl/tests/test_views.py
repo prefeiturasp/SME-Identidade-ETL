@@ -835,6 +835,9 @@ class TestSincronizarUsuario:
                 "apps.controle_etl.orquestrador_kc" ".sincronizar_usuario_kc",
                 return_value=resultado,
             ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+            ) as mock_enviar_perfil,
         ):
             resp = cliente.post(
                 self.URL,
@@ -842,6 +845,9 @@ class TestSincronizarUsuario:
             )
         assert resp.status_code == status.HTTP_200_OK
         assert resp.data["acao"] == "criado"
+        mock_enviar_perfil.assert_called_once()
+        assert mock_enviar_perfil.call_args.args[0] == "kc-1"
+        assert mock_enviar_perfil.call_args.args[1]["rf"] == "123"
 
     def test_erro_coresso_retorna_502(self, cliente: APIClient) -> None:
         with patch(
@@ -853,6 +859,91 @@ class TestSincronizarUsuario:
                 {"identificador": "123"},
             )
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+    def test_falha_no_token_ms_nao_afeta_status_http(
+        self, cliente: APIClient
+    ) -> None:
+        """Falha ao sincronizar no token-ms não muda a resposta HTTP.
+
+        O Keycloak (etapa crítica) já foi atualizado com sucesso —
+        a sincronização com o token-ms é best-effort.
+        """
+        dados = {
+            "login": "123",
+            "cpf": "",
+            "nome": "Teste",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        resultado = {
+            "acao": "criado",
+            "kc_user_id": "kc-1",
+            "username": "123",
+            "nome": "Teste",
+            "roles_atribuidos": 0,
+            "roles_erros": 0,
+            "sistemas": [],
+        }
+        with (
+            patch(
+                "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
+                return_value=dados,
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".sincronizar_usuario_kc",
+                return_value=resultado,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+                side_effect=ConnectionError("token-ms indisponível"),
+            ),
+        ):
+            resp = cliente.post(
+                self.URL,
+                {"identificador": "123"},
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.data["acao"] == "criado"
+
+    def test_sem_kc_user_id_nao_chama_token_ms(
+        self, cliente: APIClient
+    ) -> None:
+        """Não tenta sincronizar no token-ms sem kc_user_id resolvido."""
+        dados = {
+            "login": "123",
+            "cpf": "",
+            "nome": "Teste",
+            "email": "",
+            "situacao": "ativo",
+            "sistemas": {},
+        }
+        resultado = {"acao": "erro", "motivo": "sem kc_user_id"}
+        with (
+            patch(
+                "apps.extracao.tasks" ".buscar_dados_usuario_coresso",
+                return_value=dados,
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".obter_admin_keycloak",
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc" ".sincronizar_usuario_kc",
+                return_value=resultado,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+            ) as mock_enviar_perfil,
+        ):
+            resp = cliente.post(
+                self.URL,
+                {"identificador": "123"},
+            )
+        assert resp.status_code == status.HTTP_200_OK
+        mock_enviar_perfil.assert_not_called()
 
 
 # ------------------------------------------------------------------

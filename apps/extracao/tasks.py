@@ -967,6 +967,69 @@ def buscar_dados_usuario_coresso(
     return resultado
 
 
+def buscar_permissoes_usuario_coresso(gru_ids: list[str]) -> list[dict]:
+    """Busca as permissões CRUD por módulo para os grupos informados.
+
+    Fonte real: ``SYS_GrupoPermissao``/``SYS_Modulo`` do CoreSSO —
+    uma matriz grupo×sistema×módulo com quatro flags booleanas
+    (consultar/inserir/alterar/excluir). Chamada em cadeia, com os
+    ``gru_id`` já obtidos de ``buscar_dados_usuario_coresso``, e não
+    numa única query com ``JOIN`` direto, para evitar a explosão
+    cartesiana de repetir os dados de perfil por módulo — um usuário
+    com poucos grupos pode ter centenas de módulos permissionados.
+    Só retorna módulos com ao menos uma permissão concedida (descarta
+    a maioria das combinações grupo×módulo, que vêm todas com as
+    quatro flags falsas).
+
+    Args:
+        gru_ids: IDs dos grupos CoreSSO do usuário (``gru_id``).
+
+    Returns:
+        Lista de dicts com ``sis_id``, ``sis_nome``, ``mod_id``,
+        ``mod_nome`` e as quatro flags CRUD.
+    """
+    if not settings.CORESSO_DB_SERVIDOR or not gru_ids:
+        return []
+
+    import pyodbc
+
+    marcadores = ",".join("?" for _ in gru_ids)
+    consulta = f"""
+        SELECT
+            gp.sis_id          AS sis_id,
+            s.sis_nome         AS sis_nome,
+            gp.mod_id          AS mod_id,
+            m.mod_nome         AS mod_nome,
+            gp.grp_consultar   AS consultar,
+            gp.grp_inserir     AS inserir,
+            gp.grp_alterar     AS alterar,
+            gp.grp_excluir     AS excluir
+        FROM SYS_GrupoPermissao gp
+        LEFT JOIN SYS_Sistema s
+            ON s.sis_id = gp.sis_id
+        LEFT JOIN SYS_Modulo m
+            ON m.sis_id = gp.sis_id AND m.mod_id = gp.mod_id
+        WHERE gp.gru_id IN ({marcadores})
+          AND (
+              gp.grp_consultar = 1 OR gp.grp_inserir = 1
+              OR gp.grp_alterar = 1 OR gp.grp_excluir = 1
+          )
+    """
+    conn = pyodbc.connect(
+        _string_conexao_coresso(),
+        timeout=settings.CORESSO_DB_TIMEOUT,
+    )
+    try:
+        cursor = conn.cursor()
+        cursor.execute(consulta, tuple(gru_ids))
+        colunas = [d[0] for d in cursor.description]
+        return [
+            dict(zip(colunas, row, strict=False)) for row in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
 def _montar_resultado_usuario(rows: list) -> dict:
     """Monta o dict de resultado a partir das linhas SQL."""
     r0 = rows[0]

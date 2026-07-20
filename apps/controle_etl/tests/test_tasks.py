@@ -521,14 +521,28 @@ class TestTaskCarregarAtributosToken:
             quantidade = len(list(payloads))
             return {"enviados": quantidade, "lotes": 1}
 
-        with patch(
-            "apps.controle_etl.cliente_token_ms.enviar_todos",
-            side_effect=_consome_payloads,
-        ) as mock_enviar:
+        with (
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_todos",
+                side_effect=_consome_payloads,
+            ) as mock_enviar,
+            patch(
+                "apps.controle_etl.tasks._sincronizar_perfis_execucao",
+                return_value={"sincronizados": 0, "erros": 0},
+            ) as mock_perfis,
+        ):
             resultado = task_carregar_atributos_token({}, id_execucao)
 
-        assert resultado == {"enviados": 3, "lotes": 1}
+        assert resultado == {
+            "enviados": 3,
+            "lotes": 1,
+            "perfis_sincronizados": 0,
+            "perfis_erros": 0,
+        }
         mock_enviar.assert_called_once()
+        mock_perfis.assert_called_once_with(
+            id_execucao, execucao.realm_destino
+        )
         etapa = LogEtapaETL.objects.get()
         assert etapa.situacao == LogEtapaETL.Situacao.SUCESSO
 
@@ -554,6 +568,146 @@ class TestTaskCarregarAtributosToken:
         mock_retry.assert_called_once()
         etapa = LogEtapaETL.objects.get()
         assert etapa.situacao == LogEtapaETL.Situacao.FALHA
+
+    def test_sincroniza_perfis_antes_do_push_batch(self) -> None:
+        """Verifica que perfis são sincronizados antes do push-batch.
+
+        A ProjecaoUsuario precisa existir no token-ms antes do
+        push-batch de atributos complementares, para que o vínculo
+        oportunista (por rf/cpf) feito no upsert de
+        AtributoComplementarUsuario já a encontre — em vez de gravar
+        usuario=None por a projeção ainda não existir naquele
+        momento.
+        """
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        chamadas: list[str] = []
+
+        def _push_batch(*args: Any, **kwargs: Any) -> dict[str, int]:
+            chamadas.append("push_batch")
+            return {"enviados": 0, "lotes": 0}
+
+        def _perfis(*args: Any, **kwargs: Any) -> dict[str, int]:
+            chamadas.append("perfis")
+            return {"sincronizados": 0, "erros": 0}
+
+        with (
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_todos",
+                side_effect=_push_batch,
+            ),
+            patch(
+                "apps.controle_etl.tasks._sincronizar_perfis_execucao",
+                side_effect=_perfis,
+            ),
+        ):
+            task_carregar_atributos_token({}, id_execucao)
+
+        assert chamadas == ["perfis", "push_batch"]
+
+    def test_falha_ao_sincronizar_perfil_de_um_usuario_nao_derruba_lote(
+        self,
+    ) -> None:
+        """Verifica que erro isolado num perfil não afeta os demais."""
+        from apps.staging.models import UsuarioServidorStaging
+
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            rf="1234567",
+            cpf="12345678901",
+            nome="Ana Lima",
+            situacao="carregado",
+        )
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            rf="7654321",
+            cpf="98765432100",
+            nome="Beto Souza",
+            situacao="carregado",
+        )
+
+        admin = object()
+        payload = {"login": "x", "nome": "x", "situacao": "ativo"}
+
+        with (
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_todos",
+                return_value={"enviados": 1, "lotes": 1},
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc.obter_admin_keycloak",
+                return_value=admin,
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".resolver_kc_user_id_de_usuario",
+                side_effect=["kc-1", "kc-2"],
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".construir_payload_perfil_token_ms",
+                return_value=payload,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil",
+                side_effect=[
+                    Exception("falha no token-ms"),
+                    {"situacao": "ok"},
+                ],
+            ) as mock_enviar_perfil,
+        ):
+            resultado = task_carregar_atributos_token({}, id_execucao)
+
+        assert resultado["perfis_sincronizados"] == 1
+        assert resultado["perfis_erros"] == 1
+        assert mock_enviar_perfil.call_count == 2
+        etapa = LogEtapaETL.objects.get()
+        assert etapa.situacao == LogEtapaETL.Situacao.SUCESSO
+        assert etapa.metadados["perfis_sincronizados"] == 1
+        assert etapa.metadados["perfis_erros"] == 1
+
+    def test_usuario_sem_kc_user_id_nao_chama_enviar_perfil(self) -> None:
+        """Verifica que usuário não resolvido no Keycloak é ignorado."""
+        from apps.staging.models import UsuarioServidorStaging
+
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            rf="1234567",
+            cpf="12345678901",
+            nome="Ana Lima",
+            situacao="carregado",
+        )
+
+        with (
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_todos",
+                return_value={"enviados": 1, "lotes": 1},
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc.obter_admin_keycloak",
+                return_value=object(),
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".resolver_kc_user_id_de_usuario",
+                return_value=None,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_perfil"
+            ) as mock_enviar_perfil,
+        ):
+            resultado = task_carregar_atributos_token({}, id_execucao)
+
+        assert resultado["perfis_sincronizados"] == 0
+        assert resultado["perfis_erros"] == 0
+        mock_enviar_perfil.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
