@@ -155,9 +155,7 @@ def enviar_perfil(
             conexão.
         httpx.TimeoutException: Após esgotar as tentativas por timeout.
     """
-    url = (
-        f"{settings.TOKEN_MS_URL.rstrip('/')}" f"/api/v1/perfis/{usuario_id}/"
-    )
+    url = f"{settings.TOKEN_MS_URL.rstrip('/')}/api/v1/perfis/{usuario_id}/"
 
     tentativa = 0
     while True:
