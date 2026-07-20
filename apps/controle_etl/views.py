@@ -1142,6 +1142,48 @@ def criar_usuario_manual(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+def _sincronizar_perfil_token_ms(
+    kc_user_id: str,
+    dados: dict[str, Any],
+    *,
+    identificador: str,
+) -> None:
+    """Mantém o token-ms atualizado após uma alteração no Keycloak.
+
+    Chamado a partir de rotas avulsas (``sincronizar_usuario``,
+    ``conceder_acesso``) que já têm ``dados`` do CoreSSO e o
+    ``kc_user_id`` em mãos — evita repetir a busca do CoreSSO feita
+    por ``construir_payload_perfil_token_ms`` no pipeline agendado.
+    Best-effort: falha aqui não derruba a resposta HTTP, já que o
+    Keycloak (etapa crítica) já foi atualizado com sucesso antes
+    desta chamada — mesma filosofia de
+    ``_sincronizar_perfis_execucao`` no pipeline agendado.
+
+    Args:
+        kc_user_id: UUID do usuário no Keycloak.
+        dados: Resultado de ``buscar_dados_usuario_coresso``.
+        identificador: RF, CPF ou email usado na busca.
+    """
+    from apps.controle_etl.cliente_token_ms import (  # noqa: PLC0415
+        enviar_perfil,
+    )
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        montar_payload_perfil,
+    )
+
+    try:
+        payload = montar_payload_perfil(
+            dados, identificador=identificador, rf=dados.get("login")
+        )
+        enviar_perfil(kc_user_id, payload)
+    except Exception:
+        logger.exception(
+            "Falha ao sincronizar perfil no token-ms para %s (kc_user_id=%s)",
+            identificador,
+            kc_user_id,
+        )
+
+
 @extend_schema(
     tags=["Usuário"],
     request=SincronizarUsuarioSerializer,
@@ -1152,7 +1194,9 @@ def sincronizar_usuario(request: Request) -> Response:
 
     Busca o usuário no CoreSSO por RF, CPF ou email,
     cria/atualiza no Keycloak e atribui todos os client
-    roles dos sistemas aos quais pertence.
+    roles dos sistemas aos quais pertence. Também atualiza a
+    projeção de perfis/permissões no token-ms na mesma chamada
+    (best-effort — ver ``_sincronizar_perfil_token_ms``).
     """
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
         obter_admin_keycloak,
@@ -1200,6 +1244,11 @@ def sincronizar_usuario(request: Request) -> Response:
         return Response(
             {"detalhe": str(exc)},
             status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if resultado.get("kc_user_id"):
+        _sincronizar_perfil_token_ms(
+            resultado["kc_user_id"], dados, identificador=identificador
         )
 
     return Response(resultado)
@@ -1262,7 +1311,11 @@ def _conceder_acesso_sem_coresso(
         username=contas[0].get("username", ""),
     )
     if "erro" in resultado_roles:
-        return {"acao": "atualizado", "kc_user_id": kc_user_id, **resultado_roles}
+        return {
+            "acao": "atualizado",
+            "kc_user_id": kc_user_id,
+            **resultado_roles,
+        }
 
     base = settings.KEYCLOAK_URL_SERVIDOR.rstrip("/")
     return {
@@ -1323,12 +1376,17 @@ def conceder_acesso(request: Request) -> Response:
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
+    resultado: dict[str, Any] | None
     try:
         admin = obter_admin_keycloak(realm=realm)
         if dados:
             resultado = conceder_acesso_kc(
                 admin, dados, sis_id, nomes_roles, realm=realm
             )
+            if resultado.get("kc_user_id"):
+                _sincronizar_perfil_token_ms(
+                    resultado["kc_user_id"], dados, identificador=identificador
+                )
         else:
             resultado = _conceder_acesso_sem_coresso(
                 admin, identificador, sis_id, nomes_roles, realm=realm

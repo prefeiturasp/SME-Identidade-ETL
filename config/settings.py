@@ -184,9 +184,14 @@ KEYCLOAK_SUFIXO_CLIENT = os.getenv("KEYCLOAK_SUFIXO_CLIENT", "prod")
 # ---------------------------------------------------------------------------
 # token-ms
 # ---------------------------------------------------------------------------
-TOKEN_MS_URL = os.getenv("TOKEN_MS_URL", "https://token-ms:8000")
-TOKEN_MS_TOKEN = os.getenv("TOKEN_MS_TOKEN", "")
-TOKEN_MS_TOKEN_INTERNO = os.getenv("TOKEN_MS_TOKEN_INTERNO", "")
+# TOKEN_MS_URL deve incluir o prefixo de serviço do token-ms
+# (ex.: "https://host/identidade-token") — cliente_token_ms.py
+# concatena apenas "/api/v1/etl/push-batch" a este valor.
+TOKEN_MS_URL = os.getenv(
+    "TOKEN_MS_URL", "https://token-ms:8000/identidade-token"
+)
+TOKEN_MS_API_KEY = os.getenv("TOKEN_MS_API_KEY", "")
+TOKEN_MS_API_KEY_HEADER = os.getenv("TOKEN_MS_API_KEY_HEADER", "X-API-Key")
 TOKEN_MS_TIMEOUT = int(os.getenv("TOKEN_MS_TIMEOUT", "60"))
 TOKEN_MS_TAMANHO_LOTE = int(os.getenv("TOKEN_MS_TAMANHO_LOTE", "500"))
 
