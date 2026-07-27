@@ -155,9 +155,14 @@ CELERY_TASK_ROUTES = {
     "task_identidade_extrair_eol_alunos": {"queue": "etl_extracao"},
     # Resolução de identidade (merge + dedup + decisão)
     "task_identidade_resolver_identidade": {"queue": "etl_transformacao"},
-    # Provisionamento nos destinos
-    "task_provisionar_identidade_keycloak": {"queue": "etl_carga"},
-    "task_carregar_atributos_token": {"queue": "etl_carga"},
+    # Provisionamento no Keycloak — fila própria, desacoplada do
+    # token-ms (que roda em paralelo, sem esperar este lote terminar)
+    "task_provisionar_identidade_keycloak": {"queue": "etl_carga_keycloak"},
+    # Carga no token-ms — task individual (disparada pelo sucesso do
+    # Keycloak por registro) e task de lote (fallback/reprocessamento
+    # manual), ambas na mesma fila
+    "task_carregar_atributo_token_individual": {"queue": "etl_carga_token_ms"},
+    "task_carregar_atributos_token": {"queue": "etl_carga_token_ms"},
     # Controle operacional e limpeza
     "task_sync_rec_etl": {"queue": "celery"},
     "task_identidade_limpar_staging": {"queue": "celery"},
@@ -230,6 +235,12 @@ ETL_CHUNK_SIZE = int(os.getenv("ETL_CHUNK_SIZE", "500"))
 # Teto de registros extraídos por execução, por fonte (0 = sem limite;
 # use um valor baixo para testar o pipeline com volume reduzido)
 ETL_LOTE_MAXIMO = int(os.getenv("ETL_LOTE_MAXIMO", "0"))
+
+# ---------------------------------------------------------------------------
+# ThreadPoolProcessor — paralelização por lotes (apps/controle_etl/libs)
+# ---------------------------------------------------------------------------
+THREAD_POOL_MAX_WORKERS = int(os.getenv("THREAD_POOL_MAX_WORKERS", "4"))
+THREAD_POOL_CHUNK_TIMEOUT = int(os.getenv("THREAD_POOL_CHUNK_TIMEOUT", "120"))
 
 # ---------------------------------------------------------------------------
 # CoreSSO — SQL Server

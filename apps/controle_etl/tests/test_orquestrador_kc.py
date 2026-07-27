@@ -30,12 +30,16 @@ from apps.controle_etl.orquestrador_kc import (
     _upsert_usuario_kc,
     atribuir_client_roles_usuario_kc,
     calcular_hash_conteudo,
+    calcular_hash_extracao,
     conceder_acesso_kc,
     construir_payload_kc,
     construir_payload_perfil_token_ms,
     construir_payload_token_ms,
     montar_payload_perfil,
+    payload_tem_identificador,
+    provisionar_usuario_kc,
     provisionar_usuarios_kc_em_paralelo,
+    resolver_id_origem,
     resolver_kc_user_id_de_usuario,
     sincronizar_usuario_kc,
 )
@@ -757,6 +761,84 @@ class TestCalcularHashConteudo:
 
 
 # ---------------------------------------------------------------------------
+# calcular_hash_extracao / resolver_id_origem / payload_tem_identificador
+# ---------------------------------------------------------------------------
+
+
+class TestCalcularHashExtracao:
+    """Testa o hash de extração usado para decidir reextração."""
+
+    def test_retorna_string_hex_64_chars(self) -> None:
+        """Verifica que o hash é hexadecimal com 64 caracteres."""
+        h = calcular_hash_extracao(_usuario())
+        assert isinstance(h, str)
+        assert len(h) == 64
+
+    def test_mesmo_usuario_mesmo_hash(self) -> None:
+        """Verifica que o mesmo dado produz sempre o mesmo hash."""
+        u1 = _usuario(nome="Ana Lima")
+        u2 = _usuario(nome="Ana Lima")
+        assert calcular_hash_extracao(u1) == calcular_hash_extracao(u2)
+
+    def test_nome_diferente_hash_diferente(self) -> None:
+        """Verifica que uma mudança no dado altera o hash."""
+        u1 = _usuario(nome="Ana Lima")
+        u2 = _usuario(nome="Ana Lima Silva")
+        assert calcular_hash_extracao(u1) != calcular_hash_extracao(u2)
+
+    def test_campo_ausente_no_tipo_nao_gera_erro(self) -> None:
+        """Verifica que campos ausentes no tipo não geram erro.
+
+        Ex.: cargo em aluno não quebra o cálculo — usa None como
+        fallback.
+        """
+        aluno = MagicMock(spec=["cpf", "rf", "nome", "email", "situacao"])
+        aluno.cpf = "12345678901"
+        aluno.rf = None
+        aluno.nome = "Pedro"
+        aluno.email = "pedro@sme.sp.gov.br"
+        aluno.situacao = "ativo"
+
+        h = calcular_hash_extracao(aluno)
+        assert isinstance(h, str)
+        assert len(h) == 64
+
+
+class TestResolverIdOrigem:
+    """Testa a resolução do identificador estável entre execuções."""
+
+    def test_prefere_cpf_sobre_rf(self) -> None:
+        """Verifica que CPF tem prioridade sobre RF."""
+        u = _usuario(cpf="12345678901", rf="9876543")
+        assert resolver_id_origem(u) == "12345678901"
+
+    def test_usa_rf_quando_sem_cpf(self) -> None:
+        """Verifica que RF é usado quando não há CPF."""
+        u = _usuario(cpf="", rf="9876543")
+        assert resolver_id_origem(u) == "9876543"
+
+    def test_usa_pk_do_staging_como_ultimo_recurso(self) -> None:
+        """Verifica o fallback para o PK quando não há CPF nem RF."""
+        u = _usuario(cpf="", rf="", id=42)
+        assert resolver_id_origem(u) == "42"
+
+
+class TestPayloadTemIdentificador:
+    """Testa a checagem de identificador no payload do token-ms."""
+
+    def test_com_rf_retorna_true(self) -> None:
+        assert payload_tem_identificador({"rf": "1234567"}) is True
+
+    def test_sem_identificador_retorna_false(self) -> None:
+        assert (
+            payload_tem_identificador(
+                {"rf": None, "cpf": None, "matricula": None}
+            )
+            is False
+        )
+
+
+# ---------------------------------------------------------------------------
 # _slugificar_client_id
 # ---------------------------------------------------------------------------
 
@@ -790,6 +872,7 @@ class TestProvisionarUsuarioKcIdempotencia:
         from apps.controle_etl.models import ControleProvisionamento
         from apps.controle_etl.orquestrador_kc import (
             calcular_hash_conteudo,
+            calcular_hash_extracao,
             construir_payload_kc,
             provisionar_usuario_kc,
         )
@@ -806,7 +889,8 @@ class TestProvisionarUsuarioKcIdempotencia:
             sistema_origem=u.fonte,
             id_origem="12345678901",
             realm_destino="sme-apps",
-            hash_conteudo=hash_atual,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=hash_atual,
             id_destino="kc-uuid-existente",
         )
 
@@ -883,7 +967,7 @@ class TestProvisionarUsuarioKcCriacaoAtualizacao:
             sistema_origem=u.fonte,
             id_origem="33344455566",
             realm_destino="sme-apps",
-            hash_conteudo="hash-desatualizado",
+            hash_keycloak="hash-desatualizado",
             id_destino="kc-uuid-velho",
         )
 
@@ -937,6 +1021,156 @@ class TestProvisionarUsuarioKcCriacaoAtualizacao:
 
         controle = ControleProvisionamento.objects.get(id_origem="66677788899")
         assert controle.ultima_execucao_id == execucao.id
+
+
+# ---------------------------------------------------------------------------
+# provisionar_usuario_kc — matriz dos 3 hashes independentes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestProvisionarUsuarioKcMatrizHashes:
+    """Testa as 3 checagens independentes (extração/Keycloak/token-ms).
+
+    Regra: os 3 hashes precisam bater para ignorar tudo; onde um não
+    bater, aquele estágio reexecuta, mesmo que os outros já estejam
+    confirmados.
+    """
+
+    def _controle_existente(
+        self, u: Any, *, hash_extracao: str, hash_keycloak: str
+    ) -> Any:
+        from apps.controle_etl.models import ControleProvisionamento
+
+        return ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem=u.fonte,
+            id_origem=resolver_id_origem(u),
+            realm_destino="sme-apps",
+            hash_extracao=hash_extracao,
+            hash_keycloak=hash_keycloak,
+            id_destino="kc-uuid-existente",
+        )
+
+    def _hash_keycloak_atual(self, u: Any) -> str:
+        payload = construir_payload_kc(u)
+        payload.pop("realmRoles", None)
+        payload.pop("groups", None)
+        return calcular_hash_conteudo(payload)
+
+    def test_extracao_e_keycloak_batem_ignora_keycloak(self) -> None:
+        """Extração+Keycloak batem: Keycloak é ignorado."""
+        u = _usuario(cpf="10000000001", rf="")
+        self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "ignorado"
+        admin.create_user.assert_not_called()
+        admin.update_user.assert_not_called()
+
+    def test_extracao_bate_keycloak_nao_bate_reenvia_keycloak(self) -> None:
+        """Extração bate mas Keycloak não: reenvia ao Keycloak.
+
+        Reenvia mesmo sem mudança de dado (ex.: tentativa anterior
+        falhou antes de
+        gravar o hash).
+        """
+        u = _usuario(cpf="10000000002", rf="")
+        self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak="hash-keycloak-nunca-confirmado",
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        admin.update_user.assert_called_once()
+
+    def test_extracao_nao_bate_recalcula_e_reenvia(self) -> None:
+        """Dado da fonte mudou: recalcula e reenvia ao Keycloak."""
+        u = _usuario(cpf="10000000003", rf="", nome="Nome Novo")
+        self._controle_existente(
+            u,
+            hash_extracao="hash-extracao-antigo",
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        admin.update_user.assert_called_once()
+
+    def test_ignorado_no_keycloak_ainda_retorna_token_ms_pendente(
+        self,
+    ) -> None:
+        """Keycloak ignorado ainda pode ter token_ms_pendente=True.
+
+        É True se hash_token_ms nunca foi confirmado — 3ª checagem
+        independente das outras duas.
+        """
+        u = _usuario(cpf="10000000004", rf="")
+        self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "ignorado"
+        assert resultado["token_ms_pendente"] is True
+
+    def test_token_ms_confirmado_nao_fica_pendente(self) -> None:
+        """Hash de token-ms já confirmado não fica pendente.
+
+        Mesmo com Keycloak ignorado, se hash_token_ms já bate com o
+        payload atual, não fica pendente.
+        """
+        from apps.controle_etl.orquestrador_kc import (
+            calcular_hash_conteudo as _hash,
+        )
+        from apps.controle_etl.orquestrador_kc import (
+            construir_payload_token_ms as _payload_token,
+        )
+
+        u = _usuario(cpf="10000000005", rf="")
+        controle = self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+        controle.hash_token_ms = _hash(_payload_token(u))
+        controle.save()
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["token_ms_pendente"] is False
+
+    def test_erro_no_keycloak_naopropaga_para_dict_de_retorno(self) -> None:
+        """Erro real do Keycloak propaga como exceção.
+
+        Não retorna token_ms_pendente — quem dispara o token-ms deve
+        checar isinstance(resultado, Exception) antes de acessar o
+        dict.
+        """
+        u = _usuario(cpf="10000000006", rf="")
+        admin = MagicMock()
+        admin.get_users.return_value = []
+        admin.create_user.side_effect = Exception("Keycloak indisponível")
+
+        with pytest.raises(Exception, match="Keycloak indisponível"):
+            provisionar_usuario_kc(admin, u, realm="sme-apps")
 
 
 # ---------------------------------------------------------------------------
@@ -1157,6 +1391,48 @@ class TestComReintento:
         with pytest.raises(ValueError):
             _com_reintento(fn)
         fn.assert_called_once()
+
+    def test_erro_400_do_keycloak_propaga_sem_esperar(self) -> None:
+        """400 (ex.: e-mail malformado) não deve esperar backoff.
+
+        Sem essa distinção, um erro de validação real (nunca resolvido
+        por retry) esperava os mesmos ~15s de 4 backoffs de um erro
+        transitório de verdade — em lotes com muitos registros com o
+        mesmo problema de dado, isso soma minutos e pode estourar o
+        timeout do ThreadPoolProcessor.
+        """
+        from keycloak.exceptions import KeycloakPostError
+
+        fn = MagicMock(
+            side_effect=KeycloakPostError(
+                error_message="email invalido", response_code=400
+            )
+        )
+        with (
+            patch(
+                "apps.controle_etl.orquestrador_kc.time.sleep"
+            ) as mock_sleep,
+            pytest.raises(KeycloakPostError),
+        ):
+            _com_reintento(fn)
+        fn.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_erro_503_do_keycloak_reintenta_com_backoff(self) -> None:
+        """503 (falha transitória real) continua fazendo retry."""
+        from keycloak.exceptions import KeycloakPostError
+
+        fn = MagicMock(
+            side_effect=[
+                KeycloakPostError(
+                    error_message="indisponivel", response_code=503
+                ),
+                "sucesso",
+            ]
+        )
+        with patch("apps.controle_etl.orquestrador_kc.time.sleep"):
+            assert _com_reintento(fn) == "sucesso"
+        assert fn.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1670,6 +1946,52 @@ class TestAtribuirRolesSistema:
         r = _atribuir_roles_sistema(admin, "kc-1", sis_data)
         assert r["roles"] == ["Admin"]
         admin.assign_client_role.assert_called_once()
+
+    def test_provisiona_client_quando_faltando(self, settings: Any) -> None:
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging(
+            coresso_sis_id=51, nome="SemClient", kc_client_uuid=None
+        )
+        admin = MagicMock()
+        admin.get_client_id.return_value = None
+        admin.create_client.return_value = "uuid-provisionado"
+        sis_data = {"sis_id": 51, "nome": "SemClient", "grupos": []}
+
+        r = _atribuir_roles_sistema(admin, "kc-1", sis_data)
+
+        assert "status" not in r
+        sistema.refresh_from_db()
+        assert sistema.kc_client_uuid == "uuid-provisionado"
+
+    def test_provisiona_role_quando_faltando(self, settings: Any) -> None:
+        from apps.staging.models import PerfilCoressoStaging
+
+        settings.KEYCLOAK_SUFIXO_CLIENT = "prod"
+        sistema = _sistema_staging(
+            coresso_sis_id=52, nome="ComClient", kc_client_uuid="uuid-cli-52"
+        )
+        perfil = PerfilCoressoStaging.objects.create(
+            coresso_gru_id="g-52",
+            coresso_sis_id=52,
+            sistema=sistema,
+            nome="Editor",
+            kc_role_nome="Editor",
+        )
+        admin = MagicMock()
+        admin.create_client_role.return_value = None
+        admin.get_client_role.return_value = {"id": "uuid-role-nova"}
+        sis_data = {
+            "sis_id": 52,
+            "nome": "ComClient",
+            "grupos": [{"gru_id": "g-52", "nome": "Editor"}],
+        }
+
+        r = _atribuir_roles_sistema(admin, "kc-1", sis_data)
+
+        assert r["roles"] == ["Editor"]
+        admin.assign_client_role.assert_called_once()
+        perfil.refresh_from_db()
+        assert perfil.kc_role_id == "uuid-role-nova"
 
 
 # ------------------------------------------------------------------

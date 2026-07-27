@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from celery import shared_task
 
@@ -31,6 +32,27 @@ _CAMPOS_POR_TIPO = {
     "terceiro": ("tipo_acesso", "matricula"),
 }
 
+_TAMANHO_LOTE_PERSISTENCIA = 500
+
+
+def _instanciar_staging(modelo: type, registro: Any, id_execucao: str) -> Any:
+    """Monta a instância de staging (não salva) a partir de um registro."""
+    tipo = registro.tipo
+    campos = {
+        "id_execucao": id_execucao,
+        "situacao": "extraido",
+        **{
+            campo: getattr(registro, campo)
+            for campo in _CAMPOS_COMUNS
+            if campo != "situacao"
+        },
+        **{
+            campo: getattr(registro, campo, None)
+            for campo in _CAMPOS_POR_TIPO[tipo]
+        },
+    }
+    return modelo(**campos)
+
 
 def persistir_extracao_staging(
     registros: Iterable, *, id_execucao: str
@@ -42,8 +64,14 @@ def persistir_extracao_staging(
     como 'extraido' para posterior processamento por
     ``transformar_staging``.
 
+    Grava em lotes de ``_TAMANHO_LOTE_PERSISTENCIA`` conforme consome
+    ``registros``, em vez de acumular a fonte inteira em memória antes
+    do primeiro ``bulk_create`` — para fontes grandes/represadas
+    (ex.: SE1426 completo), acumular tudo antes de gravar já causou
+    OOM/SIGKILL do worker em ambientes com memória limitada.
+
     Args:
-        registros: Iterável de RegistroIdentidade em memória.
+        registros: Iterável (idealmente generator) de RegistroIdentidade.
         id_execucao: UUID da ExecucaoETL associada.
 
     Returns:
@@ -51,15 +79,26 @@ def persistir_extracao_staging(
     """
     from apps.staging import models as modelos_staging  # noqa: PLC0415
 
-    instancias_por_tipo: dict[str, list] = {
+    lotes_por_tipo: dict[str, list] = {
         "servidor": [],
         "aluno": [],
         "terceiro": [],
     }
+    total = 0
+
+    def _descarregar(tipo: str) -> None:
+        nonlocal total
+        lote = lotes_por_tipo[tipo]
+        if not lote:
+            return
+        modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
+        modelo.objects.bulk_create(lote, batch_size=_TAMANHO_LOTE_PERSISTENCIA)
+        total += len(lote)
+        lotes_por_tipo[tipo] = []
 
     for registro in registros:
         tipo = registro.tipo
-        if tipo not in instancias_por_tipo:
+        if tipo not in lotes_por_tipo:
             logger.warning(
                 "[%s] persistir_extracao_staging — tipo desconhecido: %s",
                 id_execucao,
@@ -68,28 +107,15 @@ def persistir_extracao_staging(
             continue
 
         modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
-        campos = {
-            "id_execucao": id_execucao,
-            "situacao": "extraido",
-            **{
-                campo: getattr(registro, campo)
-                for campo in _CAMPOS_COMUNS
-                if campo != "situacao"
-            },
-            **{
-                campo: getattr(registro, campo, None)
-                for campo in _CAMPOS_POR_TIPO[tipo]
-            },
-        }
-        instancias_por_tipo[tipo].append(modelo(**campos))
+        lotes_por_tipo[tipo].append(
+            _instanciar_staging(modelo, registro, id_execucao)
+        )
 
-    total = 0
-    for tipo, instancias in instancias_por_tipo.items():
-        if not instancias:
-            continue
-        modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
-        modelo.objects.bulk_create(instancias, batch_size=500)
-        total += len(instancias)
+        if len(lotes_por_tipo[tipo]) >= _TAMANHO_LOTE_PERSISTENCIA:
+            _descarregar(tipo)
+
+    for tipo in lotes_por_tipo:
+        _descarregar(tipo)
 
     logger.info(
         "[%s] persistir_extracao_staging — %d registros persistidos",

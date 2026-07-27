@@ -301,10 +301,10 @@ def task_identidade_resolver_identidade(
     )
 
     execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
-    etapa = LogEtapaETL.objects.create(
+    etapa, _ = LogEtapaETL.objects.update_or_create(
         execucao=execucao,
         nome_etapa=LogEtapaETL.NomeEtapa.RESOLVER_IDENTIDADE,
-        ordem_etapa=3,
+        defaults={"ordem_etapa": 3},
     )
     inicio = time.monotonic()
     logger.info(
@@ -410,7 +410,9 @@ def _provisionar_lote_kc(
             usuario.detalhe_erro = str(resultado)[:1000]
             usuario.save(update_fields=["situacao", "detalhe_erro"])
             erros += 1
-        elif resultado["acao"] == "ignorado":
+            continue
+
+        if resultado["acao"] == "ignorado":
             usuario.situacao = "ignorado"
             usuario.save(update_fields=["situacao"])
             ignorados += 1
@@ -418,6 +420,24 @@ def _provisionar_lote_kc(
             usuario.situacao = "carregado"
             usuario.save(update_fields=["situacao"])
             provisionados += 1
+
+        # Sucesso (ou ignorado por hash já confirmado) no Keycloak
+        # dispara fire-and-forget a carga individual no token-ms, sem
+        # esperar o restante do lote — só quando o payload do token-ms
+        # mudou desde a última confirmação (3ª checagem independente).
+        if resultado.get("token_ms_pendente"):
+            task_carregar_atributo_token_individual.apply_async(
+                kwargs={
+                    "modelo_staging": type(usuario).__name__,
+                    "staging_pk": usuario.pk,
+                    "id_execucao": id_execucao,
+                    "tipo_entidade": "usuario",
+                    "sistema_origem": usuario.fonte,
+                    "id_origem": resultado["id_origem"],
+                    "realm_destino": execucao.realm_destino,
+                },
+                queue="etl_carga_token_ms",
+            )
 
     return provisionados, ignorados, erros
 
@@ -455,10 +475,10 @@ def task_provisionar_identidade_keycloak(
     )
 
     execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
-    etapa = LogEtapaETL.objects.create(
+    etapa, _ = LogEtapaETL.objects.update_or_create(
         execucao=execucao,
         nome_etapa=LogEtapaETL.NomeEtapa.PROVISIONAR_KEYCLOAK,
-        ordem_etapa=4,
+        defaults={"ordem_etapa": 4},
     )
 
     if not conf.ETL_CARGA_KEYCLOAK_BULK_HABILITADO:
@@ -661,6 +681,7 @@ def task_carregar_atributos_token(
     )
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
         construir_payload_token_ms,
+        payload_tem_identificador,
     )
     from apps.staging.models import (  # noqa: PLC0415
         UsuarioAlunoStaging,
@@ -669,17 +690,19 @@ def task_carregar_atributos_token(
     )
 
     execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
-    etapa = LogEtapaETL.objects.create(
+    etapa, _ = LogEtapaETL.objects.update_or_create(
         execucao=execucao,
         nome_etapa=LogEtapaETL.NomeEtapa.CARREGAR_TOKEN,
-        ordem_etapa=5,
+        defaults={"ordem_etapa": 5},
     )
     inicio = time.monotonic()
     logger.info("[%s] task_carregar_atributos_token — início", id_execucao)
 
     try:
+        sem_identificador = 0
 
         def _payloads() -> Any:
+            nonlocal sem_identificador
             for modelo in (
                 UsuarioServidorStaging,
                 UsuarioAlunoStaging,
@@ -690,7 +713,17 @@ def task_carregar_atributos_token(
                     situacao__in=["pronto", "carregado"],
                 )
                 for u in qs.iterator(chunk_size=1000):
-                    yield construir_payload_token_ms(u)
+                    payload = construir_payload_token_ms(u)
+                    if not payload_tem_identificador(payload):
+                        sem_identificador += 1
+                        logger.warning(
+                            "[%s] task_carregar_atributos_token —"
+                            " descartado sem rf/cpf/matricula: %s",
+                            id_execucao,
+                            payload.get("nome"),
+                        )
+                        continue
+                    yield payload
 
         # Sincroniza perfis antes do push-batch: cria/atualiza a
         # ProjecaoUsuario no token-ms para que o vínculo oportunista
@@ -702,13 +735,16 @@ def task_carregar_atributos_token(
         metricas = enviar_todos(_payloads(), id_execucao=id_execucao)
         metricas["perfis_sincronizados"] = metricas_perfis["sincronizados"]
         metricas["perfis_erros"] = metricas_perfis["erros"]
+        metricas["sem_identificador"] = sem_identificador
 
-        etapa.registros_entrada = metricas["enviados"]
+        etapa.registros_entrada = metricas["enviados"] + sem_identificador
         etapa.registros_saida = metricas["enviados"]
+        etapa.registros_erro = sem_identificador
         etapa.metadados = {
             "lotes": metricas["lotes"],
             "perfis_sincronizados": metricas["perfis_sincronizados"],
             "perfis_erros": metricas["perfis_erros"],
+            "sem_identificador": sem_identificador,
         }
         etapa.situacao = LogEtapaETL.Situacao.SUCESSO
         etapa.finalizado_em = timezone.now()
@@ -717,12 +753,14 @@ def task_carregar_atributos_token(
         logger.info(
             "[%s] task_carregar_atributos_token"
             " — %d usuários em %d lotes,"
-            " %d perfis sincronizados (%d erros) (%.1fs)",
+            " %d perfis sincronizados (%d erros),"
+            " %d descartados sem identificador (%.1fs)",
             id_execucao,
             metricas["enviados"],
             metricas["lotes"],
             metricas["perfis_sincronizados"],
             metricas["perfis_erros"],
+            sem_identificador,
             time.monotonic() - inicio,
         )
         return metricas
@@ -737,20 +775,157 @@ def task_carregar_atributos_token(
 
 
 # ---------------------------------------------------------------------------
+# TASK_CARREGAR_ATRIBUTO_TOKEN_INDIVIDUAL
+# ---------------------------------------------------------------------------
+
+
+def _resolver_modelo_staging(nome: str) -> Any:
+    """Resolve a classe de model de staging a partir do nome.
+
+    As tasks Celery recebem o nome do model como string (serialização
+    JSON não suporta classes) — este lookup evita importar os 3
+    models no topo do módulo só para esse fim.
+    """
+    from apps.staging import models as modelos_staging
+
+    return getattr(modelos_staging, nome)
+
+
+@shared_task(
+    bind=True,
+    name="task_carregar_atributo_token_individual",
+    max_retries=5,
+)
+def task_carregar_atributo_token_individual(
+    self: Any,
+    *,
+    modelo_staging: str,
+    staging_pk: int,
+    id_execucao: str,
+    tipo_entidade: str,
+    sistema_origem: str,
+    id_origem: str,
+    realm_destino: str,
+) -> dict:
+    """Carrega atributos complementares e perfil de UM registro.
+
+    Disparada fire-and-forget pelo sucesso do Keycloak para este MESMO
+    registro (dentro de ``_provisionar_lote_kc``), sem esperar o
+    restante do lote — nunca dispara sem o Keycloak já ter resolvido
+    ``kc_user_id``, pois o payload do token-ms depende dele.
+
+    Verifica ``hash_token_ms`` antes de enviar: se já bate com o
+    payload atual, é no-op (idempotência). Se o registro de staging já
+    tiver sido limpo (``task_identidade_limpar_staging``, poucas
+    execuções depois) no momento de um retry tardio, a task falha e o
+    retry esgota dentro da janela de backoff (~10min) — sempre menor
+    que a retenção do staging; uma falha definitiva depois disso só se
+    resolve numa próxima execução completa do pipeline.
+
+    Args:
+        modelo_staging: Nome da classe de staging (ex.:
+            ``"UsuarioServidorStaging"``).
+        staging_pk: PK do registro de staging.
+        id_execucao: UUID da ExecucaoETL associada.
+        tipo_entidade: Um de ``ControleProvisionamento.TipoEntidade``.
+        sistema_origem: Fonte do registro (se1426, coresso, eol_alunos).
+        id_origem: CPF/RF/matrícula que identifica o registro na fonte.
+        realm_destino: Realm Keycloak de destino.
+
+    Returns:
+        Dicionário com ``situacao`` (``sucesso``, ``ignorado`` ou
+        ``sem_identificador``).
+    """
+    from apps.controle_etl.cliente_token_ms import (  # noqa: PLC0415
+        enviar_lote,
+        enviar_perfil,
+    )
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        calcular_hash_conteudo,
+        construir_payload_perfil_token_ms,
+        construir_payload_token_ms,
+        obter_admin_keycloak,
+        obter_ou_criar_controle,
+        payload_tem_identificador,
+        resolver_kc_user_id_de_usuario,
+    )
+
+    modelo = _resolver_modelo_staging(modelo_staging)
+    usuario = modelo.objects.get(pk=staging_pk)
+
+    payload_token = construir_payload_token_ms(usuario)
+    if not payload_tem_identificador(payload_token):
+        logger.warning(
+            "[%s] task_carregar_atributo_token_individual —"
+            " descartado sem rf/cpf/matricula: %s",
+            id_execucao,
+            payload_token.get("nome"),
+        )
+        return {"situacao": "sem_identificador"}
+
+    hash_token_atual = calcular_hash_conteudo(payload_token)
+    controle = obter_ou_criar_controle(
+        tipo_entidade, sistema_origem, id_origem, realm_destino
+    )
+
+    if controle.hash_token_ms == hash_token_atual:
+        return {"situacao": "ignorado"}
+
+    inicio = time.monotonic()
+    try:
+        admin = obter_admin_keycloak(realm=realm_destino)
+        kc_user_id = resolver_kc_user_id_de_usuario(admin, usuario, {})
+        if kc_user_id:
+            payload_perfil = construir_payload_perfil_token_ms(usuario)
+            if payload_perfil is not None:
+                enviar_perfil(kc_user_id, payload_perfil)
+
+        enviar_lote([payload_token], id_execucao=id_execucao)
+
+        controle.hash_token_ms = hash_token_atual
+        controle.save(update_fields=["hash_token_ms", "atualizado_em"])
+
+        _registrar_tentativa(
+            id_execucao,
+            "task_carregar_atributo_token_individual",
+            self.request.retries + 1,
+            duracao=time.monotonic() - inicio,
+        )
+        return {"situacao": "sucesso"}
+
+    except Exception as exc:
+        atraso = _calcular_atraso(self.request.retries + 1)
+        _registrar_tentativa(
+            id_execucao,
+            "task_carregar_atributo_token_individual",
+            self.request.retries + 1,
+            erro=str(exc)[:2000],
+            duracao=time.monotonic() - inicio,
+        )
+        raise self.retry(exc=exc, countdown=atraso) from exc
+
+
+# ---------------------------------------------------------------------------
 # TASK_SYNC_REC_ETL
 # ---------------------------------------------------------------------------
 
 
 @shared_task(bind=True, name="task_sync_rec_etl")
 def task_sync_rec_etl(
-    self: Any, resultado_token: dict, id_execucao: str
+    self: Any, resultado_keycloak: dict, id_execucao: str
 ) -> dict:
     """Registra metadados operacionais e finaliza a execução.
 
     Consolida watermarks, checkpoints e métricas finais no SYNC_REC_DB.
+    Fecha a ExecucaoETL assim que o Keycloak termina o lote — o
+    token-ms é assíncrono (disparado fire-and-forget por registro a
+    partir do Keycloak) e não faz parte do caminho síncrono desta
+    chain; seu progresso é rastreável via ``ControleProvisionamento``
+    (``hash_token_ms``), não pela ``situacao`` desta execução.
 
     Args:
-        resultado_token: Resultado da task de carga no token-ms.
+        resultado_keycloak: Resultado da task de provisionamento no
+            Keycloak.
         id_execucao: UUID da ExecucaoETL associada.
 
     Returns:
@@ -763,10 +938,10 @@ def task_sync_rec_etl(
     )
 
     execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
-    etapa = LogEtapaETL.objects.create(
+    etapa, _ = LogEtapaETL.objects.update_or_create(
         execucao=execucao,
         nome_etapa=LogEtapaETL.NomeEtapa.SYNC_REC,
-        ordem_etapa=6,
+        defaults={"ordem_etapa": 6},
     )
     logger.info("[%s] task_sync_rec_etl — início", id_execucao)
 
@@ -806,7 +981,13 @@ def task_sync_rec_etl(
             execucao.duracao_segundos or 0,
         )
 
-        task_identidade_limpar_staging.apply_async(countdown=30)
+        # Countdown alinhado à janela máxima de retry do token-ms
+        # individual (5 tentativas, backoff até _ATRASO_MAXIMO_REINTENTO)
+        # — dá tempo real das tasks disparadas pelo Keycloak (agora
+        # assíncronas, fora desta chain) confirmarem antes da limpeza.
+        task_identidade_limpar_staging.apply_async(
+            countdown=_ATRASO_MAXIMO_REINTENTO
+        )
 
         return {
             "situacao": execucao.situacao,
@@ -828,6 +1009,38 @@ def task_sync_rec_etl(
 # ---------------------------------------------------------------------------
 # Orquestrador principal do pipeline
 # ---------------------------------------------------------------------------
+
+
+@shared_task(name="task_identidade_tratar_erro_pipeline")
+def task_identidade_tratar_erro_pipeline(
+    request: Any, exc: Exception, traceback: Any, id_execucao: str
+) -> None:
+    """Marca a ExecucaoETL como falha quando o chord de extração falha.
+
+    Sem este handler, um ``ChordError`` (ex.: todas as tasks de
+    extração esgotam os retries por SQL Server inacessível) propaga
+    sem nenhum código chamar ``marcar_finalizada``, deixando a
+    ExecucaoETL presa em ``executando`` para sempre — mesma classe de
+    bug já corrigida para o retry de etapa individual, mas aqui no
+    nível do chord inteiro.
+
+    Args:
+        request: Contexto da task que falhou (assinatura exigida pelo
+            ``link_error`` do Celery).
+        exc: Exceção que causou a falha (tipicamente ``ChordError``).
+        traceback: Traceback da falha.
+        id_execucao: UUID da ExecucaoETL associada.
+    """
+    from apps.controle_etl.models import ExecucaoETL  # noqa: PLC0415
+
+    logger.error(
+        "[%s] Pipeline falhou no chord de extração: %s",
+        id_execucao,
+        exc,
+    )
+    execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
+    if execucao.situacao == ExecucaoETL.Situacao.EXECUTANDO:
+        execucao.marcar_finalizada("falha")
 
 
 @shared_task(bind=True, name="task_identidade_executar_pipeline")
@@ -880,14 +1093,16 @@ def task_identidade_executar_pipeline(
         )
         return
 
-    chord(tarefas_extracao)(
-        chain(
-            task_identidade_resolver_identidade.s(id_execucao=id_execucao),
-            task_provisionar_identidade_keycloak.s(id_execucao=id_execucao),
-            task_carregar_atributos_token.s(id_execucao=id_execucao),
-            task_sync_rec_etl.s(id_execucao=id_execucao),
-        )
-    )
+    # A chain termina no Keycloak — o token-ms é disparado fire-and-
+    # forget por registro, de dentro de _provisionar_lote_kc, sem
+    # bloquear o fechamento da ExecucaoETL (ver
+    # task_carregar_atributo_token_individual).
+    callback = chain(
+        task_identidade_resolver_identidade.s(id_execucao=id_execucao),
+        task_provisionar_identidade_keycloak.s(id_execucao=id_execucao),
+        task_sync_rec_etl.s(id_execucao=id_execucao),
+    ).on_error(task_identidade_tratar_erro_pipeline.s(id_execucao=id_execucao))
+    chord(tarefas_extracao)(callback)
 
 
 # ---------------------------------------------------------------------------
