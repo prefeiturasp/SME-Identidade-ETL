@@ -16,6 +16,7 @@ from apps.controle_etl.models import (
 )
 from apps.controle_etl.tasks import (
     _calcular_atraso,
+    task_carregar_atributo_token_individual,
     task_carregar_atributos_token,
     task_identidade_executar_pipeline,
     task_identidade_extrair_coresso,
@@ -23,6 +24,7 @@ from apps.controle_etl.tasks import (
     task_identidade_extrair_se1426,
     task_identidade_limpar_staging,
     task_identidade_resolver_identidade,
+    task_identidade_tratar_erro_pipeline,
     task_provisionar_identidade_keycloak,
     task_sync_rec_etl,
 )
@@ -412,6 +414,121 @@ class TestTaskProvisionarIdentidadeKeycloak:
         assert usuario.situacao == "erro"
         assert usuario.detalhe_erro == "falha kc"
 
+    def test_dispara_token_ms_individual_quando_pendente(
+        self, settings: Any
+    ) -> None:
+        """Sucesso no Keycloak com token_ms_pendente dispara a task.
+
+        Dispara a task individual, sem esperar o restante do lote.
+        """
+        from apps.staging.models import UsuarioServidorStaging
+
+        settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            cpf="12345678901",
+            nome="Ana Lima",
+            situacao="pronto",
+        )
+
+        with (
+            patch("apps.controle_etl.orquestrador_kc.obter_admin_keycloak"),
+            patch(
+                "apps.controle_etl.orquestrador_kc.provisionar_usuario_kc",
+                return_value={
+                    "acao": "criado",
+                    "kc_user_id": "kc-1",
+                    "token_ms_pendente": True,
+                    "id_origem": "12345678901",
+                },
+            ),
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_carregar_atributo_token_individual.apply_async"
+            ) as mock_disparo,
+        ):
+            task_provisionar_identidade_keycloak({}, id_execucao)
+
+        mock_disparo.assert_called_once()
+        kwargs = mock_disparo.call_args.kwargs["kwargs"]
+        assert kwargs["id_origem"] == "12345678901"
+        assert mock_disparo.call_args.kwargs["queue"] == "etl_carga_token_ms"
+
+    def test_nao_dispara_token_ms_quando_nao_pendente(
+        self, settings: Any
+    ) -> None:
+        """token_ms_pendente=False não dispara a task individual."""
+        from apps.staging.models import UsuarioServidorStaging
+
+        settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            cpf="12345678901",
+            nome="Ana Lima",
+            situacao="pronto",
+        )
+
+        with (
+            patch("apps.controle_etl.orquestrador_kc.obter_admin_keycloak"),
+            patch(
+                "apps.controle_etl.orquestrador_kc.provisionar_usuario_kc",
+                return_value={
+                    "acao": "ignorado",
+                    "kc_user_id": "kc-1",
+                    "token_ms_pendente": False,
+                    "id_origem": "12345678901",
+                },
+            ),
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_carregar_atributo_token_individual.apply_async"
+            ) as mock_disparo,
+        ):
+            task_provisionar_identidade_keycloak({}, id_execucao)
+
+        mock_disparo.assert_not_called()
+
+    def test_erro_no_keycloak_nao_dispara_token_ms(
+        self, settings: Any
+    ) -> None:
+        """Erro no Keycloak não dispara o token-ms.
+
+        O token-ms depende de kc_user_id resolvido pelo Keycloak.
+        """
+        from apps.staging.models import UsuarioServidorStaging
+
+        settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            cpf="12345678901",
+            nome="Ana Lima",
+            situacao="pronto",
+        )
+
+        with (
+            patch("apps.controle_etl.orquestrador_kc.obter_admin_keycloak"),
+            patch(
+                "apps.controle_etl.orquestrador_kc.provisionar_usuario_kc",
+                side_effect=Exception("falha kc"),
+            ),
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_carregar_atributo_token_individual.apply_async"
+            ) as mock_disparo,
+        ):
+            task_provisionar_identidade_keycloak({}, id_execucao)
+
+        mock_disparo.assert_not_called()
+
     def test_erro_geral_reagenda(self, settings: Any) -> None:
         """Verifica que erro geral (KC indisponível) dispara retentativa."""
         settings.ETL_CARGA_KEYCLOAK_BULK_HABILITADO = True
@@ -538,6 +655,7 @@ class TestTaskCarregarAtributosToken:
             "lotes": 1,
             "perfis_sincronizados": 0,
             "perfis_erros": 0,
+            "sem_identificador": 0,
         }
         mock_enviar.assert_called_once()
         mock_perfis.assert_called_once_with(
@@ -545,6 +663,59 @@ class TestTaskCarregarAtributosToken:
         )
         etapa = LogEtapaETL.objects.get()
         assert etapa.situacao == LogEtapaETL.Situacao.SUCESSO
+
+    def test_descarta_usuario_sem_identificador(self) -> None:
+        """Usuário sem rf/cpf/matricula é descartado, não trava o lote.
+
+        O token-ms rejeita o lote inteiro (400) se qualquer item não
+        tiver identificador — filtrar antes de enviar evita que um
+        registro incompleto (dado real do CoreSSO, ex. terceiro sem
+        nenhum identificador) bloqueie os demais usuários válidos.
+        """
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = self._execucao()
+        id_execucao = str(execucao.id_execucao)
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="11122233344",
+            nome="João Silva",
+            situacao="carregado",
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            nome="Sem Identificador",
+            situacao="carregado",
+        )
+
+        def _consome_payloads(
+            payloads: Any, id_execucao: Any
+        ) -> dict[str, int]:
+            quantidade = len(list(payloads))
+            return {"enviados": quantidade, "lotes": 1}
+
+        with (
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_todos",
+                side_effect=_consome_payloads,
+            ) as mock_enviar,
+            patch(
+                "apps.controle_etl.tasks._sincronizar_perfis_execucao",
+                return_value={"sincronizados": 0, "erros": 0},
+            ),
+        ):
+            resultado = task_carregar_atributos_token({}, id_execucao)
+
+        assert resultado["enviados"] == 1
+        assert resultado["sem_identificador"] == 1
+        mock_enviar.assert_called_once()
+        etapa = LogEtapaETL.objects.get()
+        assert etapa.situacao == LogEtapaETL.Situacao.SUCESSO
+        assert etapa.registros_entrada == 2
+        assert etapa.registros_saida == 1
+        assert etapa.registros_erro == 1
 
     def test_erro_reagenda(self) -> None:
         """Verifica que erro no envio marca a etapa como falha e reagenda."""
@@ -711,6 +882,160 @@ class TestTaskCarregarAtributosToken:
 
 
 # ---------------------------------------------------------------------------
+# task_carregar_atributo_token_individual
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestTaskCarregarAtributoTokenIndividual:
+    """Testa a carga individual de token-ms disparada pelo Keycloak."""
+
+    def _usuario_staging(self, execucao: ExecucaoETL) -> Any:
+        from apps.staging.models import UsuarioServidorStaging
+
+        return UsuarioServidorStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="se1426",
+            cpf="12345678901",
+            rf="1234567",
+            nome="Ana Lima",
+            email="ana@sme.sp.gov.br",
+            situacao="carregado",
+        )
+
+    def _kwargs_base(self, usuario: Any, id_execucao: str) -> dict[str, Any]:
+        return {
+            "modelo_staging": "UsuarioServidorStaging",
+            "staging_pk": usuario.pk,
+            "id_execucao": id_execucao,
+            "tipo_entidade": "usuario",
+            "sistema_origem": usuario.fonte,
+            "id_origem": usuario.cpf,
+            "realm_destino": "sme-apps",
+        }
+
+    def test_envia_e_grava_hash_token_ms(self) -> None:
+        """Envia perfil+lote e grava hash_token_ms em sucesso."""
+        from apps.controle_etl.models import ControleProvisionamento
+
+        execucao = ExecucaoETL.objects.create(realm_destino="sme-apps")
+        usuario = self._usuario_staging(execucao)
+
+        with (
+            patch("apps.controle_etl.orquestrador_kc.obter_admin_keycloak"),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".resolver_kc_user_id_de_usuario",
+                return_value="kc-user-1",
+            ),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".construir_payload_perfil_token_ms",
+                return_value=None,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_lote"
+            ) as mock_enviar_lote,
+        ):
+            resultado = task_carregar_atributo_token_individual(
+                **self._kwargs_base(usuario, str(execucao.id_execucao))
+            )
+
+        assert resultado == {"situacao": "sucesso"}
+        mock_enviar_lote.assert_called_once()
+        controle = ControleProvisionamento.objects.get(id_origem=usuario.cpf)
+        assert controle.hash_token_ms is not None
+
+    def test_no_op_quando_hash_ja_confirmado(self) -> None:
+        """Não reenvia se hash_token_ms já bate com o payload atual."""
+        from apps.controle_etl.models import ControleProvisionamento
+        from apps.controle_etl.orquestrador_kc import (
+            calcular_hash_conteudo,
+            construir_payload_token_ms,
+        )
+
+        execucao = ExecucaoETL.objects.create(realm_destino="sme-apps")
+        usuario = self._usuario_staging(execucao)
+        payload = construir_payload_token_ms(usuario)
+        hash_atual = calcular_hash_conteudo(payload)
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem=usuario.fonte,
+            id_origem=usuario.cpf,
+            realm_destino="sme-apps",
+            hash_keycloak="qualquer",
+            hash_token_ms=hash_atual,
+        )
+
+        with patch(
+            "apps.controle_etl.cliente_token_ms.enviar_lote"
+        ) as mock_enviar_lote:
+            resultado = task_carregar_atributo_token_individual(
+                **self._kwargs_base(usuario, str(execucao.id_execucao))
+            )
+
+        assert resultado == {"situacao": "ignorado"}
+        mock_enviar_lote.assert_not_called()
+
+    def test_sem_identificador_nao_envia(self) -> None:
+        """Registro sem rf/cpf/matricula é descartado, não reenvia."""
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = ExecucaoETL.objects.create(realm_destino="sme-apps")
+        usuario = UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            nome="Sem Identificador",
+            situacao="carregado",
+        )
+
+        with patch(
+            "apps.controle_etl.cliente_token_ms.enviar_lote"
+        ) as mock_enviar_lote:
+            resultado = task_carregar_atributo_token_individual(
+                modelo_staging="UsuarioTerceiroStaging",
+                staging_pk=usuario.pk,
+                id_execucao=str(execucao.id_execucao),
+                tipo_entidade="usuario",
+                sistema_origem=usuario.fonte,
+                id_origem=str(usuario.pk),
+                realm_destino="sme-apps",
+            )
+
+        assert resultado == {"situacao": "sem_identificador"}
+        mock_enviar_lote.assert_not_called()
+
+    def test_erro_transitorio_reagenda(self) -> None:
+        """Erro no envio dispara retry com backoff."""
+        execucao = ExecucaoETL.objects.create(realm_destino="sme-apps")
+        usuario = self._usuario_staging(execucao)
+
+        with (
+            patch("apps.controle_etl.orquestrador_kc.obter_admin_keycloak"),
+            patch(
+                "apps.controle_etl.orquestrador_kc"
+                ".resolver_kc_user_id_de_usuario",
+                return_value=None,
+            ),
+            patch(
+                "apps.controle_etl.cliente_token_ms.enviar_lote",
+                side_effect=Exception("token-ms indisponível"),
+            ),
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_carregar_atributo_token_individual.retry",
+                side_effect=Exception("retry-chamado"),
+            ) as mock_retry,
+            pytest.raises(Exception, match="retry-chamado"),
+        ):
+            task_carregar_atributo_token_individual(
+                **self._kwargs_base(usuario, str(execucao.id_execucao))
+            )
+
+        mock_retry.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # task_sync_rec_etl
 # ---------------------------------------------------------------------------
 
@@ -741,7 +1066,7 @@ class TestTaskSyncRecEtl:
             resultado = task_sync_rec_etl({}, id_execucao)
 
         assert resultado["situacao"] == "sucesso"
-        mock_limpar.assert_called_once_with(countdown=30)
+        mock_limpar.assert_called_once_with(countdown=600)
         execucao.refresh_from_db()
         assert execucao.situacao == "sucesso"
 
@@ -875,8 +1200,12 @@ class TestTaskIdentidadeExecutarPipeline:
         tarefas_extracao = mock_chord.call_args[0][0]
         assert len(tarefas_extracao) == 3
         mock_chain.assert_called_once()
+        # 3 elos: resolver_identidade -> provisionar_keycloak ->
+        # sync_rec_etl. token-ms não faz parte da chain síncrona — é
+        # disparado fire-and-forget por registro a partir do Keycloak.
+        assert len(mock_chain.call_args[0]) == 3
         mock_chord.return_value.assert_called_once_with(
-            mock_chain.return_value
+            mock_chain.return_value.on_error.return_value
         )
 
         execucao.refresh_from_db()
@@ -927,3 +1256,62 @@ class TestTaskIdentidadeExecutarPipeline:
         mock_chord.assert_not_called()
         execucao.refresh_from_db()
         assert execucao.situacao == "falha"
+
+    def test_callback_tem_handler_de_erro_registrado(self) -> None:
+        """Verifica que a chain de callback recebe link_error do chord.
+
+        Sem isso, um ChordError (ex.: todas as extrações esgotam
+        retries por SQL Server inacessível) propaga sem que nada
+        marque a ExecucaoETL como falha, deixando-a presa em
+        "executando" para sempre.
+        """
+        execucao = self._execucao(fonte="coresso")
+        id_execucao = str(execucao.id_execucao)
+
+        with patch("apps.controle_etl.tasks.chord") as mock_chord:
+            task_identidade_executar_pipeline(id_execucao)
+
+        callback = mock_chord.return_value.call_args[0][0]
+        assert callback.options.get("link_error")
+
+
+@pytest.mark.django_db
+class TestTaskIdentidadeTratarErroPipeline:
+    """Testa o handler de erro do chord de extração do pipeline."""
+
+    def test_marca_execucao_como_falha(self) -> None:
+        """Verifica que uma execução em andamento é marcada como falha."""
+        execucao = ExecucaoETL.objects.create(fonte="coresso")
+        execucao.marcar_executando()
+        id_execucao = str(execucao.id_execucao)
+
+        task_identidade_tratar_erro_pipeline(
+            request=None,
+            exc=Exception("ChordError simulado"),
+            traceback=None,
+            id_execucao=id_execucao,
+        )
+
+        execucao.refresh_from_db()
+        assert execucao.situacao == "falha"
+
+    def test_nao_sobrescreve_execucao_ja_finalizada(self) -> None:
+        """Não sobrescreve situação de execução já concluída.
+
+        Evita corrida entre o link_error do chord e uma finalização
+        legítima que já tenha acontecido por outro caminho.
+        """
+        execucao = ExecucaoETL.objects.create(fonte="coresso")
+        execucao.marcar_executando()
+        execucao.marcar_finalizada("sucesso")
+        id_execucao = str(execucao.id_execucao)
+
+        task_identidade_tratar_erro_pipeline(
+            request=None,
+            exc=Exception("ChordError simulado"),
+            traceback=None,
+            id_execucao=id_execucao,
+        )
+
+        execucao.refresh_from_db()
+        assert execucao.situacao == "sucesso"

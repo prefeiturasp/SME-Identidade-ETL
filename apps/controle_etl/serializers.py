@@ -121,7 +121,16 @@ class ListarExecucaoETLSerializer(serializers.ModelSerializer):
 
 
 class ControleProvisionamentoSerializer(serializers.ModelSerializer):
-    """Serializa o controle de provisionamento de entidades."""
+    """Serializa o controle de provisionamento de entidades.
+
+    ``keycloak_confirmado``/``token_ms_confirmado`` são campos
+    derivados dos hashes por estágio — permitem consultar, por
+    usuário, se cada sistema de destino já confirmou o dado atual,
+    sem expor os hashes brutos.
+    """
+
+    keycloak_confirmado = serializers.SerializerMethodField()
+    token_ms_confirmado = serializers.SerializerMethodField()
 
     class Meta:
         model = ControleProvisionamento
@@ -132,7 +141,11 @@ class ControleProvisionamentoSerializer(serializers.ModelSerializer):
             "id_origem",
             "id_destino",
             "realm_destino",
-            "hash_conteudo",
+            "hash_extracao",
+            "hash_keycloak",
+            "hash_token_ms",
+            "keycloak_confirmado",
+            "token_ms_confirmado",
             "versao",
             "ativo",
             "erro_sincronizacao",
@@ -140,6 +153,14 @@ class ControleProvisionamentoSerializer(serializers.ModelSerializer):
             "criado_em",
         ]
         read_only_fields = fields
+
+    def get_keycloak_confirmado(self, obj: ControleProvisionamento) -> bool:
+        """Indica se o Keycloak já confirmou o dado atual do registro."""
+        return bool(obj.id_destino and obj.hash_keycloak)
+
+    def get_token_ms_confirmado(self, obj: ControleProvisionamento) -> bool:
+        """Indica se o token-ms já confirmou o dado atual do registro."""
+        return bool(obj.hash_token_ms)
 
 
 class IdentidadeKeycloakSerializer(serializers.Serializer):

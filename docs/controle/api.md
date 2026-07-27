@@ -126,8 +126,7 @@ Campos:
 ```json
 {
   "acao": "criado",
-  "kc_user_id": "307506e4-...",
-  "hash_conteudo": "cf931569..."
+  "kc_user_id": "307506e4-..."
 }
 ```
 
@@ -137,7 +136,6 @@ Campos:
 {
   "acao": "criado",
   "kc_user_id": "6dbda0a5-...",
-  "hash_conteudo": "42e9e153...",
   "sistema": "Auto Serviço",
   "client_id": "auto-servico-qa",
   "roles_atribuidos": ["COTIC"],
@@ -145,6 +143,12 @@ Campos:
   "erros": 0
 }
 ```
+
+Campos internos de controle de idempotência multi-estágio
+(`hash_keycloak`, `hash_token_ms_atual`, `token_ms_pendente`,
+`id_origem` — usados pelo pipeline agendado, ver
+[Provisionamento Keycloak](../pipeline/keycloak.md)) são removidos da
+resposta desta rota manual antes de retornar.
 
 Se `sistema`/`roles` vierem desalinhados (um informado sem o outro), ou se o
 `sistema` informado não existir/não tiver client no Keycloak, a requisição é
@@ -285,7 +289,7 @@ roles → atribuir vínculos — tudo para um sistema específico.
 | `GET` | `/api/v1/etl/monitoramento/resumo/` | Última execução por fonte (público) |
 | `GET` | `/api/v1/etl/health/` | Health check (público) |
 | `GET` | `/api/v1/etl/estatisticas/` | Estatísticas agregadas |
-| `GET` | `/api/v1/etl/provisionamento/` | Registros de idempotência |
+| `GET` | `/api/v1/etl/provisionamento/` | Registros de idempotência — inclui `keycloak_confirmado`/`token_ms_confirmado` por usuário |
 | `GET` | `/api/v1/etl/identidades/consultar/` | Busca identidade direto no Keycloak por CPF/RF/e-mail |
 | `GET` | `/api/v1/etl/checkpoints/` | Checkpoints de retomada |
 | `GET` | `/api/v1/etl/tentativas/` | Rastreio de tentativas |

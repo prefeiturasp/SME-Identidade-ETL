@@ -194,10 +194,14 @@ class LogEtapaETL(models.Model):
 
 
 class ControleProvisionamento(models.Model):
-    """Controle de idempotência para provisionamento no Keycloak.
+    """Controle de idempotência multi-estágio do pipeline de identidade.
 
-    Garante que cada entidade seja provisionada apenas uma vez
-    por conteúdo, evitando duplicidade em reprocessamentos.
+    Guarda 3 hashes independentes por registro — ``hash_extracao``
+    (dado da fonte), ``hash_keycloak`` (payload enviado ao Keycloak) e
+    ``hash_token_ms`` (payload enviado ao token-ms) — para que cada
+    estágio decida, sem depender dos outros, se precisa reexecutar.
+    Um estágio só é pulado quando seu próprio hash bate com o hash
+    atual; os 3 precisam bater para o registro inteiro ser ignorado.
     """
 
     class TipoEntidade(models.TextChoices):
@@ -228,9 +232,21 @@ class ControleProvisionamento(models.Model):
         max_length=100,
         default=django_settings.KEYCLOAK_REALM,
     )
-    hash_conteudo = models.CharField(
+    hash_extracao = models.CharField(
         max_length=64,
-        help_text="SHA-256 dos campos significativos",
+        blank=True,
+        null=True,
+        help_text="SHA-256 dos campos do staging pós-extração/resolução",
+    )
+    hash_keycloak = models.CharField(
+        max_length=64,
+        help_text="SHA-256 do payload enviado ao Keycloak",
+    )
+    hash_token_ms = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+        help_text="SHA-256 do payload enviado ao token-ms",
     )
     versao = models.PositiveIntegerField(default=1)
     sincronizado_em = models.DateTimeField(auto_now=True)
@@ -260,7 +276,7 @@ class ControleProvisionamento(models.Model):
                 name="idx_prov_entidade_sistema",
             ),
             models.Index(fields=["id_origem"], name="idx_prov_id_origem"),
-            models.Index(fields=["hash_conteudo"], name="idx_prov_hash"),
+            models.Index(fields=["hash_keycloak"], name="idx_prov_hash"),
         ]
 
     def __str__(self) -> str:

@@ -22,6 +22,15 @@ token_ms
 
 ## Fluxo de execução
 
+A `chain` síncrona do pipeline termina no Keycloak — a carga no
+token-ms é disparada **fire-and-forget**, por usuário, a partir do
+sucesso individual no Keycloak, numa fila própria
+(`etl_carga_token_ms`), sem bloquear o fechamento da `ExecucaoETL`. Se
+todas as tasks de extração de um chord falham (esgotam os retries),
+`task_identidade_tratar_erro_pipeline` (`link_error` do Celery) marca
+a execução como `falha` — evita que ela fique presa em `executando`
+indefinidamente.
+
 ```{graphviz}
 digraph G {
     rankdir=LR;
@@ -32,15 +41,18 @@ digraph G {
     STG  [label="Persistir\nStaging\nEtapa 2"];
     RES  [label="Resolver\nIdentidade\nEtapa 3"];
     KC   [label="Provisionar\nKeycloak\nEtapa 4"];
-    TMS  [label="Carregar\ntoken-ms\nEtapa 5"];
-    FIM  [label="Fechar\nExecucao\nEtapa 6"];
+    FIM  [label="Fechar\nExecucao\nEtapa 5"];
+    TMS  [label="Carregar\ntoken-ms\n(por usuario,\nfila separada)"];
+    ERR  [label="Falha no chord\nde extracao"];
 
     DISP -> EXT;
     EXT  -> STG [label="chord\ncallback"];
     STG  -> RES;
     RES  -> KC;
-    KC   -> TMS;
-    TMS  -> FIM;
+    KC   -> FIM;
+    KC   -> TMS [style=dashed, label="fire-and-forget\npor usuario confirmado"];
+    EXT  -> ERR [style=dashed, label="link_error"];
+    ERR  -> FIM [style=dashed, label="marca falha"];
 }
 ```
 
@@ -48,16 +60,18 @@ digraph G {
 
 ## Mapeamento de tasks por etapa
 
-| Etapa | Task Celery | Arquivo |
-|---|---|---|
-| 1a — Extrair SE1426 | `task_identidade_extrair_se1426` | `apps/controle_etl/tasks.py` |
-| 1b — Extrair CoreSSO | `task_identidade_extrair_coresso` | `apps/controle_etl/tasks.py` |
-| 1c — Extrair EOL | `task_identidade_extrair_eol_alunos` | `apps/controle_etl/tasks.py` |
-| 2 — Resolver identidade | `task_identidade_resolver_identidade` | `apps/controle_etl/tasks.py` |
-| 3 — Provisionar Keycloak | `task_provisionar_identidade_keycloak` | `apps/controle_etl/tasks.py` |
-| 4 — Carregar token-ms | `task_carregar_atributos_token` | `apps/controle_etl/tasks.py` |
-| 5 — Fechar execução | `task_sync_rec_etl` | `apps/controle_etl/tasks.py` |
-| 6 — Limpar staging | `task_identidade_limpar_staging` | `apps/controle_etl/tasks.py` |
+| Etapa | Task Celery | Fila | Arquivo |
+|---|---|---|---|
+| 1a — Extrair SE1426 | `task_identidade_extrair_se1426` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 1b — Extrair CoreSSO | `task_identidade_extrair_coresso` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 1c — Extrair EOL | `task_identidade_extrair_eol_alunos` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 2 — Resolver identidade | `task_identidade_resolver_identidade` | `etl_transformacao` | `apps/controle_etl/tasks.py` |
+| 3 — Provisionar Keycloak | `task_provisionar_identidade_keycloak` | `etl_carga_keycloak` | `apps/controle_etl/tasks.py` |
+| 4 — Fechar execução | `task_sync_rec_etl` | `celery` | `apps/controle_etl/tasks.py` |
+| 5 — Limpar staging | `task_identidade_limpar_staging` | `celery` | `apps/controle_etl/tasks.py` |
+| — Carregar token-ms (individual, fora da chain) | `task_carregar_atributo_token_individual` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
+| — Carregar token-ms (lote, fallback manual) | `task_carregar_atributos_token` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
+| — Tratar erro do chord de extração | `task_identidade_tratar_erro_pipeline` | — (`link_error`) | `apps/controle_etl/tasks.py` |
 
 ---
 
@@ -68,5 +82,13 @@ Todas as tasks de carga usam:
 - `max_retries=5`
 - backoff exponencial: `min(60 * 2^(tentativa-1), 600)` segundos
 - cada tentativa registra um `RastreioTentativa` em `sync_rec_db`
-- em caso de falha, `LogEtapaETL` marca a etapa como `FALHA` e a
-  `ExecucaoETL` permanece em `executando` até esgotarem as tentativas
+- em caso de falha numa etapa da chain, `LogEtapaETL` marca a etapa
+  como `FALHA` e a task reagenda via `self.retry(...)` até esgotar as
+  tentativas
+- se **todas** as tasks de extração de um chord esgotarem os retries,
+  `task_identidade_tratar_erro_pipeline` marca a `ExecucaoETL` como
+  `falha` (só se ainda estiver `executando`) — sem esse handler, a
+  execução ficaria presa indefinidamente
+- retries do Keycloak (`_com_reintento`) e do token-ms (`_e_retriavel`)
+  checam o status HTTP antes de retentar — erros de validação (400)
+  propagam na 1ª tentativa, sem esperar backoff

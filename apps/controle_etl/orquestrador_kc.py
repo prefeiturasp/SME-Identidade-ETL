@@ -12,12 +12,13 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable
 from typing import Any
 
 from django.conf import settings
 from django.db import close_old_connections, connection
+
+from apps.controle_etl.libs.thread_processor import ThreadPoolProcessor
 
 logger = logging.getLogger("etl_identidade")
 
@@ -25,6 +26,11 @@ logger = logging.getLogger("etl_identidade")
 _ATRASO_BASE = 1.0
 _ATRASO_MAXIMO = 60.0
 _MAX_TENTATIVAS = 5
+
+# Status HTTP do Keycloak que justificam retry — falha transitória do
+# servidor. 400/404/409 são erro de validação/payload (ex.: e-mail
+# malformado) e nunca vão se resolver sozinhos com retry.
+_STATUS_KC_RETRIAVEIS = {408, 425, 429, 500, 502, 503, 504}
 
 # Provisionamento Keycloak: chamadas HTTP por usuário em paralelo
 _PROVISIONAMENTO_MAX_WORKERS = 8
@@ -55,6 +61,30 @@ def _excecoes_retriaveis() -> tuple[type[BaseException], ...]:
 _RETRIAVEIS = _excecoes_retriaveis()
 
 
+def _e_retriavel_kc(exc: BaseException) -> bool:
+    """Indica se um erro do Keycloak justifica uma nova tentativa.
+
+    As exceções ``KeycloakGetError``/``PostError``/``PutError`` expõem
+    o status HTTP real em ``response_code`` — sem checar esse valor,
+    um 400 de validação (ex.: e-mail malformado, que nunca vai se
+    resolver com retry) esperava os mesmos 4 backoffs (~15s) de um
+    erro transitório de verdade, multiplicando o tempo total do lote
+    quando muitos registros têm o mesmo problema de dado na origem.
+    Erros sem ``response_code`` (conexão, timeout) continuam sempre
+    retriáveis, pois não há status HTTP para inspecionar.
+
+    Args:
+        exc: Exceção capturada na chamada ao Keycloak.
+
+    Returns:
+        ``True`` se a chamada deve ser repetida.
+    """
+    codigo = getattr(exc, "response_code", None)
+    if codigo is None:
+        return True
+    return codigo in _STATUS_KC_RETRIAVEIS
+
+
 def _com_reintento(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Executa função com backoff exponencial em erros transitórios.
 
@@ -67,7 +97,9 @@ def _com_reintento(fn: Any, *args: Any, **kwargs: Any) -> Any:
         Resultado da função.
 
     Raises:
-        Exception: Após esgotar todas as tentativas.
+        Exception: Imediatamente se o erro não for retriável (ex.:
+            400 de validação), ou após esgotar todas as tentativas
+            em caso de falha transitória.
     """
     tentativa = 0
     while True:
@@ -75,10 +107,10 @@ def _com_reintento(fn: Any, *args: Any, **kwargs: Any) -> Any:
             return fn(*args, **kwargs)
         except _RETRIAVEIS as exc:
             tentativa += 1
-            if tentativa >= _MAX_TENTATIVAS:
+            if not _e_retriavel_kc(exc) or tentativa >= _MAX_TENTATIVAS:
                 logger.error(
                     "KC: esgotadas %d tentativas: %s",
-                    _MAX_TENTATIVAS,
+                    tentativa,
                     exc,
                 )
                 raise
@@ -258,6 +290,26 @@ def construir_payload_token_ms(usuario: Any) -> dict[str, Any]:
         "fonte": usuario.fonte,
         "id_execucao": str(usuario.id_execucao),
     }
+
+
+def payload_tem_identificador(payload: dict[str, Any]) -> bool:
+    """Indica se o payload do token-ms tem ao menos 1 identificador.
+
+    O token-ms rejeita o LOTE inteiro (400) se qualquer item não tiver
+    rf/cpf/matricula — usado tanto pela task de lote quanto pela task
+    individual de token-ms para descartar consistentemente o mesmo
+    tipo de registro incompleto (dado real do CoreSSO, ex. terceiro
+    sem nenhum identificador), sem duplicar a regra.
+
+    Args:
+        payload: Payload construído por ``construir_payload_token_ms``.
+
+    Returns:
+        ``True`` se o payload tem rf, cpf ou matrícula.
+    """
+    return bool(
+        payload.get("rf") or payload.get("cpf") or payload.get("matricula")
+    )
 
 
 def resolver_kc_user_id_de_usuario(
@@ -452,6 +504,107 @@ def calcular_hash_conteudo(payload: dict) -> str:
     ).hexdigest()
 
 
+_CAMPOS_HASH_EXTRACAO = (
+    "nome",
+    "cpf",
+    "rf",
+    "email",
+    "situacao",
+    "cargo",
+    "funcao",
+    "lotacao",
+    "dre",
+    "ue",
+    "matricula",
+)
+
+
+def calcular_hash_extracao(usuario: Any) -> str:
+    """Calcula o hash do dado de staging usado para decidir reextração.
+
+    Cobre os mesmos campos que compõem os payloads de Keycloak/token-ms
+    (``construir_payload_kc``/``construir_payload_token_ms``) — medido
+    sobre o staging já resolvido (pós merge/dedup), não sobre o
+    ``RegistroIdentidade`` bruto por fonte. Usa ``getattr`` com default
+    porque nem todo campo existe em todos os tipos de staging (ex.:
+    ``cargo``/``funcao`` só existem em ``UsuarioServidorStaging``).
+
+    Args:
+        usuario: Instância de staging do usuário.
+
+    Returns:
+        String hexadecimal SHA-256 com 64 caracteres.
+    """
+    from apps.controle_etl.libs.thread_processor import calcular_hash
+
+    dados = {
+        campo: getattr(usuario, campo, None) for campo in _CAMPOS_HASH_EXTRACAO
+    }
+    return calcular_hash(dados, _CAMPOS_HASH_EXTRACAO)
+
+
+def resolver_id_origem(usuario: Any) -> str:
+    """Resolve o identificador estável do usuário na fonte de origem.
+
+    Prioriza CPF sobre RF — mesma prioridade usada em
+    ``_resolver_vencedores`` (apps/staging/tasks.py) para dedup entre
+    fontes. Cai para o PK do staging só quando nenhum dos dois existe;
+    nesse caso, o registro não tem chave estável entre execuções (o
+    staging é recriado a cada rodada), então os 3 hashes nunca vão
+    coincidir de uma execução para a próxima.
+
+    Args:
+        usuario: Instância de staging do usuário.
+
+    Returns:
+        CPF (só dígitos), RF, ou o PK do staging como último recurso.
+    """
+    return (
+        "".join(c for c in (usuario.cpf or "") if c.isdigit())
+        or (getattr(usuario, "rf", None) or "").strip()
+        or str(usuario.id)
+    )
+
+
+def obter_ou_criar_controle(
+    tipo_entidade: str,
+    sistema_origem: str,
+    id_origem: str,
+    realm_destino: str,
+    execucao: Any = None,
+) -> Any:
+    """Busca ou cria o registro de controle de idempotência do usuário.
+
+    Centraliza a chave usada pelos 3 hashes (extração, Keycloak,
+    token-ms) — reaproveitada tanto pelo provisionamento Keycloak
+    quanto pela task individual de carga no token-ms, que precisam
+    localizar exatamente a MESMA linha.
+
+    Args:
+        tipo_entidade: Um de ``ControleProvisionamento.TipoEntidade``.
+        sistema_origem: Fonte do registro (se1426, coresso, eol_alunos).
+        id_origem: CPF/RF/matrícula que identifica o registro na fonte.
+        realm_destino: Realm Keycloak de destino.
+        execucao: Instância de ExecucaoETL para rastreamento.
+
+    Returns:
+        Instância de ``ControleProvisionamento`` (criada se necessário).
+    """
+    from apps.controle_etl.models import ControleProvisionamento
+
+    controle, _ = ControleProvisionamento.objects.get_or_create(
+        tipo_entidade=tipo_entidade,
+        sistema_origem=sistema_origem,
+        id_origem=id_origem,
+        realm_destino=realm_destino,
+        defaults={
+            "hash_keycloak": "",
+            "ultima_execucao": execucao,
+        },
+    )
+    return controle
+
+
 def _atribuir_roles_e_grupos(
     admin: Any,
     kc_user_id: str,
@@ -557,6 +710,13 @@ def provisionar_usuario_kc(
 ) -> dict[str, Any]:
     """Cria ou atualiza um usuário no Keycloak via upsert idempotente.
 
+    Verifica 2 dos 3 hashes independentes do registro (``hash_extracao``
+    e ``hash_keycloak``) antes de decidir se reenvia ao Keycloak — só
+    pula quando AMBOS batem com o estado atual do staging. O 3º hash
+    (``hash_token_ms``) é calculado aqui também, mesmo quando o
+    Keycloak é ignorado, para que o chamador saiba se o token-ms
+    precisa ser disparado independentemente do resultado do Keycloak.
+
     Args:
         admin: Cliente KeycloakAdmin autenticado.
         usuario: Instância de staging do usuário.
@@ -566,77 +726,65 @@ def provisionar_usuario_kc(
             update no Keycloak mesmo sem mudança de dados.
 
     Returns:
-        Dicionário com ``acao``, ``kc_user_id`` e ``hash_conteudo``.
+        Dicionário com ``acao``, ``kc_user_id``, ``hash_keycloak`` e
+        ``token_ms_pendente`` (``True`` se o payload do token-ms mudou
+        desde a última confirmação, mesmo que o Keycloak seja ignorado).
     """
-    from apps.controle_etl.models import ControleProvisionamento
-
     payload = construir_payload_kc(usuario)
     roles_realm = payload.pop("realmRoles", []) or []
     grupos = payload.pop("groups", []) or []
-    hash_conteudo = calcular_hash_conteudo(payload)
+    hash_extracao_atual = calcular_hash_extracao(usuario)
+    hash_keycloak_atual = calcular_hash_conteudo(payload)
+    id_origem = resolver_id_origem(usuario)
 
-    id_origem = (
-        "".join(c for c in (usuario.cpf or "") if c.isdigit())
-        or (getattr(usuario, "rf", None) or "").strip()
-        or str(usuario.id)
+    from apps.controle_etl.models import ControleProvisionamento
+
+    controle = obter_ou_criar_controle(
+        ControleProvisionamento.TipoEntidade.USUARIO,
+        usuario.fonte,
+        id_origem,
+        realm,
+        execucao,
     )
 
-    controle, criado = ControleProvisionamento.objects.get_or_create(
-        tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
-        sistema_origem=usuario.fonte,
-        id_origem=id_origem,
-        realm_destino=realm,
-        defaults={
-            "hash_conteudo": hash_conteudo,
-            "ultima_execucao": execucao,
-        },
-    )
-
-    if (
+    pular_keycloak = (
         not forcar_atualizacao
-        and not criado
         and controle.id_destino
-        and controle.hash_conteudo == hash_conteudo
-    ):
-        return {
-            "acao": "ignorado",
-            "kc_user_id": controle.id_destino,
-            "hash_conteudo": hash_conteudo,
-        }
+        and controle.hash_extracao == hash_extracao_atual
+        and controle.hash_keycloak == hash_keycloak_atual
+    )
 
-    if criado or not controle.id_destino:
-        kc_user_id, acao = _criar_usuario_kc(admin, usuario, payload, controle)
+    if pular_keycloak:
+        kc_user_id, acao = controle.id_destino, "ignorado"
     else:
-        kc_user_id, acao = _atualizar_usuario_kc(admin, payload, controle)
+        if not controle.id_destino:
+            kc_user_id, acao = _criar_usuario_kc(
+                admin, usuario, payload, controle
+            )
+        else:
+            kc_user_id, acao = _atualizar_usuario_kc(admin, payload, controle)
 
-    _atribuir_roles_e_grupos(admin, kc_user_id, roles_realm, grupos)
+        _atribuir_roles_e_grupos(admin, kc_user_id, roles_realm, grupos)
 
-    controle.hash_conteudo = hash_conteudo
-    if execucao is not None:
-        controle.ultima_execucao = execucao
-    controle.erro_sincronizacao = None
-    controle.save()
+        controle.hash_extracao = hash_extracao_atual
+        controle.hash_keycloak = hash_keycloak_atual
+        if execucao is not None:
+            controle.ultima_execucao = execucao
+        controle.erro_sincronizacao = None
+        controle.save()
+
+    payload_token = construir_payload_token_ms(usuario)
+    hash_token_atual = calcular_hash_conteudo(payload_token)
+    token_ms_pendente = controle.hash_token_ms != hash_token_atual
 
     return {
         "acao": acao,
         "kc_user_id": kc_user_id,
-        "hash_conteudo": hash_conteudo,
+        "hash_keycloak": hash_keycloak_atual,
+        "hash_token_ms_atual": hash_token_atual,
+        "token_ms_pendente": token_ms_pendente,
+        "id_origem": id_origem,
     }
-
-
-def _executar_com_conexao_fresca[T](fn: Callable[[], T]) -> T:
-    """Executa ``fn`` fechando a conexão de banco da thread ao final.
-
-    Cada worker do pool reaproveita threads do sistema operacional,
-    que mantêm sua própria conexão de banco (thread-local). Fechar
-    explicitamente ao final evita conexões ociosas acumuladas no
-    banco quando o pool processa muitos lotes.
-    """
-    close_old_connections()
-    try:
-        return fn()
-    finally:
-        connection.close()
 
 
 def provisionar_usuarios_kc_em_paralelo(
@@ -665,7 +813,8 @@ def provisionar_usuarios_kc_em_paralelo(
     workers = max_workers or _PROVISIONAMENTO_MAX_WORKERS
 
     def _provisionar(usuario: Any) -> dict[str, Any] | Exception:
-        def _chamada() -> dict[str, Any]:
+        close_old_connections()
+        try:
             return provisionar_usuario_kc(
                 admin,
                 usuario,
@@ -673,14 +822,19 @@ def provisionar_usuarios_kc_em_paralelo(
                 execucao=execucao,
                 forcar_atualizacao=forcar_atualizacao,
             )
-
-        try:
-            return _executar_com_conexao_fresca(_chamada)
         except Exception as exc:
             return exc
+        finally:
+            # Cada worker do ThreadPoolProcessor roda seu lote inteiro
+            # numa única thread — fechar a conexão aqui (por usuário, não
+            # por lote) evita reter transações/locks abertos se um item
+            # do meio do lote falhar antes do fim do lote inteiro.
+            connection.close()
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        return list(executor.map(_provisionar, usuarios))
+    processor = ThreadPoolProcessor(
+        max_workers=workers, prefixo_log="provisionamento_kc"
+    )
+    return processor.processar(list(usuarios), _provisionar)
 
 
 def _slugificar_client_id(nome: str) -> str:
@@ -1244,12 +1398,17 @@ def _upsert_usuario_kc(
 def _atribuir_roles_sistema(
     admin: Any, kc_user_id: str, sis_data: dict
 ) -> dict:
-    """Atribui roles de um sistema ao usuário no KC."""
+    """Atribui roles de um sistema ao usuário no KC.
+
+    Provisiona sob demanda o client e as roles que ainda não
+    existem no Keycloak, para que a sincronização de usuário
+    nunca fique bloqueada por um cadastro pendente.
+    """
     from apps.staging.models import PerfilCoressoStaging, SistemaStaging
 
     sis_id = sis_data["sis_id"]
     sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
-    if not sistema or not sistema.kc_client_uuid:
+    if not sistema:
         return {
             "sistema": sis_data["nome"],
             "status": "sem client no KC",
@@ -1257,14 +1416,44 @@ def _atribuir_roles_sistema(
             "erros": 0,
         }
 
+    if not sistema.kc_client_uuid:
+        try:
+            provisionar_client_kc(admin, sistema)
+        except Exception:
+            logger.exception(
+                "KC: falha ao provisionar client do sistema %s",
+                sistema.nome,
+            )
+            return {
+                "sistema": sis_data["nome"],
+                "status": "sem client no KC",
+                "roles": [],
+                "erros": 0,
+            }
+
     roles_ok: list[str] = []
     erros = 0
     for grupo in sis_data.get("grupos", []):
         perfil = PerfilCoressoStaging.objects.filter(
             coresso_gru_id=grupo["gru_id"]
         ).first()
-        if not perfil or not perfil.kc_role_id:
+        if not perfil:
             continue
+        if not perfil.kc_role_id:
+            try:
+                provisionar_role_client_kc(admin, perfil)
+            except Exception:
+                logger.exception(
+                    "KC: falha ao provisionar role %s do sistema %s",
+                    perfil.kc_role_nome,
+                    sistema.nome,
+                )
+                erros += 1
+                continue
+            perfil.refresh_from_db(fields=["kc_role_id"])
+            if not perfil.kc_role_id:
+                erros += 1
+                continue
         try:
             _com_reintento(
                 admin.assign_client_role,
