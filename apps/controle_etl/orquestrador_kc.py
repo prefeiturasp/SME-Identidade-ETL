@@ -1395,6 +1395,63 @@ def _upsert_usuario_kc(
     return kc_id, "criado"
 
 
+_SEM_ROLE = object()  # sentinel: grupo sem perfil correspondente
+
+
+def _garantir_role_provisionada(admin: Any, perfil: Any, sistema: Any) -> bool:
+    """Provisiona a role do perfil no KC se ainda não existir.
+
+    Returns:
+        ``True`` se a role já existe ou foi provisionada com sucesso
+        (``perfil.kc_role_id`` preenchido); ``False`` em falha.
+    """
+    if perfil.kc_role_id:
+        return True
+    try:
+        provisionar_role_client_kc(admin, perfil)
+    except Exception:
+        logger.exception(
+            "KC: falha ao provisionar role %s do sistema %s",
+            perfil.kc_role_nome,
+            sistema.nome,
+        )
+        return False
+    perfil.refresh_from_db(fields=["kc_role_id"])
+    return bool(perfil.kc_role_id)
+
+
+def _atribuir_role_grupo(
+    admin: Any, kc_user_id: str, sistema: Any, grupo: dict
+) -> str | None | object:
+    """Atribui a role de um grupo CoreSSO ao usuário no KC.
+
+    Returns:
+        Nome da role atribuída em sucesso; ``None`` em falha ao
+        provisionar/atribuir a role; ``_SEM_ROLE`` se o grupo não tem
+        perfil correspondente em staging (não conta como erro nem
+        sucesso — apenas não há role a atribuir).
+    """
+    from apps.staging.models import PerfilCoressoStaging  # noqa: PLC0415
+
+    perfil = PerfilCoressoStaging.objects.filter(
+        coresso_gru_id=grupo["gru_id"]
+    ).first()
+    if not perfil:
+        return _SEM_ROLE
+    if not _garantir_role_provisionada(admin, perfil, sistema):
+        return None
+    try:
+        _com_reintento(
+            admin.assign_client_role,
+            kc_user_id,
+            sistema.kc_client_uuid,
+            [{"id": perfil.kc_role_id, "name": perfil.kc_role_nome}],
+        )
+    except Exception:
+        return None
+    return perfil.kc_role_nome or ""
+
+
 def _atribuir_roles_sistema(
     admin: Any, kc_user_id: str, sis_data: dict
 ) -> dict:
@@ -1404,10 +1461,11 @@ def _atribuir_roles_sistema(
     existem no Keycloak, para que a sincronização de usuário
     nunca fique bloqueada por um cadastro pendente.
     """
-    from apps.staging.models import PerfilCoressoStaging, SistemaStaging
+    from apps.staging.models import SistemaStaging  # noqa: PLC0415
 
-    sis_id = sis_data["sis_id"]
-    sistema = SistemaStaging.objects.filter(coresso_sis_id=sis_id).first()
+    sistema = SistemaStaging.objects.filter(
+        coresso_sis_id=sis_data["sis_id"]
+    ).first()
     if not sistema:
         return {
             "sistema": sis_data["nome"],
@@ -1434,41 +1492,13 @@ def _atribuir_roles_sistema(
     roles_ok: list[str] = []
     erros = 0
     for grupo in sis_data.get("grupos", []):
-        perfil = PerfilCoressoStaging.objects.filter(
-            coresso_gru_id=grupo["gru_id"]
-        ).first()
-        if not perfil:
+        resultado = _atribuir_role_grupo(admin, kc_user_id, sistema, grupo)
+        if resultado is _SEM_ROLE:
             continue
-        if not perfil.kc_role_id:
-            try:
-                provisionar_role_client_kc(admin, perfil)
-            except Exception:
-                logger.exception(
-                    "KC: falha ao provisionar role %s do sistema %s",
-                    perfil.kc_role_nome,
-                    sistema.nome,
-                )
-                erros += 1
-                continue
-            perfil.refresh_from_db(fields=["kc_role_id"])
-            if not perfil.kc_role_id:
-                erros += 1
-                continue
-        try:
-            _com_reintento(
-                admin.assign_client_role,
-                kc_user_id,
-                sistema.kc_client_uuid,
-                [
-                    {
-                        "id": perfil.kc_role_id,
-                        "name": perfil.kc_role_nome,
-                    }
-                ],
-            )
-            roles_ok.append(perfil.kc_role_nome or "")
-        except Exception:
+        if resultado is None:
             erros += 1
+        else:
+            roles_ok.append(resultado)
 
     return {
         "sistema": sis_data["nome"],
