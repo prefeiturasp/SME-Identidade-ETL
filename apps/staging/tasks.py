@@ -194,15 +194,23 @@ def transformar_staging(id_execucao: str) -> dict:
 
 _PRIORIDADE_FONTE = {"se1426": 1, "eol_db": 2, "coresso": 3}
 
+_TAMANHO_LOTE_DEDUP = 2000
 
-def _resolver_vencedores(usuarios: list) -> set[int]:
-    vencedor_cpf: dict = {}
-    vencedor_rf: dict = {}
 
-    for usuario in usuarios:
-        usuario.prioridade = _PRIORIDADE_FONTE.get(usuario.fonte, 99)
-        chave_cpf = (usuario.cpf or "").strip()
-        chave_rf = (usuario.rf or "").strip()
+def _resolver_vencedores(registros: Iterable[dict]) -> set[int]:
+    """Determina, em streaming, o vencedor por CPF e por RF.
+
+    Recebe dicts leves (``id``, ``cpf``, ``rf``, ``fonte``) em vez de
+    instâncias completas do model — guarda em memória só a menor
+    prioridade já vista por chave, não a lista inteira de registros.
+    """
+    vencedor_cpf: dict[str, tuple[int, int]] = {}
+    vencedor_rf: dict[str, tuple[int, int]] = {}
+
+    for registro in registros:
+        prioridade = _PRIORIDADE_FONTE.get(registro["fonte"], 99)
+        chave_cpf = (registro["cpf"] or "").strip()
+        chave_rf = (registro["rf"] or "").strip()
 
         for chave, vencedores in (
             (chave_cpf, vencedor_cpf),
@@ -211,30 +219,41 @@ def _resolver_vencedores(usuarios: list) -> set[int]:
             if not chave:
                 continue
             atual = vencedores.get(chave)
-            if atual is None or usuario.prioridade < atual.prioridade:
-                vencedores[chave] = usuario
+            if atual is None or prioridade < atual[0]:
+                vencedores[chave] = (prioridade, registro["id"])
 
-    return {u.id for u in {**vencedor_cpf, **vencedor_rf}.values()}
+    ids_cpf = {v[1] for v in vencedor_cpf.values()}
+    ids_rf = {v[1] for v in vencedor_rf.values()}
+    return ids_cpf | ids_rf
 
 
-def _marcar_duplicatas(usuarios: list, vencedores_ids: set[int]) -> int:
-    atualizacoes = []
-    for usuario in usuarios:
-        cpf = (usuario.cpf or "").strip()
-        rf = (usuario.rf or "").strip()
+def _marcar_duplicatas(
+    registros: Iterable[dict], vencedores_ids: set[int]
+) -> int:
+    """Marca como 'ignorado', em lotes, todo registro fora dos vencedores."""
+    from apps.staging.models import UsuarioServidorStaging  # noqa: PLC0415
+
+    ignorados = 0
+    lote: list[int] = []
+    for registro in registros:
+        cpf = (registro["cpf"] or "").strip()
+        rf = (registro["rf"] or "").strip()
         if not cpf and not rf:
             continue
-        if usuario.id not in vencedores_ids:
-            usuario.situacao = "ignorado"
-            atualizacoes.append(usuario)
+        if registro["id"] not in vencedores_ids:
+            lote.append(registro["id"])
+            ignorados += 1
+        if len(lote) >= _TAMANHO_LOTE_DEDUP:
+            UsuarioServidorStaging.objects.filter(id__in=lote).update(
+                situacao="ignorado"
+            )
+            lote = []
 
-    if atualizacoes:
-        from apps.staging.models import UsuarioServidorStaging
-
-        UsuarioServidorStaging.objects.bulk_update(
-            atualizacoes, ["situacao"], batch_size=500
+    if lote:
+        UsuarioServidorStaging.objects.filter(id__in=lote).update(
+            situacao="ignorado"
         )
-    return len(atualizacoes)
+    return ignorados
 
 
 @shared_task(name="staging.tasks.deduplicar_identidades")
@@ -244,7 +263,10 @@ def deduplicar_identidades(
     """Deduplica servidores por CPF/RF entre fontes distintas.
 
     Mantém o registro de maior prioridade de fonte (se1426 > coresso)
-    e marca duplicatas como 'ignorado'.
+    e marca duplicatas como 'ignorado'. Processa em streaming
+    (``.iterator()`` + valores leves) para suportar execuções com
+    milhões de registros sem carregar tudo em memória de uma vez —
+    ver histórico de OOM em execuções de grande volume do CoreSSO.
 
     Args:
         resultado_transform: Resultado da task transformar_staging.
@@ -255,15 +277,24 @@ def deduplicar_identidades(
     """
     from apps.staging.models import UsuarioServidorStaging  # noqa: PLC0415
 
-    usuarios = list(
-        UsuarioServidorStaging.objects.filter(
-            id_execucao=id_execucao, situacao="pronto"
-        ).order_by("id")
-    )
+    base_qs = UsuarioServidorStaging.objects.filter(
+        id_execucao=id_execucao, situacao="pronto"
+    ).order_by("id")
 
-    vencedores_ids = _resolver_vencedores(usuarios)
-    ignorados = _marcar_duplicatas(usuarios, vencedores_ids)
-    total_deduplicado = len(usuarios) - ignorados
+    total = base_qs.count()
+
+    vencedores_ids = _resolver_vencedores(
+        base_qs.values("id", "cpf", "rf", "fonte").iterator(
+            chunk_size=_TAMANHO_LOTE_DEDUP
+        )
+    )
+    ignorados = _marcar_duplicatas(
+        base_qs.values("id", "cpf", "rf").iterator(
+            chunk_size=_TAMANHO_LOTE_DEDUP
+        ),
+        vencedores_ids,
+    )
+    total_deduplicado = total - ignorados
 
     logger.info(
         "[%s] deduplicar_identidades — %d ignorados",
