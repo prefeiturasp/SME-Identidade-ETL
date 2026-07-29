@@ -14,6 +14,7 @@ from apps.extracao.tasks import (
     _iterar_com_watermark,
     _montar_resultado_usuario,
     _obter_watermark,
+    _sanitizar_cpf,
     _slugificar_role,
     _string_conexao_coresso,
     _string_conexao_se1426,
@@ -60,6 +61,49 @@ class TestRegistroIdentidade:
         r2 = RegistroIdentidade(fonte="c", tipo="d")
         r1.dados_extras["x"] = 1
         assert "x" not in r2.dados_extras
+
+
+# ---------------------------------------------------------------------------
+# _sanitizar_cpf
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizarCpf:
+    def test_cpf_ja_limpo(self) -> None:
+        assert _sanitizar_cpf("12345678901") == "12345678901"
+
+    def test_cpf_com_mascara_ponto_traco(self) -> None:
+        assert _sanitizar_cpf("123.456.789-01") == "12345678901"
+
+    def test_cpf_com_espacos_nas_pontas(self) -> None:
+        assert _sanitizar_cpf(" 43421373809 ") == "43421373809"
+
+    def test_cpf_com_espacos_internos(self) -> None:
+        assert _sanitizar_cpf("322 764 558  02") == "32276455802"
+
+    def test_cpf_com_travessao_como_separador(self) -> None:
+        assert _sanitizar_cpf("331970888 – 08") == "33197088808"
+
+    def test_cpf_com_barra_como_separador(self) -> None:
+        assert _sanitizar_cpf("228403998/73") == "22840399873"
+
+    def test_none_retorna_none(self) -> None:
+        assert _sanitizar_cpf(None) is None
+
+    def test_string_vazia_retorna_none(self) -> None:
+        assert _sanitizar_cpf("") is None
+
+    def test_apenas_espacos_retorna_none(self) -> None:
+        assert _sanitizar_cpf("   ") is None
+
+    def test_apenas_caracteres_nao_numericos_retorna_none(self) -> None:
+        assert _sanitizar_cpf("--- . ---") is None
+
+    def test_valor_maior_que_11_digitos_e_truncado(self) -> None:
+        assert _sanitizar_cpf("123456789012345") == "12345678901"
+
+    def test_valor_numerico_inteiro(self) -> None:
+        assert _sanitizar_cpf(12345678901) == "12345678901"
 
 
 # ---------------------------------------------------------------------------
