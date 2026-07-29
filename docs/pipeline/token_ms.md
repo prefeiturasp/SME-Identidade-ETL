@@ -8,15 +8,50 @@ para compor claims de autorização usadas na geração do token JWT.
 
 ---
 
-## Task
+## Carga individual (caminho principal)
 
-`task_carregar_atributos_token` em `apps/controle_etl/tasks.py`.
+`task_carregar_atributo_token_individual` em `apps/controle_etl/tasks.py`,
+roteada para a fila `etl_carga_token_ms` — desacoplada da fila do
+Keycloak (`etl_carga_keycloak`).
 
-Processa todos os registros com `situacao__in=["pronto", "carregado"]`
-do staging (`UsuarioServidorStaging`, `UsuarioAlunoStaging`,
-`UsuarioTerceiroStaging`) filtrados pelo `id_execucao` corrente,
-construindo um payload por usuário via `construir_payload_token_ms`
-e enviando em lotes via `enviar_todos`.
+Disparada **fire-and-forget** (`apply_async`) de dentro de
+`_provisionar_lote_kc` assim que **um único usuário** é confirmado no
+Keycloak — não espera o restante do lote terminar. A `chain` do
+pipeline principal (`task_identidade_executar_pipeline`) não inclui
+mais essa carga: `ExecucaoETL` fecha (`sucesso`/`parcial`) ao final do
+Keycloak, e o progresso do token-ms por usuário passa a ser
+rastreável via `hash_token_ms` em `ControleProvisionamento`
+(`token_ms_confirmado` no serializer, ver
+[API de Controle](../controle/api.md)), não pela `situacao` da execução.
+
+Antes de enviar, recalcula `hash_token_ms` do payload atual e compara
+com o valor persistido — se já bate, é *no-op* idempotente. Descarta
+(loga, não reenvia) registros sem identificador via
+`payload_tem_identificador`. Em sucesso, sincroniza o perfil
+(`enviar_perfil`) e envia o lote de 1 (`enviar_lote`), gravando o novo
+`hash_token_ms`. Retry (`max_retries=5`, backoff igual às demais
+tasks) usa `_registrar_tentativa`/`_calcular_atraso` compartilhados.
+
+**Limitação conhecida**: se um retry tardio ocorrer depois que o
+staging da execução original já foi limpo
+(`task_identidade_limpar_staging`, disparada por `task_sync_rec_etl`
+com `countdown=600` — alinhado à janela máxima de retry), a task falha
+por não encontrar o registro. A janela de retry (~10min no pior caso)
+é sempre menor que a retenção do staging, então isso só ocorre em
+cenários anômalos; uma falha definitiva nesse ponto só se resolve numa
+próxima execução completa do pipeline.
+
+## Carga em lote (fallback / reprocessamento manual)
+
+`task_carregar_atributos_token` — mesma fila `etl_carga_token_ms`, não
+faz mais parte do caminho síncrono do pipeline. Processa todos os
+registros com `situacao__in=["pronto", "carregado"]` do staging
+(`UsuarioServidorStaging`, `UsuarioAlunoStaging`,
+`UsuarioTerceiroStaging`) filtrados pelo `id_execucao`, checando
+`hash_token_ms` por registro antes de enviar (mesma idempotência da
+carga individual, em vez de reenviar sempre) e agrupando via
+`enviar_todos`. Útil para reprocessar uma execução específica
+manualmente ou como malha de segurança adicional.
 
 ---
 
@@ -121,16 +156,23 @@ ainda em aberto.
 
 ## Sincronização de perfis (`PUT /perfis/{usuario_id}/`)
 
-Além do push-batch de atributos complementares, a mesma
-`task_carregar_atributos_token` também sincroniza, por usuário, a
-projeção de perfis usada para compor o JWT (`apps/perfil` do
-token-ms) — extraída dos grupos CoreSSO aos quais o usuário está
-vinculado (mesma fonte já usada por `sincronizar_usuario_kc`).
+Além do push-batch de atributos complementares, o mesmo fluxo também
+sincroniza, por usuário, a projeção de perfis usada para compor o JWT
+(`apps/perfil` do token-ms) — extraída dos grupos CoreSSO aos quais o
+usuário está vinculado (mesma fonte já usada por
+`sincronizar_usuario_kc`).
 
-### Fluxo
+### Carga individual
+
+`task_carregar_atributo_token_individual` já recebe o resultado do
+Keycloak com `kc_user_id` resolvido (não precisa buscá-lo de novo) —
+monta o payload via `construir_payload_perfil_token_ms` e envia com
+`enviar_perfil(kc_user_id, payload)` antes do push-batch de atributos.
+
+### Carga em lote (fallback)
 
 Para cada usuário do staging da execução, `_sincronizar_perfis_execucao`
-(`apps/controle_etl/tasks.py`):
+(`apps/controle_etl/tasks.py`), usada pela task de lote:
 
 1. Resolve o `kc_user_id` no Keycloak via
    `resolver_kc_user_id_de_usuario` (busca por username exato — RF,
@@ -149,7 +191,9 @@ Falha ao sincronizar o perfil de um usuário é contada e logada, mas
 **não** interrompe os demais usuários nem afeta o resultado do
 push-batch (responsabilidade já concluída antes desta etapa).
 Métricas (`perfis_sincronizados`, `perfis_erros`) ficam em
-`LogEtapaETL.metadados` da mesma etapa `CARREGAR_TOKEN`.
+`LogEtapaETL.metadados` da etapa `CARREGAR_TOKEN` — só preenchida
+quando a task de lote é executada (a carga individual não abre etapa
+própria, seu progresso é rastreado via `ControleProvisionamento`).
 
 ### Usuário sem identificador ou sem vínculo CoreSSO
 

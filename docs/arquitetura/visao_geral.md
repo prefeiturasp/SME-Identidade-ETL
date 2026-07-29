@@ -94,8 +94,12 @@ digraph G {
 Toda operação de carga é idempotente:
 
 - **Staging** — `update_or_create` por `(id_execucao, fonte, id_origem)`
-- **Keycloak** — busca o usuário pelo username antes de criar; atualiza se o
-  hash de conteúdo mudou (`calcular_hash_conteudo`)
-- **token-ms** — upsert por identificador externo
-- **ControleProvisionamento** — registra a última situação de cada entidade por
-  `(tipo_entidade, sistema_origem, id_origem)`
+- **Keycloak** — busca o usuário pelo username antes de criar; atualiza se
+  `hash_extracao` (dado da fonte) ou `hash_keycloak` (payload) mudaram
+- **token-ms** — upsert por identificador externo; reenvia só se
+  `hash_token_ms` mudou desde a última confirmação
+- **ControleProvisionamento** — registra 3 hashes independentes por
+  entidade em `(tipo_entidade, sistema_origem, id_origem, realm_destino)`,
+  um por estágio do pipeline (extração, Keycloak, token-ms) — cada
+  estágio decide, sem depender dos outros, se precisa reexecutar; ver
+  [Modelos de Controle](../controle/modelos.md)

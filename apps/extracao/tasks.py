@@ -12,6 +12,7 @@ via MarcaDaguaExtracao.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,6 +23,20 @@ from django.utils import timezone
 logger = logging.getLogger("etl_identidade")
 
 _TAMANHO_LOTE = 500
+
+_CPF_TAMANHO = 11
+
+
+def _sanitizar_cpf(valor: object) -> str | None:
+    """Normaliza CPF vindo de fontes legadas para 11 dígitos numéricos.
+
+    Fontes como o CoreSSO podem armazenar o CPF com máscara
+    (``000.000.000-00``) ou outros caracteres não numéricos, o que
+    estoura o ``max_length=11`` da coluna de staging. Remove tudo que
+    não for dígito antes de persistir.
+    """
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    return digitos[:_CPF_TAMANHO] or None
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +280,7 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
                     tipo="servidor",
                     rf=item.get("rf"),
                     nome=item.get("nome"),
-                    cpf=item.get("cpf"),
+                    cpf=_sanitizar_cpf(item.get("cpf")),
                     email=item.get("email"),
                     situacao=((item.get("situacao") or "").lower() or None),
                     dados_extras={
@@ -340,7 +355,7 @@ def _extrair_se1426_api(
             tipo="servidor",
             rf=item.get("rf") or item.get("cd_registro_funcional"),
             nome=item.get("nome") or item.get("nm_pessoa"),
-            cpf=item.get("cpf") or item.get("cd_cpf_pessoa"),
+            cpf=_sanitizar_cpf(item.get("cpf") or item.get("cd_cpf_pessoa")),
             email=item.get("email"),
             situacao=(item.get("situacao") or "").lower() or None,
             dados_extras=item,
@@ -441,7 +456,7 @@ def _extrair_coresso_sql(
                 yield RegistroIdentidade(
                     fonte="coresso",
                     tipo="terceiro",
-                    cpf=(item.get("cpf") or "").strip() or None,
+                    cpf=_sanitizar_cpf(item.get("cpf")),
                     nome=item.get("nome"),
                     email=item.get("email"),
                     situacao=(
@@ -481,7 +496,7 @@ def _extrair_coresso_api(
         yield RegistroIdentidade(
             fonte="coresso",
             tipo="terceiro",
-            cpf=(item.get("cpf") or "").strip() or None,
+            cpf=_sanitizar_cpf(item.get("cpf")),
             nome=item.get("nome") or item.get("pes_nome"),
             email=item.get("email") or item.get("pes_email"),
             situacao=(
@@ -583,7 +598,7 @@ def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
                     tipo="aluno",
                     matricula=item.get("matricula"),
                     nome=item.get("nome"),
-                    cpf=str(item.get("cpf") or "").strip() or None,
+                    cpf=_sanitizar_cpf(item.get("cpf")),
                     situacao=(item.get("situacao") or "").lower() or None,
                     cod_escola=item.get("cod_ue"),
                     turma=item.get("turma"),

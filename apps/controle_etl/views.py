@@ -1100,6 +1100,16 @@ def criar_usuario_manual(request: Request) -> Response:
     try:
         admin = obter_admin_keycloak(realm=realm)
         resultado = provisionar_usuario_kc(admin, usuario, realm=realm)
+        # Campos internos de controle de idempotência multi-estágio
+        # (usados pelo pipeline agendado) não fazem parte do contrato
+        # público desta rota manual.
+        for campo in (
+            "hash_keycloak",
+            "hash_token_ms_atual",
+            "token_ms_pendente",
+            "id_origem",
+        ):
+            resultado.pop(campo, None)
     except Exception as exc:
         logger.exception(
             "Falha ao provisionar usuário manual %s: %s",

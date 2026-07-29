@@ -45,18 +45,30 @@ Rastreio de cada etapa dentro de uma execução.
 
 ## ControleProvisionamento
 
-Histórico de provisionamento por entidade — permite detecção de mudança
-via hash de conteúdo.
+Histórico de provisionamento por entidade — chave
+`(tipo_entidade, sistema_origem, id_origem, realm_destino)`, persistente
+entre execuções (sobrevive à limpeza de staging). Guarda **3 hashes
+independentes**, um por estágio do pipeline — cada estágio decide, sem
+depender dos outros, se precisa reexecutar. Os 3 hashes precisam bater
+para o registro inteiro ser ignorado; onde um não bate, aquele estágio
+(e os que dependem dele) reexecuta, mesmo que os outros já estejam
+confirmados. Ver [Provisionamento Keycloak](../pipeline/keycloak.md) e
+[Carga no token-ms](../pipeline/token_ms.md) para o fluxo de decisão.
 
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `tipo_entidade` | CharField | `"usuario"`, `"sistema"` ou `"perfil"` |
+| `tipo_entidade` | CharField | `"usuario"`, `"grupo"`, `"role"` ou `"client"` |
 | `sistema_origem` | CharField | Fonte de origem |
-| `id_origem` | CharField | ID na fonte |
-| `situacao` | CharField | `"provisionado"` / `"erro"` / `"ignorado"` |
-| `hash_conteudo` | CharField | SHA-256 do payload para detecção de mudança |
-| `id_execucao` | UUID | Última execução que processou esta entidade |
-| `kc_user_id` | CharField | ID do usuário no Keycloak |
+| `id_origem` | CharField | CPF (prioridade), senão RF, senão PK do staging |
+| `id_destino` | CharField | ID da entidade no Keycloak |
+| `realm_destino` | CharField | Realm Keycloak de destino |
+| `hash_extracao` | CharField | SHA-256 dos campos do staging pós-extração/resolução — muda quando o dado da fonte muda |
+| `hash_keycloak` | CharField | SHA-256 do payload enviado ao Keycloak (antigo `hash_conteudo`) |
+| `hash_token_ms` | CharField | SHA-256 do payload enviado ao token-ms |
+| `versao` | PositiveIntegerField | Incrementada a cada atualização real no Keycloak |
+| `ativo` | BooleanField | Situação ativa/inativa do registro |
+| `erro_sincronizacao` | TextField | Último erro de sincronização, se houver |
+| `ultima_execucao` | FK → ExecucaoETL | Última execução que processou esta entidade |
 
 ---
 

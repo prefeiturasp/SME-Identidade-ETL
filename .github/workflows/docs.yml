@@ -37,6 +37,9 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get install -y graphviz
 
+      - name: Install application dependencies
+        run: python -m pip install -r requirements/base.txt
+
       - name: Install documentation dependencies
         run: python -m pip install ".[docs]"
 

@@ -20,6 +20,9 @@ _CELERY_CMD = [
     "worker",
     "--loglevel=INFO",
     "--concurrency=1",
+    "-Q",
+    "celery,etl_extracao,etl_transformacao,etl_carga_keycloak,"
+    "etl_carga_token_ms",
 ]
 
 _WATCH_DIRS = ["/app/apps", "/app/config"]

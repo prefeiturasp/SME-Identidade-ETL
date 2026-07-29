@@ -16,7 +16,6 @@ docs = [
     "sphinx-rtd-theme>=2.0",
     "myst-parser>=3.0",
     "sphinx-autobuild>=2024.4",
-    "django>=4.2",
 ]
 
 [tool.setuptools]

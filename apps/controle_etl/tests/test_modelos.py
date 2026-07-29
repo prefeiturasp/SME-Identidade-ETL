@@ -230,7 +230,7 @@ class TestControleProvisionamento:
             sistema_origem="se1426",
             id_origem="1234567",
             realm_destino="sme-apps",
-            hash_conteudo="abc123",
+            hash_keycloak="abc123",
         )
         with pytest.raises(IntegrityError):
             ControleProvisionamento.objects.create(
@@ -238,7 +238,7 @@ class TestControleProvisionamento:
                 sistema_origem="se1426",
                 id_origem="1234567",
                 realm_destino="sme-apps",
-                hash_conteudo="xyz789",
+                hash_keycloak="xyz789",
             )
 
     def test_str_contem_tipo_e_origem(self) -> None:
@@ -248,7 +248,7 @@ class TestControleProvisionamento:
             sistema_origem="coresso",
             id_origem="grupo-99",
             realm_destino="sme-apps",
-            hash_conteudo="zzz",
+            hash_keycloak="zzz",
         )
         s = str(cp)
         assert "grupo" in s
