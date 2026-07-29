@@ -61,8 +61,6 @@ Controle ETL — Views (API)
 Controle ETL — Dashboard e Kanban (HTML)
 -------------------------------------------
 
-.. autoclass:: apps.controle_etl.views.DispararExecucaoDashboardView
-
 .. autoclass:: apps.controle_etl.views.DashboardView
 
 .. autoclass:: apps.controle_etl.views.KanbanView
