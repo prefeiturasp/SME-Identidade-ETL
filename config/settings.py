@@ -148,6 +148,15 @@ CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "0") == "1"
 # Necessário para chord/group funcionarem em modo eager (sem worker)
 CELERY_TASK_STORE_EAGER_RESULT = CELERY_TASK_ALWAYS_EAGER
 
+# Recicla o processo filho a cada N tasks — sem isso, um worker que
+# processa uma extração de milhões de registros seguida de uma task
+# de transformação/dedup no mesmo processo acumula fragmentação de
+# heap (CPython + driver pyodbc) até estourar o limite de memória do
+# pod (SIGKILL/OOM), mesmo com as tasks individuais em streaming.
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(
+    os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "20")
+)
+
 CELERY_TASK_ROUTES = {
     # Extração paralela das fontes
     "task_identidade_extrair_se1426": {"queue": "etl_extracao"},
