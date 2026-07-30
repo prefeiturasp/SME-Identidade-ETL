@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - homolog
       - test
     paths:
       - ".github/workflows/docs.yml"

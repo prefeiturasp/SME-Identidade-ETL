@@ -161,7 +161,7 @@ def transformar_staging(id_execucao: str) -> dict:
             id_execucao=id_execucao, situacao="extraido"
         )
         prontos = erros = 0
-        atualizacoes = []
+        atualizacoes: list = []
         for usuario in qs.iterator(chunk_size=500):
             if not usuario.nome and not usuario.cpf:
                 usuario.situacao = "erro"
@@ -171,6 +171,14 @@ def transformar_staging(id_execucao: str) -> dict:
                 usuario.situacao = "pronto"
                 prontos += 1
             atualizacoes.append(usuario)
+
+            if len(atualizacoes) >= 500:
+                modelo.objects.bulk_update(
+                    atualizacoes,  # type: ignore[arg-type]
+                    ["situacao", "detalhe_erro"],
+                    batch_size=500,
+                )
+                atualizacoes = []
 
         if atualizacoes:
             modelo.objects.bulk_update(
