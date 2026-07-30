@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - homolog
       - test
     paths:
       - ".github/workflows/docs.yml"
@@ -67,7 +68,7 @@ jobs:
       id-token: write
 
     environment:
-      name: github-pages
+      name: homolog
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
