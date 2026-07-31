@@ -1472,6 +1472,10 @@ class TestTaskIdentidadeExecutarPipeline:
         with (
             patch("apps.controle_etl.tasks.chord") as mock_chord,
             patch("apps.controle_etl.tasks.chain") as mock_chain,
+            patch(
+                "apps.controle_etl.views"
+                "._cancelar_execucoes_nao_finalizadas_e_purgar_filas"
+            ),
         ):
             task_identidade_executar_pipeline(id_execucao)
 
@@ -1501,6 +1505,10 @@ class TestTaskIdentidadeExecutarPipeline:
             ) as mock_s,
             patch("apps.controle_etl.tasks.chord"),
             patch("apps.controle_etl.tasks.chain"),
+            patch(
+                "apps.controle_etl.views"
+                "._cancelar_execucoes_nao_finalizadas_e_purgar_filas"
+            ),
         ):
             task_identidade_executar_pipeline(
                 id_execucao, data_referencia="2026-01-01"
@@ -1518,6 +1526,10 @@ class TestTaskIdentidadeExecutarPipeline:
         with (
             patch("apps.controle_etl.tasks.chord") as mock_chord,
             patch("apps.controle_etl.tasks.chain"),
+            patch(
+                "apps.controle_etl.views"
+                "._cancelar_execucoes_nao_finalizadas_e_purgar_filas"
+            ),
         ):
             task_identidade_executar_pipeline(id_execucao)
 
@@ -1529,7 +1541,13 @@ class TestTaskIdentidadeExecutarPipeline:
         execucao = self._execucao(fonte="fonte_invalida")
         id_execucao = str(execucao.id_execucao)
 
-        with patch("apps.controle_etl.tasks.chord") as mock_chord:
+        with (
+            patch("apps.controle_etl.tasks.chord") as mock_chord,
+            patch(
+                "apps.controle_etl.views"
+                "._cancelar_execucoes_nao_finalizadas_e_purgar_filas"
+            ),
+        ):
             task_identidade_executar_pipeline(id_execucao)
 
         mock_chord.assert_not_called()
@@ -1547,7 +1565,13 @@ class TestTaskIdentidadeExecutarPipeline:
         execucao = self._execucao(fonte="coresso")
         id_execucao = str(execucao.id_execucao)
 
-        with patch("apps.controle_etl.tasks.chord") as mock_chord:
+        with (
+            patch("apps.controle_etl.tasks.chord") as mock_chord,
+            patch(
+                "apps.controle_etl.views"
+                "._cancelar_execucoes_nao_finalizadas_e_purgar_filas"
+            ),
+        ):
             task_identidade_executar_pipeline(id_execucao)
 
         callback = mock_chord.return_value.call_args[0][0]
