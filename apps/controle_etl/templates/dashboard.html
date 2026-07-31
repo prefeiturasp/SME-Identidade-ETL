@@ -176,6 +176,36 @@
       word-break: break-word;
     }
 
+    /* ── Progresso ao vivo (Keycloak / token-ms) ── */
+    .progresso-bloco {
+      margin-top: .6rem;
+      padding-top: .5rem;
+      border-top: 1px dashed #334155;
+    }
+    .progresso-linha {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: .72rem;
+      color: #94a3b8;
+      margin-bottom: .3rem;
+    }
+    .progresso-linha strong { color: #f1f5f9; }
+    .progresso-barra {
+      width: 100%;
+      height: 6px;
+      background: #0f172a;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: .5rem;
+    }
+    .progresso-barra-fill {
+      height: 100%;
+      background: var(--color-running);
+      border-radius: 4px;
+      transition: width .3s;
+    }
+
     /* ── Pill Status ── */
     .pill {
       display: inline-flex;
@@ -348,6 +378,38 @@
           <strong style="color:#f1f5f9">{{ exec.total_carregado|numero_br }}</strong> carregados ·
           <strong style="color:#f87171">{{ exec.total_erros|numero_br }}</strong> erros
         </div>
+
+        {% if exec.progresso %}
+        <div class="progresso-bloco">
+          <div class="progresso-linha">
+            <span><i class="bi bi-key-fill me-1"></i>Keycloak</span>
+            <span>
+              <strong>{{ exec.progresso.kc_carregado|numero_br }}</strong>
+              / {{ exec.progresso.kc_total|numero_br }}
+              ({{ exec.progresso.kc_percentual }}%)
+            </span>
+          </div>
+          <div class="progresso-barra">
+            <div class="progresso-barra-fill" style="width:{{ exec.progresso.kc_percentual }}%"></div>
+          </div>
+          {% if exec.progresso.kc_erro %}
+          <div class="progresso-linha" style="color:#f87171">
+            <span><i class="bi bi-exclamation-triangle-fill me-1"></i>Erros Keycloak</span>
+            <strong>{{ exec.progresso.kc_erro|numero_br }}</strong>
+          </div>
+          {% endif %}
+          <div class="progresso-linha">
+            <span><i class="bi bi-send-fill me-1"></i>Token-ms</span>
+            <strong>{{ exec.progresso.token_enviado|numero_br }}</strong> enviados
+          </div>
+          {% if exec.progresso.token_erro %}
+          <div class="progresso-linha" style="color:#f87171">
+            <span><i class="bi bi-exclamation-triangle-fill me-1"></i>Tentativas c/ erro (token-ms)</span>
+            <strong>{{ exec.progresso.token_erro|numero_br }}</strong>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
     </div>
     {% endfor %}

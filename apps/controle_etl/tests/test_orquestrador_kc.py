@@ -1134,13 +1134,15 @@ class TestProvisionarUsuarioKcMatrizHashes:
         """Hash de token-ms já confirmado não fica pendente.
 
         Mesmo com Keycloak ignorado, se hash_token_ms já bate com o
-        payload atual, não fica pendente.
+        payload atual, não fica pendente. Calculado sobre
+        _payload_token_ms_hash (sem id_execucao) — id_execucao é só
+        metadado de rastreio do envio, não deve afetar o hash.
         """
         from apps.controle_etl.orquestrador_kc import (
-            calcular_hash_conteudo as _hash,
+            _payload_token_ms_hash,
         )
         from apps.controle_etl.orquestrador_kc import (
-            construir_payload_token_ms as _payload_token,
+            calcular_hash_conteudo as _hash,
         )
 
         u = _usuario(cpf="10000000005", rf="")
@@ -1149,13 +1151,38 @@ class TestProvisionarUsuarioKcMatrizHashes:
             hash_extracao=calcular_hash_extracao(u),
             hash_keycloak=self._hash_keycloak_atual(u),
         )
-        controle.hash_token_ms = _hash(_payload_token(u))
+        controle.hash_token_ms = _hash(_payload_token_ms_hash(u))
         controle.save()
 
         admin = MagicMock()
         resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
 
         assert resultado["token_ms_pendente"] is False
+
+    def test_token_ms_pendente_ignora_id_execucao(self) -> None:
+        """hash_token_ms não muda quando só id_execucao muda.
+
+        id_execucao é metadado de rastreio do envio, não dado de
+        negócio do usuário — dois cálculos de hash para o mesmo
+        usuário, em execuções diferentes, devem ser idênticos.
+        """
+        from apps.controle_etl.orquestrador_kc import (
+            _payload_token_ms_hash,
+            calcular_hash_conteudo,
+            construir_payload_token_ms,
+        )
+
+        u = _usuario(cpf="10000000006", rf="")
+        u.id_execucao = "execucao-um"
+        hash_um = calcular_hash_conteudo(_payload_token_ms_hash(u))
+
+        u.id_execucao = "execucao-dois"
+        hash_dois = calcular_hash_conteudo(_payload_token_ms_hash(u))
+
+        assert hash_um == hash_dois
+        # o payload de ENVIO continua trazendo id_execucao
+        assert "id_execucao" in construir_payload_token_ms(u)
+        assert "id_execucao" not in _payload_token_ms_hash(u)
 
     def test_erro_no_keycloak_naopropaga_para_dict_de_retorno(self) -> None:
         """Erro real do Keycloak propaga como exceção.

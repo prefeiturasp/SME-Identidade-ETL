@@ -65,6 +65,81 @@ def _qs_ultima_execucao_por_fonte() -> QuerySet:
     ).order_by("fonte")
 
 
+def _progresso_keycloak_token(execucao: ExecucaoETL) -> dict:
+    """Progresso ao vivo de Keycloak/token-ms para uma execução em curso.
+
+    ``LogEtapaETL.registros_saida`` só é gravado quando a etapa inteira
+    termina — para execuções de grande volume (milhões de registros),
+    isso deixa o dashboard mostrando zero por horas. Este helper calcula
+    progresso real consultando o staging (Keycloak atualiza
+    ``situacao`` por registro, durante o processamento) e
+    ``RastreioTentativa`` (token-ms grava uma linha por carga individual
+    concluída, também durante o processamento) — sem depender de
+    nenhuma etapa ter finalizado.
+
+    Args:
+        execucao: Instância de ExecucaoETL a inspecionar.
+
+    ``token_erro`` conta *tentativas* malsucedidas (RastreioTentativa
+    não identifica o registro de origem, só a execução), não registros
+    únicos — uma tentativa com erro seguida de sucesso no retry soma 1
+    em cada contador; interpretar como "atividade de retry", não como
+    contagem de falhas definitivas.
+
+    Returns:
+        Dicionário com totais de staging pronto/carregado/erro
+        (Keycloak) e tentativas enviado/erro (token-ms).
+    """
+    from apps.staging.models import (  # noqa: PLC0415
+        UsuarioAlunoStaging,
+        UsuarioServidorStaging,
+        UsuarioTerceiroStaging,
+    )
+
+    total_pronto = total_carregado = total_erro_kc = 0
+    for modelo in (
+        UsuarioServidorStaging,
+        UsuarioAlunoStaging,
+        UsuarioTerceiroStaging,
+    ):
+        contagem = (
+            modelo.objects.filter(id_execucao=execucao.id_execucao)
+            .exclude(situacao__in=["extraido"])
+            .values("situacao")
+            .annotate(total=Count("id"))
+        )
+        por_situacao = {c["situacao"]: c["total"] for c in contagem}
+        total_pronto += sum(por_situacao.values())
+        total_carregado += por_situacao.get("carregado", 0) + por_situacao.get(
+            "ignorado", 0
+        )
+        total_erro_kc += por_situacao.get("erro", 0)
+
+    token_sucesso = RastreioTentativa.objects.filter(
+        id_execucao=execucao.id_execucao,
+        nome_tarefa="task_carregar_atributo_token_individual",
+        erro__isnull=True,
+    ).count()
+    token_erro = RastreioTentativa.objects.filter(
+        id_execucao=execucao.id_execucao,
+        nome_tarefa="task_carregar_atributo_token_individual",
+        erro__isnull=False,
+    ).count()
+
+    return {
+        "kc_total": total_pronto,
+        "kc_carregado": total_carregado,
+        "kc_erro": total_erro_kc,
+        "kc_percentual": (
+            round(total_carregado * 100 / total_pronto)
+            if total_pronto
+            else 0
+        ),
+        "token_enviado": token_sucesso,
+        "token_erro": token_erro,
+    }
+
+
 def _aplicar_filtros_execucao(
     qs: QuerySet,
     fonte: str,
@@ -84,6 +159,67 @@ def _aplicar_filtros_execucao(
     return qs
 
 
+_FILAS_TRABALHO = (
+    "etl_extracao",
+    "etl_transformacao",
+    "etl_carga_keycloak",
+    "etl_carga_token_ms",
+)
+
+
+def _cancelar_execucoes_nao_finalizadas_e_purgar_filas(
+    excluir_pk: int | None = None,
+) -> None:
+    """Cancela execuções pendentes/executando e purga as filas de trabalho.
+
+    Cada execução processa essencialmente a base inteira de origem
+    (idempotência via ``ControleProvisionamento`` decide o que pular),
+    então não há valor em ter mais de uma execução ativa ao mesmo
+    tempo — elas competem por trabalho redundante. Não existe hoje
+    como revogar seletivamente só as tasks de uma execução específica
+    (``task_carregar_atributo_token_individual`` é fire-and-forget,
+    sem ``task_id`` persistido), então a purga é da fila inteira —
+    seguro porque o broker do ETL é isolado, não compartilhado com
+    outros projetos. Não toca na fila "celery" (task raiz + sync_rec +
+    limpeza de staging): só é chamado antes de uma nova task raiz ser
+    despachada, então nunca há o que purgar ali ainda.
+
+    Args:
+        excluir_pk: pk de ExecucaoETL a não cancelar (usado quando o
+            chamador já cancelou/está processando essa execução).
+    """
+    from config.celery import app as celery_app  # noqa: PLC0415
+
+    nao_finalizadas = ExecucaoETL.objects.filter(
+        situacao__in=[
+            ExecucaoETL.Situacao.PENDENTE,
+            ExecucaoETL.Situacao.EXECUTANDO,
+        ]
+    )
+    if excluir_pk is not None:
+        nao_finalizadas = nao_finalizadas.exclude(pk=excluir_pk)
+
+    for execucao in nao_finalizadas:
+        if execucao.id_tarefa_celery:
+            celery_app.control.revoke(
+                execucao.id_tarefa_celery, terminate=True
+            )
+        execucao.situacao = ExecucaoETL.Situacao.CANCELADO
+        execucao.finalizado_em = timezone.now()
+        execucao.save(
+            update_fields=["situacao", "finalizado_em", "atualizado_em"]
+        )
+        logger.info(
+            "Execução ETL %s cancelada (substituída por nova execução).",
+            execucao.id_execucao,
+        )
+
+    with celery_app.connection_or_acquire() as conn:
+        channel = conn.channel()
+        for fila in _FILAS_TRABALHO:
+            channel.queue_purge(fila)
+
+
 def _disparar_execucao(
     fonte: str = "todos",
     realm_destino: str = settings.KEYCLOAK_REALM,
@@ -93,7 +229,9 @@ def _disparar_execucao(
     """Cria a ExecucaoETL e dispara o pipeline completo via Celery.
 
     Reaproveitada pelo endpoint de API (`ExecucoesView.post`) e pelo
-    formulário de disparo do dashboard HTML.
+    formulário de disparo do dashboard HTML. Cancela e purga qualquer
+    execução anterior não finalizada antes de disparar — ver
+    `_cancelar_execucoes_nao_finalizadas_e_purgar_filas`.
 
     Args:
         fonte: todos | se1426 | coresso | eol_alunos.
@@ -105,6 +243,8 @@ def _disparar_execucao(
         A ExecucaoETL criada, já com `id_tarefa_celery` preenchido.
     """
     from .tasks import task_identidade_executar_pipeline  # noqa: PLC0415
+
+    _cancelar_execucoes_nao_finalizadas_e_purgar_filas()
 
     execucao = ExecucaoETL.objects.create(
         fonte=fonte,
@@ -241,6 +381,11 @@ class CancelarExecucaoView(APIView):
     `ExecucaoETL` como cancelada. Execuções já finalizadas (sucesso, falha
     ou cancelamento anterior) são rejeitadas com 400, pois revogar uma
     tarefa que já terminou não tem efeito e mascararia o estado real.
+
+    Se a execução cancelada for a mais recente entre as não
+    finalizadas, também cancela qualquer outra execução pendente/em
+    andamento e purga as filas de trabalho — ver
+    `_cancelar_execucoes_nao_finalizadas_e_purgar_filas`.
     """
 
     @extend_schema(
@@ -289,6 +434,19 @@ class CancelarExecucaoView(APIView):
         execucao.save(
             update_fields=["situacao", "finalizado_em", "atualizado_em"]
         )
+
+        e_a_mais_recente = not ExecucaoETL.objects.filter(
+            situacao__in=[
+                ExecucaoETL.Situacao.PENDENTE,
+                ExecucaoETL.Situacao.EXECUTANDO,
+            ],
+            criado_em__gt=execucao.criado_em,
+        ).exists()
+        if e_a_mais_recente:
+            _cancelar_execucoes_nao_finalizadas_e_purgar_filas(
+                excluir_pk=execucao.pk
+            )
+
         logger.info("Execução ETL %s cancelada.", execucao.id_execucao)
         return Response(ExecucaoETLSerializer(execucao).data)
 
@@ -1557,6 +1715,9 @@ class DashboardView(View):
         situacao = request.GET.get("situacao", "")
 
         ultima_por_fonte = list(_qs_ultima_execucao_por_fonte())
+        for exec_fonte in ultima_por_fonte:
+            if exec_fonte.situacao == "executando":
+                exec_fonte.progresso = _progresso_keycloak_token(exec_fonte)
 
         qs_filtrado = _aplicar_filtros_execucao(
             qs=ExecucaoETL.objects.all(),
