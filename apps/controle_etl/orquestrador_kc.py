@@ -258,8 +258,13 @@ def construir_payload_kc(usuario: Any) -> dict[str, Any]:
     }
 
 
-def construir_payload_token_ms(usuario: Any) -> dict[str, Any]:
-    """Constrói o payload de publicação de atributos para o token-ms.
+def _payload_token_ms_hash(usuario: Any) -> dict[str, Any]:
+    """Campos de negócio do payload do token-ms, sem metadado de execução.
+
+    Usado só para calcular ``hash_token_ms`` — ``id_execucao`` muda a
+    cada execução e não deveria disparar reenvio se o dado real do
+    usuário não mudou (mesmo padrão de ``calcular_hash_extracao``, já
+    calculado sobre um dict próprio, sem metadado de execução).
 
     Args:
         usuario: Instância de staging.
@@ -288,6 +293,23 @@ def construir_payload_token_ms(usuario: Any) -> dict[str, Any]:
         "tipo_acesso": getattr(usuario, "tipo_acesso", None),
         "situacao": usuario.situacao,
         "fonte": usuario.fonte,
+    }
+
+
+def construir_payload_token_ms(usuario: Any) -> dict[str, Any]:
+    """Constrói o payload de publicação de atributos para o token-ms.
+
+    Args:
+        usuario: Instância de staging.
+
+    Returns:
+        Dicionário com atributos complementares do usuário, incluindo
+        ``id_execucao`` (metadado de rastreio do lado do token-ms —
+        não entra no cálculo de ``hash_token_ms``, ver
+        ``_payload_token_ms_hash``).
+    """
+    return {
+        **_payload_token_ms_hash(usuario),
         "id_execucao": str(usuario.id_execucao),
     }
 
@@ -773,8 +795,7 @@ def provisionar_usuario_kc(
         controle.erro_sincronizacao = None
         controle.save()
 
-    payload_token = construir_payload_token_ms(usuario)
-    hash_token_atual = calcular_hash_conteudo(payload_token)
+    hash_token_atual = calcular_hash_conteudo(_payload_token_ms_hash(usuario))
     token_ms_pendente = controle.hash_token_ms != hash_token_atual
 
     return {

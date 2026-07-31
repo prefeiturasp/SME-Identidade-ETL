@@ -167,9 +167,11 @@ CELERY_TASK_ROUTES = {
     # Provisionamento no Keycloak — fila própria, desacoplada do
     # token-ms (que roda em paralelo, sem esperar este lote terminar)
     "task_provisionar_identidade_keycloak": {"queue": "etl_carga_keycloak"},
-    # Carga no token-ms — task individual (disparada pelo sucesso do
-    # Keycloak por registro) e task de lote (fallback/reprocessamento
-    # manual), ambas na mesma fila
+    # Carga no token-ms — task de lote (disparada pelo sucesso do
+    # Keycloak, agrupando até _TAMANHO_LOTE_PROVISIONAMENTO usuários
+    # por chamada), mais a individual (mantida como fallback manual)
+    # e a de lote legado (órfã, sem checagem de hash), todas na mesma fila
+    "task_carregar_lote_atributos_token": {"queue": "etl_carga_token_ms"},
     "task_carregar_atributo_token_individual": {"queue": "etl_carga_token_ms"},
     "task_carregar_atributos_token": {"queue": "etl_carga_token_ms"},
     # Controle operacional e limpeza

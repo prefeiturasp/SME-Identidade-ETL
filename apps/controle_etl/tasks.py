@@ -398,6 +398,7 @@ def _provisionar_lote_kc(
     )
 
     provisionados = ignorados = erros = 0
+    itens_token_ms: list[dict] = []
     for usuario, resultado in zip(lote, resultados, strict=False):
         if isinstance(resultado, Exception):
             logger.warning(
@@ -422,22 +423,30 @@ def _provisionar_lote_kc(
             provisionados += 1
 
         # Sucesso (ou ignorado por hash já confirmado) no Keycloak
-        # dispara fire-and-forget a carga individual no token-ms, sem
-        # esperar o restante do lote — só quando o payload do token-ms
-        # mudou desde a última confirmação (3ª checagem independente).
+        # acumula o usuário para a carga em lote do token-ms — só
+        # quando o payload do token-ms mudou desde a última
+        # confirmação (3ª checagem independente).
         if resultado.get("token_ms_pendente"):
-            task_carregar_atributo_token_individual.apply_async(
-                kwargs={
+            itens_token_ms.append(
+                {
                     "modelo_staging": type(usuario).__name__,
                     "staging_pk": usuario.pk,
-                    "id_execucao": id_execucao,
                     "tipo_entidade": "usuario",
                     "sistema_origem": usuario.fonte,
                     "id_origem": resultado["id_origem"],
-                    "realm_destino": execucao.realm_destino,
-                },
-                queue="etl_carga_token_ms",
+                    "kc_user_id": resultado.get("kc_user_id"),
+                }
             )
+
+    if itens_token_ms:
+        task_carregar_lote_atributos_token.apply_async(
+            kwargs={
+                "itens": itens_token_ms,
+                "id_execucao": id_execucao,
+                "realm_destino": execucao.realm_destino,
+            },
+            queue="etl_carga_token_ms",
+        )
 
     return provisionados, ignorados, erros
 
@@ -806,6 +815,7 @@ def task_carregar_atributo_token_individual(
     sistema_origem: str,
     id_origem: str,
     realm_destino: str,
+    kc_user_id: str | None = None,
 ) -> dict:
     """Carrega atributos complementares e perfil de UM registro.
 
@@ -831,6 +841,12 @@ def task_carregar_atributo_token_individual(
         sistema_origem: Fonte do registro (se1426, coresso, eol_alunos).
         id_origem: CPF/RF/matrícula que identifica o registro na fonte.
         realm_destino: Realm Keycloak de destino.
+        kc_user_id: UUID do usuário no Keycloak, já resolvido pelo
+            chamador (``_provisionar_lote_kc`` o obtém ao provisionar
+            no Keycloak, segundos antes de disparar esta task) — evita
+            uma busca HTTP redundante por username. Se ``None`` (ex.:
+            retry de uma task antiga, disparada antes deste parâmetro
+            existir), cai no fallback de resolver via busca.
 
     Returns:
         Dicionário com ``situacao`` (``sucesso``, ``ignorado`` ou
@@ -841,6 +857,7 @@ def task_carregar_atributo_token_individual(
         enviar_perfil,
     )
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        _payload_token_ms_hash,
         calcular_hash_conteudo,
         construir_payload_perfil_token_ms,
         construir_payload_token_ms,
@@ -863,7 +880,7 @@ def task_carregar_atributo_token_individual(
         )
         return {"situacao": "sem_identificador"}
 
-    hash_token_atual = calcular_hash_conteudo(payload_token)
+    hash_token_atual = calcular_hash_conteudo(_payload_token_ms_hash(usuario))
     controle = obter_ou_criar_controle(
         tipo_entidade, sistema_origem, id_origem, realm_destino
     )
@@ -873,12 +890,18 @@ def task_carregar_atributo_token_individual(
 
     inicio = time.monotonic()
     try:
-        admin = obter_admin_keycloak(realm=realm_destino)
-        kc_user_id = resolver_kc_user_id_de_usuario(admin, usuario, {})
         if kc_user_id:
+            kc_user_id_resolvido = kc_user_id
+        else:
+            admin = obter_admin_keycloak(realm=realm_destino)
+            kc_user_id_resolvido = resolver_kc_user_id_de_usuario(
+                admin, usuario, {}
+            )
+
+        if kc_user_id_resolvido:
             payload_perfil = construir_payload_perfil_token_ms(usuario)
             if payload_perfil is not None:
-                enviar_perfil(kc_user_id, payload_perfil)
+                enviar_perfil(kc_user_id_resolvido, payload_perfil)
 
         enviar_lote([payload_token], id_execucao=id_execucao)
 
@@ -898,6 +921,127 @@ def task_carregar_atributo_token_individual(
         _registrar_tentativa(
             id_execucao,
             "task_carregar_atributo_token_individual",
+            self.request.retries + 1,
+            erro=str(exc)[:2000],
+            duracao=time.monotonic() - inicio,
+        )
+        raise self.retry(exc=exc, countdown=atraso) from exc
+
+
+@shared_task(
+    bind=True,
+    name="task_carregar_lote_atributos_token",
+    max_retries=5,
+)
+def task_carregar_lote_atributos_token(
+    self: Any,
+    *,
+    itens: list[dict],
+    id_execucao: str,
+    realm_destino: str,
+) -> dict:
+    """Carrega atributos complementares e perfis de um LOTE de usuários.
+
+    Substitui o disparo fire-and-forget por usuário
+    (``task_carregar_atributo_token_individual``) por um envio
+    agrupado — reduz de até 1 task/chamada HTTP por usuário para 1 a
+    cada ``_TAMANHO_LOTE_PROVISIONAMENTO`` usuários. Preserva a
+    idempotência de ``hash_token_ms`` por usuário: cada item do lote é
+    checado contra seu próprio hash antes de entrar no envio — o hash
+    de cada um só é gravado depois que o POST do lote inteiro confirma
+    sucesso.
+
+    Args:
+        itens: lista de dicts, um por usuário pendente do lote — cada
+            um com ``modelo_staging``, ``staging_pk``, ``tipo_entidade``,
+            ``sistema_origem``, ``id_origem``, ``kc_user_id``.
+        id_execucao: UUID da ExecucaoETL associada.
+        realm_destino: Realm Keycloak/token-ms de destino.
+
+    Returns:
+        Dicionário com ``enviados`` e ``descartados``.
+    """
+    from apps.controle_etl.cliente_token_ms import (  # noqa: PLC0415
+        enviar_lote,
+        enviar_perfil,
+    )
+    from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        _payload_token_ms_hash,
+        calcular_hash_conteudo,
+        construir_payload_perfil_token_ms,
+        construir_payload_token_ms,
+        obter_ou_criar_controle,
+        payload_tem_identificador,
+    )
+
+    inicio = time.monotonic()
+    payloads_envio: list[dict] = []
+    controles_pendentes: list[tuple[Any, str]] = []
+    descartados = 0
+
+    for item in itens:
+        modelo = _resolver_modelo_staging(item["modelo_staging"])
+        usuario = modelo.objects.get(pk=item["staging_pk"])
+
+        payload_token = construir_payload_token_ms(usuario)
+        if not payload_tem_identificador(payload_token):
+            descartados += 1
+            logger.warning(
+                "[%s] task_carregar_lote_atributos_token —"
+                " descartado sem rf/cpf/matricula: %s",
+                id_execucao,
+                payload_token.get("nome"),
+            )
+            continue
+
+        hash_atual = calcular_hash_conteudo(_payload_token_ms_hash(usuario))
+        controle = obter_ou_criar_controle(
+            item["tipo_entidade"],
+            item["sistema_origem"],
+            item["id_origem"],
+            realm_destino,
+        )
+        if controle.hash_token_ms == hash_atual:
+            continue
+
+        kc_user_id = item.get("kc_user_id")
+        if kc_user_id:
+            payload_perfil = construir_payload_perfil_token_ms(usuario)
+            if payload_perfil is not None:
+                enviar_perfil(kc_user_id, payload_perfil)
+
+        payloads_envio.append(payload_token)
+        controles_pendentes.append((controle, hash_atual))
+
+    if not payloads_envio:
+        return {"enviados": 0, "descartados": descartados}
+
+    try:
+        enviar_lote(payloads_envio, id_execucao=id_execucao)
+
+        # Só grava hash_token_ms de cada um DEPOIS do POST confirmar
+        # sucesso — se enviar_lote falhar, nenhum hash é gravado e o
+        # retry reprocessa o lote inteiro.
+        for controle, hash_novo in controles_pendentes:
+            controle.hash_token_ms = hash_novo
+            controle.save(update_fields=["hash_token_ms", "atualizado_em"])
+
+        _registrar_tentativa(
+            id_execucao,
+            "task_carregar_lote_atributos_token",
+            self.request.retries + 1,
+            duracao=time.monotonic() - inicio,
+        )
+        return {
+            "enviados": len(payloads_envio),
+            "descartados": descartados,
+        }
+
+    except Exception as exc:
+        atraso = _calcular_atraso(self.request.retries + 1)
+        _registrar_tentativa(
+            id_execucao,
+            "task_carregar_lote_atributos_token",
             self.request.retries + 1,
             erro=str(exc)[:2000],
             duracao=time.monotonic() - inicio,
@@ -1054,14 +1198,28 @@ def task_identidade_executar_pipeline(
     Executa extração paralela via chord, seguida da cadeia
     de resolução → provisionamento → token → registro operacional.
 
+    Purga as filas de trabalho antes de montar o próprio chord —
+    redundância de segurança contra resíduos de outro processamento
+    (ex.: esta task raiz ficou na fila `celery` por um tempo e só
+    começou a rodar depois de outra execução já ter sido cancelada
+    via API, que também purga; ver
+    `apps.controle_etl.views._cancelar_execucoes_nao_finalizadas_e_purgar_filas`).
+
     Args:
         id_execucao: UUID da ExecucaoETL associada.
         data_referencia: Data ISO opcional para replay.
     """
     from apps.controle_etl.models import ExecucaoETL  # noqa: PLC0415
+    from apps.controle_etl.views import (  # noqa: PLC0415
+        _cancelar_execucoes_nao_finalizadas_e_purgar_filas,
+    )
 
     execucao = ExecucaoETL.objects.get(id_execucao=id_execucao)
     execucao.marcar_executando()
+
+    _cancelar_execucoes_nao_finalizadas_e_purgar_filas(
+        excluir_pk=execucao.pk
+    )
 
     logger.info(
         "[%s] Pipeline de identidade iniciado — fonte=%s realm=%s",
@@ -1093,10 +1251,9 @@ def task_identidade_executar_pipeline(
         )
         return
 
-    # A chain termina no Keycloak — o token-ms é disparado fire-and-
-    # forget por registro, de dentro de _provisionar_lote_kc, sem
-    # bloquear o fechamento da ExecucaoETL (ver
-    # task_carregar_atributo_token_individual).
+    # A chain termina no Keycloak — o token-ms é carregado em lote,
+    # fire-and-forget, de dentro de _provisionar_lote_kc, sem bloquear
+    # o fechamento da ExecucaoETL (ver task_carregar_lote_atributos_token).
     callback = chain(
         task_identidade_resolver_identidade.s(id_execucao=id_execucao),
         task_provisionar_identidade_keycloak.s(id_execucao=id_execucao),
