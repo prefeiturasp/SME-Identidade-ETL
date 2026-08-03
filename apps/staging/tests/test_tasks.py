@@ -230,6 +230,79 @@ class TestDeduplicarIdentidades:
         assert resultado["ignorados"] == 1
         assert resultado["total_deduplicado"] == 2
 
+    def test_deduplica_terceiro_com_mesmo_cpf_na_mesma_fonte(self) -> None:
+        """CoreSSO pode gerar 2 linhas de terceiro p/ a mesma pessoa.
+
+        Reproduz o cenário real observado em QA: PES_PessoaDocumento
+        com mais de 1 registro de CPF para a mesma pessoa fazia o
+        LEFT JOIN de extração retornar 2 linhas idênticas — ambas
+        disputavam a criação simultânea do mesmo usuário no Keycloak
+        (409 User exists). A extração já foi corrigida (ROW_NUMBER),
+        mas a dedup deve seguir cobrindo isso como rede de segurança.
+        """
+        id_execucao = uuid.uuid4()
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=id_execucao,
+            fonte="coresso",
+            cpf="30202700810",
+            rf="",
+            nome="Luciana",
+            situacao="pronto",
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=id_execucao,
+            fonte="coresso",
+            cpf="30202700810",
+            rf="",
+            nome="Luciana",
+            situacao="pronto",
+        )
+
+        resultado = deduplicar_identidades({}, str(id_execucao))
+
+        assert resultado["ignorados"] == 1
+        situacoes = list(
+            UsuarioTerceiroStaging.objects.values_list(
+                "situacao", flat=True
+            )
+        )
+        assert situacoes.count("pronto") == 1
+        assert situacoes.count("ignorado") == 1
+
+    def test_cpf_igual_em_modelos_diferentes_nao_e_deduplicado(self) -> None:
+        """Servidor e Terceiro com o mesmo CPF não competem entre si.
+
+        A dedup roda por modelo — são tipos de vínculo distintos
+        (ex.: servidor efetivo que também é terceirizado em outro
+        contrato), não a mesma linha de staging disputando o mesmo
+        registro de Keycloak.
+        """
+        id_execucao = uuid.uuid4()
+        UsuarioServidorStaging.objects.create(
+            id_execucao=id_execucao,
+            fonte="se1426",
+            cpf="12345678901",
+            rf="1234567",
+            situacao="pronto",
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=id_execucao,
+            fonte="coresso",
+            cpf="12345678901",
+            rf="",
+            situacao="pronto",
+        )
+
+        resultado = deduplicar_identidades({}, str(id_execucao))
+
+        assert resultado["ignorados"] == 0
+        assert (
+            UsuarioServidorStaging.objects.get().situacao == "pronto"
+        )
+        assert (
+            UsuarioTerceiroStaging.objects.get().situacao == "pronto"
+        )
+
 
 @pytest.mark.django_db
 class TestPersistirExtracaoStaging:

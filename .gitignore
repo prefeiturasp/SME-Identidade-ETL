@@ -30,6 +30,7 @@ htmlcov/
 # Env files
 .env
 .env-*
+.env.*
 !.env.example
 
 # IDEs

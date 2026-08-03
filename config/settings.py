@@ -157,26 +157,50 @@ CELERY_WORKER_MAX_TASKS_PER_CHILD = int(
     os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "20")
 )
 
+# Isola um worker/broker compartilhado (ex.: rodando local contra o
+# Redis real de QA) das filas usadas pelos workers reais do Rancher —
+# sem prefixo (padrão), o comportamento de produção não muda.
+_PREFIXO_FILA = os.getenv("ETL_PREFIXO_FILA", "")
+
+
+def _fila(nome: str) -> str:
+    return f"{_PREFIXO_FILA}{nome}"
+
+
 CELERY_TASK_ROUTES = {
     # Extração paralela das fontes
-    "task_identidade_extrair_se1426": {"queue": "etl_extracao"},
-    "task_identidade_extrair_coresso": {"queue": "etl_extracao"},
-    "task_identidade_extrair_eol_alunos": {"queue": "etl_extracao"},
+    "task_identidade_extrair_se1426": {"queue": _fila("etl_extracao")},
+    "task_identidade_extrair_coresso": {"queue": _fila("etl_extracao")},
+    "task_identidade_extrair_eol_alunos": {"queue": _fila("etl_extracao")},
+    # Garante reenvio de clientes com token_ms_pendente=True — roda
+    # como mais uma tarefa de extração do chord (ver
+    # task_reprocessar_pendencias)
+    "task_reprocessar_pendencias": {"queue": _fila("etl_extracao")},
     # Resolução de identidade (merge + dedup + decisão)
-    "task_identidade_resolver_identidade": {"queue": "etl_transformacao"},
+    "task_identidade_resolver_identidade": {
+        "queue": _fila("etl_transformacao")
+    },
     # Provisionamento no Keycloak — fila própria, desacoplada do
     # token-ms (que roda em paralelo, sem esperar este lote terminar)
-    "task_provisionar_identidade_keycloak": {"queue": "etl_carga_keycloak"},
-    # Carga no token-ms — task individual (disparada pelo sucesso do
-    # Keycloak por registro) e task de lote (fallback/reprocessamento
-    # manual), ambas na mesma fila
-    "task_carregar_atributo_token_individual": {"queue": "etl_carga_token_ms"},
-    "task_carregar_atributos_token": {"queue": "etl_carga_token_ms"},
+    "task_provisionar_identidade_keycloak": {
+        "queue": _fila("etl_carga_keycloak")
+    },
+    # Carga no token-ms — task de lote (disparada pelo sucesso do
+    # Keycloak, agrupando até _TAMANHO_LOTE_PROVISIONAMENTO usuários
+    # por chamada), mais a individual (mantida como fallback manual)
+    # e a de lote legado (órfã, sem checagem de hash), todas na mesma fila
+    "task_carregar_lote_atributos_token": {
+        "queue": _fila("etl_carga_token_ms")
+    },
+    "task_carregar_atributo_token_individual": {
+        "queue": _fila("etl_carga_token_ms")
+    },
+    "task_carregar_atributos_token": {"queue": _fila("etl_carga_token_ms")},
     # Controle operacional e limpeza
-    "task_sync_rec_etl": {"queue": "celery"},
-    "task_identidade_limpar_staging": {"queue": "celery"},
+    "task_sync_rec_etl": {"queue": _fila("celery")},
+    "task_identidade_limpar_staging": {"queue": _fila("celery")},
     # Orquestrador do pipeline completo
-    "task_identidade_executar_pipeline": {"queue": "celery"},
+    "task_identidade_executar_pipeline": {"queue": _fila("celery")},
 }
 
 # ---------------------------------------------------------------------------

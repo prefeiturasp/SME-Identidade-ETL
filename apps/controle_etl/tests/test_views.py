@@ -84,10 +84,14 @@ class TestExecucoesView:
         self,
         cliente: APIClient,
     ) -> None:
-        with patch(
-            "apps.controle_etl.tasks"
-            ".task_identidade_executar_pipeline.apply_async"
-        ) as mock_apply_async:
+        with (
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_identidade_executar_pipeline.apply_async"
+            ) as mock_apply_async,
+            patch("config.celery.app.control.revoke"),
+            patch("config.celery.app.connection_or_acquire"),
+        ):
             mock_apply_async.return_value.id = "celery-task-id-abc"
             resp = cliente.post(
                 self.URL,
@@ -106,14 +110,50 @@ class TestExecucoesView:
         self,
         cliente: APIClient,
     ) -> None:
-        with patch(
-            "apps.controle_etl.tasks"
-            ".task_identidade_executar_pipeline.apply_async"
-        ) as mock_apply_async:
+        with (
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_identidade_executar_pipeline.apply_async"
+            ) as mock_apply_async,
+            patch("config.celery.app.control.revoke"),
+            patch("config.celery.app.connection_or_acquire"),
+        ):
             mock_apply_async.return_value.id = "abc"
             resp = cliente.post(self.URL, {}, format="json")
         assert resp.status_code == status.HTTP_201_CREATED
         assert resp.json()["fonte"] == "todos"
+
+    def test_criar_execucao_cancela_execucao_pendente_anterior(
+        self,
+        cliente: APIClient,
+    ) -> None:
+        anterior = ExecucaoETL.objects.create(
+            fonte="coresso",
+            situacao="executando",
+            id_tarefa_celery="task-antiga",
+        )
+        with (
+            patch(
+                "apps.controle_etl.tasks"
+                ".task_identidade_executar_pipeline.apply_async"
+            ) as mock_apply_async,
+            patch(
+                "config.celery.app.control.revoke"
+            ) as mock_revoke,
+            patch(
+                "config.celery.app.connection_or_acquire"
+            ) as mock_conn,
+        ):
+            mock_apply_async.return_value.id = "nova-task"
+            resp = cliente.post(
+                self.URL, {"fonte": "coresso"}, format="json"
+            )
+
+        assert resp.status_code == status.HTTP_201_CREATED
+        mock_revoke.assert_called_once_with("task-antiga", terminate=True)
+        mock_conn.assert_called_once()
+        anterior.refresh_from_db()
+        assert anterior.situacao == "cancelado"
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +184,10 @@ class TestDetalheExecucaoView:
 class TestCancelarExecucaoView:
     def test_cancela_execucao_pendente(self, cliente: APIClient) -> None:
         execucao = ExecucaoETL.objects.create(situacao="pendente")
-        with patch("config.celery.app.control.revoke"):
+        with (
+            patch("config.celery.app.control.revoke"),
+            patch("config.celery.app.connection_or_acquire"),
+        ):
             resp = cliente.post(
                 f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
             )
@@ -155,7 +198,10 @@ class TestCancelarExecucaoView:
         execucao = ExecucaoETL.objects.create(situacao="executando")
         execucao.id_tarefa_celery = "some-task-id"
         execucao.save(update_fields=["id_tarefa_celery"])
-        with patch("config.celery.app.control.revoke") as mock_revoke:
+        with (
+            patch("config.celery.app.control.revoke") as mock_revoke,
+            patch("config.celery.app.connection_or_acquire"),
+        ):
             resp = cliente.post(
                 f"/identidade-etl/api/v1/etl/execucoes/{execucao.pk}/cancelar/"
             )
@@ -175,6 +221,50 @@ class TestCancelarExecucaoView:
         base = "/identidade-etl/api/v1/etl/execucoes"
         resp = cliente.post(f"{base}/99999/cancelar/")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_cancelar_a_mais_recente_tambem_cancela_anterior(
+        self,
+        cliente: APIClient,
+    ) -> None:
+        mais_antiga = ExecucaoETL.objects.create(
+            situacao="pendente", id_tarefa_celery="task-antiga"
+        )
+        mais_recente = ExecucaoETL.objects.create(situacao="executando")
+        base = "/identidade-etl/api/v1/etl/execucoes"
+        with (
+            patch("config.celery.app.control.revoke") as mock_revoke,
+            patch(
+                "config.celery.app.connection_or_acquire"
+            ) as mock_conn,
+        ):
+            resp = cliente.post(f"{base}/{mais_recente.pk}/cancelar/")
+
+        assert resp.status_code == status.HTTP_200_OK
+        mock_revoke.assert_called_once_with("task-antiga", terminate=True)
+        mock_conn.assert_called_once()
+        mais_antiga.refresh_from_db()
+        assert mais_antiga.situacao == "cancelado"
+
+    def test_cancelar_execucao_antiga_nao_afeta_mais_recente(
+        self,
+        cliente: APIClient,
+    ) -> None:
+        mais_antiga = ExecucaoETL.objects.create(situacao="pendente")
+        ExecucaoETL.objects.create(
+            situacao="executando", id_tarefa_celery="task-recente"
+        )
+        base = "/identidade-etl/api/v1/etl/execucoes"
+        with (
+            patch("config.celery.app.control.revoke") as mock_revoke,
+            patch(
+                "config.celery.app.connection_or_acquire"
+            ) as mock_conn,
+        ):
+            resp = cliente.post(f"{base}/{mais_antiga.pk}/cancelar/")
+
+        assert resp.status_code == status.HTTP_200_OK
+        mock_revoke.assert_not_called()
+        mock_conn.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +671,44 @@ class TestDashboardView:
         resp = cliente_anonimo.get(self.URL + "?fonte=se1426")
         assert resp.status_code == status.HTTP_200_OK
 
+    def test_resumo_geral_soma_todas_execucoes_e_controle_provisionamento(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
+        """Resumo geral agrega histórico completo, não só a execução atual."""
+        from apps.controle_etl.models import ControleProvisionamento
+
+        ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso", total_extraido=100
+        )
+        ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso", total_extraido=50
+        )
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem="coresso",
+            id_origem="11111111111",
+            hash_keycloak="qualquer",
+            hash_token_ms="qualquer",
+        )
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem="coresso",
+            id_origem="22222222222",
+            hash_keycloak="qualquer",
+            hash_token_ms=None,
+        )
+
+        resp = cliente_anonimo.get(self.URL)
+
+        assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "Resumo geral por fonte" in conteudo
+        # 100 + 50 = 150 lidos, 2 no Keycloak, 1 no token-ms
+        assert "150</strong>" in conteudo
+        assert "2</strong>" in conteudo
+        assert "1</strong>" in conteudo
+
     def test_filtro_por_datas_e_situacao(
         self,
         cliente_anonimo: APIClient,
@@ -592,6 +720,109 @@ class TestDashboardView:
         )
         assert resp.status_code == status.HTTP_200_OK
         assert b"se1426" in resp.content
+
+    def test_execucao_em_andamento_mostra_progresso_keycloak_e_token(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = ExecucaoETL.objects.create(
+            fonte="coresso", situacao="executando"
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="11111111111",
+            situacao="carregado",
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="22222222222",
+            situacao="pronto",
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="33333333333",
+            situacao="erro",
+        )
+        RastreioTentativa.objects.create(
+            id_execucao=execucao.id_execucao,
+            nome_tarefa="task_carregar_lote_atributos_token",
+            numero_tentativa=1,
+        )
+
+        resp = cliente_anonimo.get(self.URL)
+
+        assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "progresso-bloco" in conteudo
+        # 1 carregado de 3 registros não-"extraido" = 33%
+        assert "33%" in conteudo
+        assert "Erros Keycloak" in conteudo
+        assert "1</strong> lotes enviados" in conteudo
+        assert "Lotes c/ erro" not in conteudo
+
+    def test_progresso_ignora_registros_ainda_nao_transformados(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = ExecucaoETL.objects.create(
+            fonte="coresso", situacao="executando"
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="11111111111",
+            situacao="extraido",
+        )
+
+        resp = cliente_anonimo.get(self.URL)
+
+        assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "progresso-bloco" in conteudo
+        # kc_total=0 porque o único registro está em "extraido", que
+        # não entra no cálculo (só situações pós-transformar_staging)
+        assert "<strong>0</strong> / 0" in conteudo
+
+    def test_execucao_finalizada_tambem_mostra_progresso_e_token(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
+        """Resumo do token-ms deve aparecer mesmo após a execução terminar.
+
+        O card final já mostra carregados/erros do Keycloak
+        independente da situação — o token-ms deve acompanhar, não
+        ficar restrito à janela em que a execução está "executando".
+        """
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso"
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="11111111111",
+            situacao="carregado",
+        )
+        RastreioTentativa.objects.create(
+            id_execucao=execucao.id_execucao,
+            nome_tarefa="task_carregar_lote_atributos_token",
+            numero_tentativa=1,
+        )
+
+        resp = cliente_anonimo.get(self.URL)
+
+        assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "progresso-bloco" in conteudo
+        assert "1</strong> lotes enviados" in conteudo
 
 
 @pytest.mark.django_db

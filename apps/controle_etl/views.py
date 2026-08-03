@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from django.conf import settings
-from django.db.models import Count, OuterRef, QuerySet, Subquery, Sum
+from django.db.models import Count, OuterRef, Q, QuerySet, Subquery, Sum
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.utils import timezone
@@ -65,6 +65,130 @@ def _qs_ultima_execucao_por_fonte() -> QuerySet:
     ).order_by("fonte")
 
 
+def _progresso_keycloak_token(execucao: ExecucaoETL) -> dict:
+    """Progresso ao vivo de Keycloak/token-ms para uma execução em curso.
+
+    ``LogEtapaETL.registros_saida`` só é gravado quando a etapa inteira
+    termina — para execuções de grande volume (milhões de registros),
+    isso deixa o dashboard mostrando zero por horas. Este helper calcula
+    progresso real consultando o staging (Keycloak atualiza
+    ``situacao`` por registro, durante o processamento) e
+    ``RastreioTentativa`` (token-ms grava uma linha por LOTE concluído
+    — ver ``task_carregar_lote_atributos_token`` — não por usuário),
+    sem depender de nenhuma etapa ter finalizado.
+
+    Args:
+        execucao: Instância de ExecucaoETL a inspecionar.
+
+    ``token_lotes_*`` conta lotes (chamadas da task), não usuários —
+    cada lote agrupa até ``_TAMANHO_LOTE_PROVISIONAMENTO`` usuários
+    numa única tentativa; um lote com erro é reprocessado por inteiro
+    no retry, então não há contagem de usuários únicos aqui.
+
+    Returns:
+        Dicionário com totais de staging pronto/carregado/erro
+        (Keycloak) e lotes enviados/erro (token-ms).
+    """
+    from apps.staging.models import (  # noqa: PLC0415
+        UsuarioAlunoStaging,
+        UsuarioServidorStaging,
+        UsuarioTerceiroStaging,
+    )
+
+    total_pronto = total_carregado = total_erro_kc = 0
+    for modelo in (
+        UsuarioServidorStaging,
+        UsuarioAlunoStaging,
+        UsuarioTerceiroStaging,
+    ):
+        contagem = (
+            modelo.objects.filter(id_execucao=execucao.id_execucao)
+            .exclude(situacao__in=["extraido"])
+            .values("situacao")
+            .annotate(total=Count("id"))
+        )
+        por_situacao = {c["situacao"]: c["total"] for c in contagem}
+        total_pronto += sum(por_situacao.values())
+        total_carregado += por_situacao.get("carregado", 0) + por_situacao.get(
+            "ignorado", 0
+        )
+        total_erro_kc += por_situacao.get("erro", 0)
+
+    token_lotes_sucesso = RastreioTentativa.objects.filter(
+        id_execucao=execucao.id_execucao,
+        nome_tarefa="task_carregar_lote_atributos_token",
+        erro__isnull=True,
+    ).count()
+    token_lotes_erro = RastreioTentativa.objects.filter(
+        id_execucao=execucao.id_execucao,
+        nome_tarefa="task_carregar_lote_atributos_token",
+        erro__isnull=False,
+    ).count()
+
+    return {
+        "kc_total": total_pronto,
+        "kc_carregado": total_carregado,
+        "kc_erro": total_erro_kc,
+        "kc_percentual": (
+            round(total_carregado * 100 / total_pronto)
+            if total_pronto
+            else 0
+        ),
+        "token_lotes_enviados": token_lotes_sucesso,
+        "token_lotes_erro": token_lotes_erro,
+    }
+
+
+def _resumo_geral_por_fonte() -> list[dict]:
+    """Totais acumulados por fonte, somando TODAS as execuções.
+
+    Diferente de ``_progresso_keycloak_token`` (progresso ao vivo de
+    UMA execução), isto mostra o estado cumulativo do pipeline: quanto
+    já foi lido/enviado no total, independente de quando — staging é
+    limpo periodicamente (``task_identidade_limpar_staging``), então
+    a única fonte confiável para "quanto já foi ao Keycloak/token-ms
+    no total" é ``ControleProvisionamento`` (por cliente, não por
+    execução): um hash preenchido significa que aquele cliente já
+    passou por aquele estágio em algum momento, mesmo que o staging
+    daquela execução já tenha sido removido.
+
+    Returns:
+        Lista de dicts, um por fonte (``se1426``, ``coresso``,
+        ``eol_alunos``), com ``lidos`` (soma histórica de
+        ``ExecucaoETL.total_extraido``), ``keycloak`` e ``token_ms``
+        (contagem de ``ControleProvisionamento`` com hash preenchido).
+    """
+    lidos_por_fonte = dict(
+        ExecucaoETL.objects.exclude(fonte="todos")
+        .values("fonte")
+        .annotate(total=Sum("total_extraido"))
+        .values_list("fonte", "total")
+    )
+
+    contagem_hash = (
+        ControleProvisionamento.objects.exclude(hash_keycloak="")
+        .values("sistema_origem")
+        .annotate(
+            keycloak=Count("id"),
+            token_ms=Count("id", filter=Q(hash_token_ms__isnull=False)),
+        )
+    )
+    por_sistema = {c["sistema_origem"]: c for c in contagem_hash}
+
+    resumo = []
+    for fonte in ("se1426", "coresso", "eol_alunos"):
+        dados_hash = por_sistema.get(fonte, {"keycloak": 0, "token_ms": 0})
+        resumo.append(
+            {
+                "fonte": fonte,
+                "lidos": lidos_por_fonte.get(fonte, 0) or 0,
+                "keycloak": dados_hash["keycloak"],
+                "token_ms": dados_hash["token_ms"],
+            }
+        )
+    return resumo
+
+
 def _aplicar_filtros_execucao(
     qs: QuerySet,
     fonte: str,
@@ -84,6 +208,67 @@ def _aplicar_filtros_execucao(
     return qs
 
 
+_FILAS_TRABALHO = (
+    "etl_extracao",
+    "etl_transformacao",
+    "etl_carga_keycloak",
+    "etl_carga_token_ms",
+)
+
+
+def _cancelar_execucoes_nao_finalizadas_e_purgar_filas(
+    excluir_pk: int | None = None,
+) -> None:
+    """Cancela execuções pendentes/executando e purga as filas de trabalho.
+
+    Cada execução processa essencialmente a base inteira de origem
+    (idempotência via ``ControleProvisionamento`` decide o que pular),
+    então não há valor em ter mais de uma execução ativa ao mesmo
+    tempo — elas competem por trabalho redundante. Não existe hoje
+    como revogar seletivamente só as tasks de uma execução específica
+    (``task_carregar_atributo_token_individual`` é fire-and-forget,
+    sem ``task_id`` persistido), então a purga é da fila inteira —
+    seguro porque o broker do ETL é isolado, não compartilhado com
+    outros projetos. Não toca na fila "celery" (task raiz + sync_rec +
+    limpeza de staging): só é chamado antes de uma nova task raiz ser
+    despachada, então nunca há o que purgar ali ainda.
+
+    Args:
+        excluir_pk: pk de ExecucaoETL a não cancelar (usado quando o
+            chamador já cancelou/está processando essa execução).
+    """
+    from config.celery import app as celery_app  # noqa: PLC0415
+
+    nao_finalizadas = ExecucaoETL.objects.filter(
+        situacao__in=[
+            ExecucaoETL.Situacao.PENDENTE,
+            ExecucaoETL.Situacao.EXECUTANDO,
+        ]
+    )
+    if excluir_pk is not None:
+        nao_finalizadas = nao_finalizadas.exclude(pk=excluir_pk)
+
+    for execucao in nao_finalizadas:
+        if execucao.id_tarefa_celery:
+            celery_app.control.revoke(
+                execucao.id_tarefa_celery, terminate=True
+            )
+        execucao.situacao = ExecucaoETL.Situacao.CANCELADO
+        execucao.finalizado_em = timezone.now()
+        execucao.save(
+            update_fields=["situacao", "finalizado_em", "atualizado_em"]
+        )
+        logger.info(
+            "Execução ETL %s cancelada (substituída por nova execução).",
+            execucao.id_execucao,
+        )
+
+    with celery_app.connection_or_acquire() as conn:
+        channel = conn.channel()
+        for fila in _FILAS_TRABALHO:
+            channel.queue_purge(fila)
+
+
 def _disparar_execucao(
     fonte: str = "todos",
     realm_destino: str = settings.KEYCLOAK_REALM,
@@ -93,7 +278,9 @@ def _disparar_execucao(
     """Cria a ExecucaoETL e dispara o pipeline completo via Celery.
 
     Reaproveitada pelo endpoint de API (`ExecucoesView.post`) e pelo
-    formulário de disparo do dashboard HTML.
+    formulário de disparo do dashboard HTML. Cancela e purga qualquer
+    execução anterior não finalizada antes de disparar — ver
+    `_cancelar_execucoes_nao_finalizadas_e_purgar_filas`.
 
     Args:
         fonte: todos | se1426 | coresso | eol_alunos.
@@ -105,6 +292,8 @@ def _disparar_execucao(
         A ExecucaoETL criada, já com `id_tarefa_celery` preenchido.
     """
     from .tasks import task_identidade_executar_pipeline  # noqa: PLC0415
+
+    _cancelar_execucoes_nao_finalizadas_e_purgar_filas()
 
     execucao = ExecucaoETL.objects.create(
         fonte=fonte,
@@ -233,6 +422,99 @@ class DetalheExecucaoView(APIView):
         return Response(ExecucaoETLSerializer(execucao).data)
 
 
+def _padrao_erro(detalhe_erro: str) -> str:
+    """Reduz um `detalhe_erro` bruto a um padrão agrupável.
+
+    Erros do Keycloak trazem o corpo JSON de resposta (ex.: `400:
+    {"field":"email","errorMessage":"error-invalid-email",...}`) — o
+    valor do campo ``params`` é único por registro (contém o dado
+    ofensor) e quebraria qualquer agrupamento se usado como está.
+    Mantém só o código HTTP + ``field``/``errorMessage``, descartando
+    ``params``.
+    """
+    match = re.match(r"^(\d+):\s*(.*)$", detalhe_erro, re.DOTALL)
+    codigo, corpo = (match.group(1), match.group(2)) if match else (None, detalhe_erro)
+    campo = re.search(r'"field"\s*:\s*"([^"]*)"', corpo)
+    mensagem = re.search(r'"errorMessage"\s*:\s*"([^"]*)"', corpo)
+    if campo or mensagem:
+        partes = [p for p in (campo and campo.group(1), mensagem and mensagem.group(1)) if p]
+        resumo = " / ".join(partes)
+    else:
+        resumo = corpo.strip()[:120]
+    return f"{codigo}: {resumo}" if codigo else resumo
+
+
+@extend_schema(tags=["Execuções"])
+class ResumoErrosExecucaoView(APIView):
+    """Agrupa os erros de staging de uma execução por padrão de causa.
+
+    `detalhe_erro` é gravado por registro (staging), com o corpo bruto
+    da resposta de erro do Keycloak/token-ms — inclui dados variáveis
+    por usuário (ex.: o e-mail ofensor), o que impede agrupar direto
+    por igualdade de string. Reduz cada erro a um padrão comum (código
+    HTTP + campo/mensagem) via `_padrao_erro` antes de contar, para dar
+    uma visão agregada de "quantos erros são do mesmo motivo".
+    """
+
+    @extend_schema(
+        summary="Resumo de erros de uma execução",
+        description=(
+            "Agrupa os registros de staging em situação 'erro' da "
+            "execução `pk` por padrão de causa (código HTTP + campo, "
+            "quando identificável), com contagem e um exemplo de "
+            "registro por grupo."
+        ),
+        responses={200: None, 404: None},
+    )
+    def get(self, request: Request, pk: int) -> Response:
+        """Retorna a contagem de erros agrupados por padrão de causa."""
+        from apps.staging.models import (  # noqa: PLC0415
+            UsuarioAlunoStaging,
+            UsuarioServidorStaging,
+            UsuarioTerceiroStaging,
+        )
+
+        try:
+            execucao = ExecucaoETL.objects.get(pk=pk)
+        except ExecucaoETL.DoesNotExist:
+            return Response(
+                {"detalhe": "Execução não encontrada."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        grupos: dict[str, dict[str, Any]] = {}
+        for modelo in (
+            UsuarioServidorStaging,
+            UsuarioAlunoStaging,
+            UsuarioTerceiroStaging,
+        ):
+            qs = modelo.objects.filter(
+                id_execucao=execucao.id_execucao,
+                situacao="erro",
+            ).exclude(detalhe_erro__isnull=True)
+            for detalhe_erro, cpf, rf in qs.values_list(
+                "detalhe_erro", "cpf", "rf"
+            ):
+                padrao = _padrao_erro(detalhe_erro)
+                grupo = grupos.setdefault(
+                    padrao,
+                    {"total": 0, "exemplo": {"cpf": cpf, "rf": rf}},
+                )
+                grupo["total"] += 1
+
+        resumo = sorted(
+            (
+                {"padrao": padrao, **dados}
+                for padrao, dados in grupos.items()
+            ),
+            key=lambda item: item["total"],
+            reverse=True,
+        )
+        return Response(
+            {"id_execucao": str(execucao.id_execucao), "grupos": resumo}
+        )
+
+
 @extend_schema(tags=["Execuções"])
 class CancelarExecucaoView(APIView):
     """Cancela uma execução pendente ou em andamento.
@@ -241,6 +523,11 @@ class CancelarExecucaoView(APIView):
     `ExecucaoETL` como cancelada. Execuções já finalizadas (sucesso, falha
     ou cancelamento anterior) são rejeitadas com 400, pois revogar uma
     tarefa que já terminou não tem efeito e mascararia o estado real.
+
+    Se a execução cancelada for a mais recente entre as não
+    finalizadas, também cancela qualquer outra execução pendente/em
+    andamento e purga as filas de trabalho — ver
+    `_cancelar_execucoes_nao_finalizadas_e_purgar_filas`.
     """
 
     @extend_schema(
@@ -289,6 +576,19 @@ class CancelarExecucaoView(APIView):
         execucao.save(
             update_fields=["situacao", "finalizado_em", "atualizado_em"]
         )
+
+        e_a_mais_recente = not ExecucaoETL.objects.filter(
+            situacao__in=[
+                ExecucaoETL.Situacao.PENDENTE,
+                ExecucaoETL.Situacao.EXECUTANDO,
+            ],
+            criado_em__gt=execucao.criado_em,
+        ).exists()
+        if e_a_mais_recente:
+            _cancelar_execucoes_nao_finalizadas_e_purgar_filas(
+                excluir_pk=execucao.pk
+            )
+
         logger.info("Execução ETL %s cancelada.", execucao.id_execucao)
         return Response(ExecucaoETLSerializer(execucao).data)
 
@@ -1557,6 +1857,14 @@ class DashboardView(View):
         situacao = request.GET.get("situacao", "")
 
         ultima_por_fonte = list(_qs_ultima_execucao_por_fonte())
+        for exec_fonte in ultima_por_fonte:
+            # Calculado para qualquer situação, não só "executando": os
+            # dados de staging/RastreioTentativa continuam existindo
+            # após a execução terminar, e o resumo final (carregados/
+            # erros do Keycloak) já aparece no card mesmo finalizado —
+            # o token-ms deve aparecer junto, não só durante o
+            # processamento.
+            exec_fonte.progresso = _progresso_keycloak_token(exec_fonte)
 
         qs_filtrado = _aplicar_filtros_execucao(
             qs=ExecucaoETL.objects.all(),
@@ -1586,6 +1894,7 @@ class DashboardView(View):
                 "ultimas_10": ultimas_10,
                 "fontes": _FONTES_VALIDAS,
                 "situacoes": situacoes_disponiveis,
+                "resumo_geral": _resumo_geral_por_fonte(),
                 "filtros": {
                     "fonte": fonte,
                     "data_inicio": data_inicio,
