@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from celery import shared_task
+from django.db.models import Model
 
 logger = logging.getLogger("etl_identidade")
 
@@ -236,11 +237,9 @@ def _resolver_vencedores(registros: Iterable[dict]) -> set[int]:
 
 
 def _marcar_duplicatas(
-    registros: Iterable[dict], vencedores_ids: set[int]
+    modelo: type[Model], registros: Iterable[dict], vencedores_ids: set[int]
 ) -> int:
     """Marca como 'ignorado', em lotes, todo registro fora dos vencedores."""
-    from apps.staging.models import UsuarioServidorStaging  # noqa: PLC0415
-
     ignorados = 0
     lote: list[int] = []
     for registro in registros:
@@ -252,40 +251,28 @@ def _marcar_duplicatas(
             lote.append(registro["id"])
             ignorados += 1
         if len(lote) >= _TAMANHO_LOTE_DEDUP:
-            UsuarioServidorStaging.objects.filter(id__in=lote).update(
-                situacao="ignorado"
-            )
+            modelo.objects.filter(id__in=lote).update(situacao="ignorado")
             lote = []
 
     if lote:
-        UsuarioServidorStaging.objects.filter(id__in=lote).update(
-            situacao="ignorado"
-        )
+        modelo.objects.filter(id__in=lote).update(situacao="ignorado")
     return ignorados
 
 
-@shared_task(name="staging.tasks.deduplicar_identidades")
-def deduplicar_identidades(
-    resultado_transform: dict, id_execucao: str
-) -> dict:
-    """Deduplica servidores por CPF/RF entre fontes distintas.
-
-    Mantém o registro de maior prioridade de fonte (se1426 > coresso)
-    e marca duplicatas como 'ignorado'. Processa em streaming
-    (``.iterator()`` + valores leves) para suportar execuções com
-    milhões de registros sem carregar tudo em memória de uma vez —
-    ver histórico de OOM em execuções de grande volume do CoreSSO.
+def _deduplicar_modelo(
+    modelo: type[Model], id_execucao: str
+) -> tuple[int, int]:
+    """Deduplica um único modelo de staging por CPF/RF.
 
     Args:
-        resultado_transform: Resultado da task transformar_staging.
+        modelo: Model de staging (UsuarioServidorStaging,
+            UsuarioAlunoStaging ou UsuarioTerceiroStaging).
         id_execucao: UUID da ExecucaoETL associada.
 
     Returns:
-        Dicionário com totais de deduplicação.
+        Tupla ``(total, ignorados)``.
     """
-    from apps.staging.models import UsuarioServidorStaging  # noqa: PLC0415
-
-    base_qs = UsuarioServidorStaging.objects.filter(
+    base_qs = modelo.objects.filter(
         id_execucao=id_execucao, situacao="pronto"
     ).order_by("id")
 
@@ -297,20 +284,67 @@ def deduplicar_identidades(
         )
     )
     ignorados = _marcar_duplicatas(
+        modelo,
         base_qs.values("id", "cpf", "rf").iterator(
             chunk_size=_TAMANHO_LOTE_DEDUP
         ),
         vencedores_ids,
     )
-    total_deduplicado = total - ignorados
+    return total, ignorados
+
+
+@shared_task(name="staging.tasks.deduplicar_identidades")
+def deduplicar_identidades(
+    resultado_transform: dict, id_execucao: str
+) -> dict:
+    """Deduplica identidades por CPF/RF, um modelo de staging por vez.
+
+    Mantém o registro de maior prioridade de fonte (se1426 > coresso)
+    quando o mesmo CPF/RF aparece mais de uma vez no MESMO modelo de
+    staging — inclui duplicatas dentro da própria fonte (ex.: CoreSSO
+    com mais de um documento de CPF cadastrado para a mesma pessoa),
+    não só entre fontes distintas. Roda separadamente por modelo
+    (servidor/aluno/terceiro): CPFs coincidentes entre modelos
+    diferentes não são deduplicados aqui — são tipos de vínculo
+    distintos, não a mesma linha disputando o mesmo registro.
+
+    Processa em streaming (``.iterator()`` + valores leves) para
+    suportar execuções com milhões de registros sem carregar tudo em
+    memória de uma vez — ver histórico de OOM em execuções de grande
+    volume do CoreSSO.
+
+    Args:
+        resultado_transform: Resultado da task transformar_staging.
+        id_execucao: UUID da ExecucaoETL associada.
+
+    Returns:
+        Dicionário com totais de deduplicação.
+    """
+    from apps.staging.models import (  # noqa: PLC0415
+        UsuarioAlunoStaging,
+        UsuarioServidorStaging,
+        UsuarioTerceiroStaging,
+    )
+
+    total_geral = ignorados_geral = 0
+    for modelo in (
+        UsuarioServidorStaging,
+        UsuarioAlunoStaging,
+        UsuarioTerceiroStaging,
+    ):
+        total, ignorados = _deduplicar_modelo(modelo, id_execucao)
+        total_geral += total
+        ignorados_geral += ignorados
+
+    total_deduplicado = total_geral - ignorados_geral
 
     logger.info(
         "[%s] deduplicar_identidades — %d ignorados",
         id_execucao,
-        ignorados,
+        ignorados_geral,
     )
     return {
-        "ignorados": ignorados,
+        "ignorados": ignorados_geral,
         "total_deduplicado": total_deduplicado,
         **resultado_transform,
     }

@@ -671,6 +671,44 @@ class TestDashboardView:
         resp = cliente_anonimo.get(self.URL + "?fonte=se1426")
         assert resp.status_code == status.HTTP_200_OK
 
+    def test_resumo_geral_soma_todas_execucoes_e_controle_provisionamento(
+        self,
+        cliente_anonimo: APIClient,
+    ) -> None:
+        """Resumo geral agrega histórico completo, não só a execução atual."""
+        from apps.controle_etl.models import ControleProvisionamento
+
+        ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso", total_extraido=100
+        )
+        ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso", total_extraido=50
+        )
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem="coresso",
+            id_origem="11111111111",
+            hash_keycloak="qualquer",
+            hash_token_ms="qualquer",
+        )
+        ControleProvisionamento.objects.create(
+            tipo_entidade=ControleProvisionamento.TipoEntidade.USUARIO,
+            sistema_origem="coresso",
+            id_origem="22222222222",
+            hash_keycloak="qualquer",
+            hash_token_ms=None,
+        )
+
+        resp = cliente_anonimo.get(self.URL)
+
+        assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "Resumo geral por fonte" in conteudo
+        # 100 + 50 = 150 lidos, 2 no Keycloak, 1 no token-ms
+        assert "150</strong>" in conteudo
+        assert "2</strong>" in conteudo
+        assert "1</strong>" in conteudo
+
     def test_filtro_por_datas_e_situacao(
         self,
         cliente_anonimo: APIClient,
@@ -712,7 +750,7 @@ class TestDashboardView:
         )
         RastreioTentativa.objects.create(
             id_execucao=execucao.id_execucao,
-            nome_tarefa="task_carregar_atributo_token_individual",
+            nome_tarefa="task_carregar_lote_atributos_token",
             numero_tentativa=1,
         )
 
@@ -724,7 +762,8 @@ class TestDashboardView:
         # 1 carregado de 3 registros não-"extraido" = 33%
         assert "33%" in conteudo
         assert "Erros Keycloak" in conteudo
-        assert "Tentativas c/ erro" not in conteudo
+        assert "1</strong> lotes enviados" in conteudo
+        assert "Lotes c/ erro" not in conteudo
 
     def test_progresso_ignora_registros_ainda_nao_transformados(
         self,
@@ -751,13 +790,39 @@ class TestDashboardView:
         # não entra no cálculo (só situações pós-transformar_staging)
         assert "<strong>0</strong> / 0" in conteudo
 
-    def test_execucao_finalizada_nao_calcula_progresso(
+    def test_execucao_finalizada_tambem_mostra_progresso_e_token(
         self,
         cliente_anonimo: APIClient,
     ) -> None:
-        ExecucaoETL.objects.create(fonte="coresso", situacao="sucesso")
+        """Resumo do token-ms deve aparecer mesmo após a execução terminar.
+
+        O card final já mostra carregados/erros do Keycloak
+        independente da situação — o token-ms deve acompanhar, não
+        ficar restrito à janela em que a execução está "executando".
+        """
+        from apps.staging.models import UsuarioTerceiroStaging
+
+        execucao = ExecucaoETL.objects.create(
+            fonte="coresso", situacao="sucesso"
+        )
+        UsuarioTerceiroStaging.objects.create(
+            id_execucao=execucao.id_execucao,
+            fonte="coresso",
+            cpf="11111111111",
+            situacao="carregado",
+        )
+        RastreioTentativa.objects.create(
+            id_execucao=execucao.id_execucao,
+            nome_tarefa="task_carregar_lote_atributos_token",
+            numero_tentativa=1,
+        )
+
         resp = cliente_anonimo.get(self.URL)
+
         assert resp.status_code == status.HTTP_200_OK
+        conteudo = " ".join(resp.content.decode().split())
+        assert "progresso-bloco" in conteudo
+        assert "1</strong> lotes enviados" in conteudo
 
 
 @pytest.mark.django_db

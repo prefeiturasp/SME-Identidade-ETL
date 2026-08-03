@@ -11,10 +11,12 @@ import pytest
 from apps.extracao.tasks import (
     RegistroIdentidade,
     _atualizar_watermark,
+    _extrair_coresso_por_identificadores,
     _iterar_com_watermark,
     _montar_resultado_usuario,
     _obter_watermark,
     _sanitizar_cpf,
+    _sanitizar_email,
     _slugificar_role,
     _string_conexao_coresso,
     _string_conexao_se1426,
@@ -104,6 +106,42 @@ class TestSanitizarCpf:
 
     def test_valor_numerico_inteiro(self) -> None:
         assert _sanitizar_cpf(12345678901) == "12345678901"
+
+
+# ---------------------------------------------------------------------------
+# _sanitizar_email
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizarEmail:
+    def test_email_valido(self) -> None:
+        assert _sanitizar_email("joao@sme.sp.gov.br") == "joao@sme.sp.gov.br"
+
+    def test_email_com_espacos_nas_pontas(self) -> None:
+        assert (
+            _sanitizar_email(" joao@sme.sp.gov.br ") == "joao@sme.sp.gov.br"
+        )
+
+    def test_sem_dominio_apos_arroba(self) -> None:
+        assert _sanitizar_email("8bde384cd48ce311b1fe782bcb3d2d76@") is None
+
+    def test_dominio_sem_ponto(self) -> None:
+        assert _sanitizar_email("joao@sme") is None
+
+    def test_sem_arroba(self) -> None:
+        assert _sanitizar_email("joaosemarroba.com") is None
+
+    def test_sem_parte_local(self) -> None:
+        assert _sanitizar_email("@sme.sp.gov.br") is None
+
+    def test_com_espaco_interno(self) -> None:
+        assert _sanitizar_email("joao silva@sme.sp.gov.br") is None
+
+    def test_none_retorna_none(self) -> None:
+        assert _sanitizar_email(None) is None
+
+    def test_string_vazia_retorna_none(self) -> None:
+        assert _sanitizar_email("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +670,121 @@ class TestExtrairCoresso:
 
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "WHERE" in consulta_executada
+
+
+class TestExtrairCoressoPorIdentificadores:
+    def _mock_conn(self, linhas: list[tuple]) -> MagicMock:
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("login",),
+            ("cpf",),
+            ("nome",),
+            ("email",),
+            ("situacao",),
+            ("dt_atualizacao",),
+        ]
+        mock_cursor.fetchmany.side_effect = [linhas, []]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        return mock_conn
+
+    def test_busca_por_lista_de_cpfs(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        linha = (
+            "joao.silva",
+            "12345678901",
+            "João Silva",
+            "joao@sme.sp.gov.br",
+            "1",
+            None,
+        )
+        mock_conn = self._mock_conn([linha])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            registros = list(
+                _extrair_coresso_por_identificadores(["12345678901"])
+            )
+
+        assert len(registros) == 1
+        assert registros[0].cpf == "12345678901"
+        assert registros[0].situacao == "ativo"
+
+    def test_query_filtra_por_cpf_e_login(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        mock_conn = self._mock_conn([])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            list(_extrair_coresso_por_identificadores(["12345678901"]))
+
+        consulta = mock_conn.cursor.return_value.execute.call_args[0][0]
+        assert "doc.psd_numero IN ('12345678901')" in consulta
+        assert "u.usu_login IN ('12345678901')" in consulta
+
+    def test_lista_vazia_nao_consulta_banco(self, settings: Any) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+
+        with patch("pyodbc.connect") as mock_connect:
+            registros = list(_extrair_coresso_por_identificadores([]))
+
+        assert registros == []
+        mock_connect.assert_not_called()
+
+    def test_identificadores_vazios_sao_filtrados(self, settings: Any) -> None:
+        """None/"" na lista não geram sublote vazio nem query inválida."""
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+
+        with patch("pyodbc.connect") as mock_connect:
+            registros = list(
+                _extrair_coresso_por_identificadores(["", None, ""])
+            )
+
+        assert registros == []
+        mock_connect.assert_not_called()
+
+    def test_sublota_em_grupos_de_200(self, settings: Any) -> None:
+        """Mais de 200 identificadores disparam mais de uma consulta SQL."""
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        identificadores = [str(n).zfill(11) for n in range(250)]
+        mock_conn = self._mock_conn([])
+        # fetchmany precisa retornar [] pra cada uma das 2 chamadas
+        mock_conn.cursor.return_value.fetchmany.side_effect = [[], [], [], []]
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            list(_extrair_coresso_por_identificadores(identificadores))
+
+        assert mock_conn.cursor.return_value.execute.call_count == 2
+
+    def test_escapa_aspas_simples_no_identificador(
+        self, settings: Any
+    ) -> None:
+        settings.CORESSO_DB_SERVIDOR = "srv-core"
+        settings.CORESSO_DB_NOME = "CoreSSO"
+        settings.CORESSO_DB_USUARIO = "usr"
+        settings.CORESSO_DB_SENHA = "pwd"
+        settings.CORESSO_DB_TIMEOUT = 30
+
+        mock_conn = self._mock_conn([])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            list(_extrair_coresso_por_identificadores(["o'brien"]))
+
+        consulta = mock_conn.cursor.return_value.execute.call_args[0][0]
+        assert "o''brien" in consulta
 
 
 # ---------------------------------------------------------------------------

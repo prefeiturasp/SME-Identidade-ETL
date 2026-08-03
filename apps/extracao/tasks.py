@@ -39,6 +39,26 @@ def _sanitizar_cpf(valor: object) -> str | None:
     return digitos[:_CPF_TAMANHO] or None
 
 
+def _sanitizar_email(valor: object) -> str | None:
+    """Descarta e-mails sem domínio válido vindos de fontes legadas.
+
+    O CoreSSO armazena, para uma fração dos usuários, um valor sem
+    domínio (ex.: ``8bde384cd48ce311b1fe782bcb3d2d76@``, aparentando
+    ser um GUID/hash truncado) no lugar do e-mail — o Keycloak rejeita
+    esse formato com 400 ``error-invalid-email`` e o registro nunca é
+    provisionado. Como não é um erro transitório (retry não resolve),
+    descarta o valor aqui: o usuário segue sendo criado/atualizado no
+    Keycloak, só sem e-mail, até a origem corrigir o dado.
+    """
+    email = str(valor or "").strip()
+    usuario, _, dominio = email.partition("@")
+    if not usuario or not dominio or "." not in dominio:
+        return None
+    if " " in email:
+        return None
+    return email
+
+
 # ---------------------------------------------------------------------------
 # Dataclass de identidade em memória
 # ---------------------------------------------------------------------------
@@ -281,7 +301,7 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
                     rf=item.get("rf"),
                     nome=item.get("nome"),
                     cpf=_sanitizar_cpf(item.get("cpf")),
-                    email=item.get("email"),
+                    email=_sanitizar_email(item.get("email")),
                     situacao=((item.get("situacao") or "").lower() or None),
                     dados_extras={
                         k: str(v) if v is not None else None
@@ -401,42 +421,80 @@ def extrair_se1426(
 # ---------------------------------------------------------------------------
 
 
-def _extrair_coresso_sql(
-    desde: datetime | None = None,
-) -> Iterator[RegistroIdentidade]:
-    """Extrai usuários legados do CoreSSO via SQL Server (read-only).
+# tdo_id fixo de SYS_TipoDocumentacao para o tipo "CPF" (sigla CPF).
+_TDO_ID_CPF = "2CEEED03-63EB-E011-9B36-00155D033206"
+
+# Tamanho de sublote para IN (...) na busca por identificadores — evita
+# estourar o limite de parâmetros do driver/SQL Server numa lista
+# grande de CPFs/RFs.
+_TAMANHO_LOTE_IDENTIFICADORES = 200
+
+
+def _registro_coresso_de_linha(item: dict) -> RegistroIdentidade:
+    """Monta um RegistroIdentidade a partir de uma linha da consulta SQL.
+
+    Compartilhado entre a extração incremental (`_extrair_coresso_sql`)
+    e a extração pontual por identificadores (usada para reprocessar
+    clientes com `token_ms_pendente=True` cujo staging já foi limpo).
+    """
+    return RegistroIdentidade(
+        fonte="coresso",
+        tipo="terceiro",
+        cpf=_sanitizar_cpf(item.get("cpf")),
+        nome=item.get("nome"),
+        email=_sanitizar_email(item.get("email")),
+        situacao=(
+            "ativo"
+            if str(item.get("situacao", "")).strip() == "1"
+            else "inativo"
+        ),
+        tipo_acesso="legado-coresso",
+        dados_extras={
+            k: str(v) if v is not None else None
+            for k, v in item.items()
+            if k != "dt_atualizacao"
+        },
+    )
+
+
+def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
+    """Executa a consulta base do CoreSSO com um filtro WHERE customizado.
+
+    Compartilha a mesma CTE com ``ROW_NUMBER`` (proteção contra CPF
+    duplicado em ``PES_PessoaDocumento``) entre a extração incremental
+    e a extração pontual por identificadores.
 
     Args:
-        desde: Data mínima de alteração para extração incremental
-            (filtra por ``usu_dataAlteracao``); None extrai tudo.
+        filtro_where: Cláusula ``WHERE`` completa (ou string vazia).
 
     Yields:
-        RegistroIdentidade para cada usuário encontrado.
+        Dict por linha, com as colunas ``login``, ``cpf``, ``nome``,
+        ``email``, ``situacao``, ``dt_atualizacao``.
     """
     import pyodbc
 
-    # tdo_id fixo de SYS_TipoDocumentacao para o tipo "CPF" (sigla CPF).
-    tdo_id_cpf = "2CEEED03-63EB-E011-9B36-00155D033206"
-
-    filtro_data = ""
-    if desde:
-        dt = desde.strftime("%Y-%m-%d")
-        filtro_data = f"WHERE u.usu_dataAlteracao >= '{dt}'"
-
     consulta = f"""
-        SELECT
-            u.usu_login          AS login,
-            doc.psd_numero        AS cpf,
-            pes.pes_nome          AS nome,
-            u.usu_email           AS email,
-            u.usu_situacao        AS situacao,
-            u.usu_dataAlteracao   AS dt_atualizacao
-        FROM SYS_Usuario u
-        INNER JOIN PES_Pessoa pes ON pes.pes_id = u.pes_id
-        LEFT JOIN PES_PessoaDocumento doc
-            ON doc.pes_id = pes.pes_id
-            AND doc.tdo_id = '{tdo_id_cpf}'
-        {filtro_data}
+        SELECT login, cpf, nome, email, situacao, dt_atualizacao
+        FROM (
+            SELECT
+                u.usu_login          AS login,
+                doc.psd_numero        AS cpf,
+                pes.pes_nome          AS nome,
+                u.usu_email           AS email,
+                u.usu_situacao        AS situacao,
+                u.usu_dataAlteracao   AS dt_atualizacao,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pes.pes_id
+                    ORDER BY doc.psd_numero
+                ) AS rn
+            FROM SYS_Usuario u
+            INNER JOIN PES_Pessoa pes ON pes.pes_id = u.pes_id
+            LEFT JOIN PES_PessoaDocumento doc
+                ON doc.pes_id = pes.pes_id
+                AND doc.tdo_id = '{_TDO_ID_CPF}'
+            {filtro_where}
+        ) sub
+        WHERE rn = 1
     """
 
     conn = pyodbc.connect(
@@ -452,27 +510,70 @@ def _extrair_coresso_sql(
             if not linhas:
                 break
             for linha in linhas:
-                item = dict(zip(colunas, linha, strict=False))
-                yield RegistroIdentidade(
-                    fonte="coresso",
-                    tipo="terceiro",
-                    cpf=_sanitizar_cpf(item.get("cpf")),
-                    nome=item.get("nome"),
-                    email=item.get("email"),
-                    situacao=(
-                        "ativo"
-                        if str(item.get("situacao", "")).strip() == "1"
-                        else "inativo"
-                    ),
-                    tipo_acesso="legado-coresso",
-                    dados_extras={
-                        k: str(v) if v is not None else None
-                        for k, v in item.items()
-                        if k != "dt_atualizacao"
-                    },
-                )
+                yield dict(zip(colunas, linha, strict=False))
     finally:
         conn.close()
+
+
+def _extrair_coresso_sql(
+    desde: datetime | None = None,
+) -> Iterator[RegistroIdentidade]:
+    """Extrai usuários legados do CoreSSO via SQL Server (read-only).
+
+    Args:
+        desde: Data mínima de alteração para extração incremental
+            (filtra por ``usu_dataAlteracao``); None extrai tudo.
+
+    Yields:
+        RegistroIdentidade para cada usuário encontrado.
+    """
+    filtro_data = ""
+    if desde:
+        dt = desde.strftime("%Y-%m-%d")
+        filtro_data = f"WHERE u.usu_dataAlteracao >= '{dt}'"
+
+    for item in _consultar_coresso_sql(filtro_data):
+        yield _registro_coresso_de_linha(item)
+
+
+def _extrair_coresso_por_identificadores(
+    identificadores: list[str],
+) -> Iterator[RegistroIdentidade]:
+    """Reextrai pontualmente usuários do CoreSSO por CPF ou login/RF.
+
+    Usada quando um cliente está pendente de reprocessamento
+    (``ControleProvisionamento.token_ms_pendente=True`` ou hash
+    desatualizado) mas seu staging já foi removido pela limpeza
+    periódica (``task_identidade_limpar_staging``) — busca em LOTE
+    (não um SELECT por pessoa) para não sobrecarregar o CoreSSO nem
+    o pipeline com uma consulta por cliente.
+
+    Args:
+        identificadores: Lista de CPFs (só dígitos) ou logins/RF.
+
+    Yields:
+        RegistroIdentidade para cada usuário encontrado — clientes sem
+        correspondência no CoreSSO simplesmente não aparecem no
+        resultado (não é erro; o chamador decide o que fazer com os
+        que sobraram sem retorno).
+    """
+    identificadores_validos = [i for i in identificadores if i]
+    for inicio in range(
+        0, len(identificadores_validos), _TAMANHO_LOTE_IDENTIFICADORES
+    ):
+        sublote = identificadores_validos[
+            inicio : inicio + _TAMANHO_LOTE_IDENTIFICADORES
+        ]
+        # Identificadores vêm de ControleProvisionamento.id_origem (dado
+        # interno, nunca input de usuário) — ainda assim, escapa aspas
+        # simples para evitar quebrar a query caso algum valor legado
+        # contenha caracteres inesperados.
+        valores = ", ".join(
+            "'" + str(ident).replace("'", "''") + "'" for ident in sublote
+        )
+        filtro = f"WHERE doc.psd_numero IN ({valores}) OR u.usu_login IN ({valores})"
+        for item in _consultar_coresso_sql(filtro):
+            yield _registro_coresso_de_linha(item)
 
 
 def _extrair_coresso_api(
@@ -498,7 +599,7 @@ def _extrair_coresso_api(
             tipo="terceiro",
             cpf=_sanitizar_cpf(item.get("cpf")),
             nome=item.get("nome") or item.get("pes_nome"),
-            email=item.get("email") or item.get("pes_email"),
+            email=_sanitizar_email(item.get("email") or item.get("pes_email")),
             situacao=(
                 "ativo"
                 if str(item.get("situacao", "")).strip() in ("1", "ativo")
@@ -1052,7 +1153,7 @@ def _montar_resultado_usuario(rows: list) -> dict:
         "login": (r0[0] or "").strip(),
         "cpf": (r0[1] or "").strip(),
         "nome": (r0[2] or "").strip(),
-        "email": (r0[3] or "").strip(),
+        "email": _sanitizar_email(r0[3]) or "",
         "situacao": "ativo" if r0[4] == 1 else "inativo",
         "sistemas": {},
     }
@@ -1116,7 +1217,7 @@ def buscar_complemento_se1426(rf: str) -> dict | None:
                 "rf": (row[0] or "").strip(),
                 "nome": (row[1] or "").strip(),
                 "cpf": str(row[2] or "").strip(),
-                "email": (row[3] or "").strip(),
+                "email": _sanitizar_email(row[3]) or "",
             }
         finally:
             conn.close()

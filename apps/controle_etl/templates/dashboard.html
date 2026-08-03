@@ -346,6 +346,32 @@
 
   <!-- Execuções são disparadas via API (POST /api/v1/etl/execucoes/) -->
 
+  <!-- Resumo geral acumulado por fonte (todas as execuções) -->
+  <div class="section-title">Resumo geral por fonte</div>
+  {% if resumo_geral %}
+  <div class="row g-3 mb-4">
+    {% for r in resumo_geral %}
+    <div class="col-12 col-sm-6 col-xl-4">
+      <div class="domain-card">
+        <div class="domain-name mb-2">{{ r.fonte }}</div>
+        <div class="progresso-linha">
+          <span><i class="bi bi-download me-1"></i>Lidos</span>
+          <strong>{{ r.lidos|numero_br }}</strong>
+        </div>
+        <div class="progresso-linha">
+          <span><i class="bi bi-key-fill me-1"></i>Keycloak</span>
+          <strong>{{ r.keycloak|numero_br }}</strong>
+        </div>
+        <div class="progresso-linha">
+          <span><i class="bi bi-send-fill me-1"></i>Token-ms</span>
+          <strong>{{ r.token_ms|numero_br }}</strong>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <!-- Cards por fonte -->
   <div class="section-title">Status atual por fonte</div>
   {% if ultima_por_fonte %}
@@ -400,12 +426,12 @@
           {% endif %}
           <div class="progresso-linha">
             <span><i class="bi bi-send-fill me-1"></i>Token-ms</span>
-            <strong>{{ exec.progresso.token_enviado|numero_br }}</strong> enviados
+            <strong>{{ exec.progresso.token_lotes_enviados|numero_br }}</strong> lotes enviados
           </div>
-          {% if exec.progresso.token_erro %}
+          {% if exec.progresso.token_lotes_erro %}
           <div class="progresso-linha" style="color:#f87171">
-            <span><i class="bi bi-exclamation-triangle-fill me-1"></i>Tentativas c/ erro (token-ms)</span>
-            <strong>{{ exec.progresso.token_erro|numero_br }}</strong>
+            <span><i class="bi bi-exclamation-triangle-fill me-1"></i>Lotes c/ erro (token-ms)</span>
+            <strong>{{ exec.progresso.token_lotes_erro|numero_br }}</strong>
           </div>
           {% endif %}
         </div>
@@ -434,6 +460,7 @@
           <th><i class="bi bi-play me-1"></i>Início</th>
           <th><i class="bi bi-list-task me-1"></i>Etapa</th>
           <th style="text-align:right"><i class="bi bi-hash me-1"></i>Registros saída</th>
+          <th style="text-align:right"><i class="bi bi-exclamation-triangle me-1"></i>Erros</th>
         </tr>
       </thead>
       <tbody>
@@ -458,6 +485,7 @@
               {% endif %}
               <td style="color:#94a3b8;font-size:.78rem">{{ etapa.get_nome_etapa_display }}</td>
               <td style="text-align:right;font-weight:600;color:#60a5fa">{{ etapa.registros_saida|numero_br }}</td>
+              <td style="text-align:right;font-weight:600;{% if etapa.registros_erro %}color:#f87171{% else %}color:#475569{% endif %}">{{ etapa.registros_erro|numero_br }}</td>
             </tr>
             {% endfor %}
           {% else %}
@@ -474,7 +502,7 @@
               </span>
             </td>
             <td class="text-nowrap">{{ item.criado_em|date:"d/m H:i" }}</td>
-            <td colspan="2" class="text-muted-dim" style="font-size:.78rem">sem etapas registradas</td>
+            <td colspan="3" class="text-muted-dim" style="font-size:.78rem">sem etapas registradas</td>
           </tr>
           {% endif %}
           {% endwith %}

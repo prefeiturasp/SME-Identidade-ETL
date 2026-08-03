@@ -87,6 +87,19 @@ digraph G {
 - Extração em paralelo via `chord` — as 3 tasks de extração disparam
   simultaneamente e o callback de resolução só executa após todas concluírem
 
+**Workers (dev — `docker-compose-dev.yml`):** divididos por fila, réplica
+local dos 3 deployments separados do Rancher — uma etapa longa (ex.:
+Keycloak com volume grande) não bloqueia as demais filas atrás dela:
+
+| Serviço | Filas | `ETL_WORKER_FILAS` |
+|---|---|---|
+| `etl_worker_celery` | `celery`, `etl_extracao`, `etl_transformacao` | herda o padrão |
+| `etl_worker_keycloak` | `etl_carga_keycloak` | explícito |
+| `etl_worker_token_ms` | `etl_carga_token_ms` | explícito |
+
+Em produção (`docker-compose.yml`), um único `etl_worker` escuta todas as
+filas. Monitoramento via Celery Flower — serviço `etl_flower`, `:5555`.
+
 ---
 
 ## Princípio de idempotência

@@ -12,6 +12,7 @@ Implementa as tasks definidas na especificação arquitetural:
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from celery import chain, chord, shared_task
@@ -22,6 +23,7 @@ logger = logging.getLogger("etl_identidade")
 _ATRASO_BASE_REINTENTO = 60
 _ATRASO_MAXIMO_REINTENTO = 600
 _TAMANHO_LOTE_PROVISIONAMENTO = 200
+_MAX_WORKERS_ENVIO_PERFIL = 8
 
 
 def _calcular_atraso(tentativa: int) -> int:
@@ -206,6 +208,135 @@ def task_identidade_extrair_coresso(
 
 
 # ---------------------------------------------------------------------------
+# TASK_REPROCESSAR_PENDENCIAS
+# ---------------------------------------------------------------------------
+
+_TAMANHO_LOTE_REPROCESSAMENTO = 200
+
+
+@shared_task(
+    bind=True,
+    name="task_reprocessar_pendencias",
+    max_retries=5,
+)
+def task_reprocessar_pendencias(
+    self: Any,
+    id_execucao: str,
+    data_referencia: str | None = None,
+) -> dict:
+    """Garante que clientes com `token_ms_pendente=True` sejam reenviados.
+
+    Roda como mais uma tarefa de extração do pipeline padrão (não é
+    uma ferramenta externa): toda execução verifica
+    ``ControleProvisionamento`` — a fonte de verdade de idempotência
+    por cliente, independente de qual execução processou cada um por
+    último — e garante que ninguém fique "preso" com hash_keycloak
+    atualizado mas hash_token_ms desatualizado (caso observado quando
+    a fila de token-ms de uma execução anterior não terminou de
+    drenar). Se o staging do cliente pendente já foi removido pela
+    limpeza periódica (``task_identidade_limpar_staging``), reextrai
+    pontualmente do CoreSSO em lote (não um SELECT por pessoa) via
+    ``_extrair_coresso_por_identificadores``.
+
+    Reaproveita o staging desta própria execução: os itens
+    reextraídos entram com ``situacao="extraido"`` e seguem o mesmo
+    caminho normal (``transformar_staging``/``deduplicar_identidades``
+    → ``task_provisionar_identidade_keycloak``) — nenhuma lógica de
+    decisão de hash é duplicada aqui.
+
+    Args:
+        id_execucao: UUID da ExecucaoETL associada.
+        data_referencia: Aceito por compatibilidade de assinatura com
+            as demais tasks de extração do chord; não utilizado (a
+            pendência não depende de janela de data).
+
+    Returns:
+        Dicionário com ``total_pendentes`` e ``total_reextraido``.
+    """
+    from apps.controle_etl.models import ControleProvisionamento
+
+    inicio = time.monotonic()
+    logger.info(
+        "[%s] task_reprocessar_pendencias — início", id_execucao
+    )
+
+    try:
+        total_pendentes = 0
+        total_reextraido = 0
+
+        qs_pendentes = ControleProvisionamento.objects.filter(
+            token_ms_pendente=True,
+            sistema_origem="coresso",
+        ).values_list("id_origem", flat=True)
+
+        lote: list[str] = []
+        for id_origem in qs_pendentes.iterator(
+            chunk_size=_TAMANHO_LOTE_REPROCESSAMENTO
+        ):
+            total_pendentes += 1
+            lote.append(id_origem)
+            if len(lote) >= _TAMANHO_LOTE_REPROCESSAMENTO:
+                total_reextraido += _reextrair_pendentes_coresso(
+                    lote, id_execucao
+                )
+                lote = []
+        if lote:
+            total_reextraido += _reextrair_pendentes_coresso(
+                lote, id_execucao
+            )
+
+        duracao = time.monotonic() - inicio
+        _registrar_tentativa(
+            id_execucao,
+            "task_reprocessar_pendencias",
+            self.request.retries + 1,
+            duracao=duracao,
+        )
+        logger.info(
+            "[%s] task_reprocessar_pendencias — %d pendentes,"
+            " %d reextraídos (%.1fs)",
+            id_execucao,
+            total_pendentes,
+            total_reextraido,
+            duracao,
+        )
+        return {
+            "total_pendentes": total_pendentes,
+            "total_reextraido": total_reextraido,
+        }
+    except Exception as exc:
+        atraso = _calcular_atraso(self.request.retries + 1)
+        _registrar_tentativa(
+            id_execucao,
+            "task_reprocessar_pendencias",
+            self.request.retries + 1,
+            erro=str(exc),
+        )
+        raise self.retry(exc=exc, countdown=atraso) from exc
+
+
+def _reextrair_pendentes_coresso(
+    identificadores: list[str], id_execucao: str
+) -> int:
+    """Reextrai e persiste um lote de CPFs/RF pendentes como staging novo.
+
+    Só cobre CoreSSO nesta versão — é a fonte onde a perda de rastro
+    foi observada. Identificadores sem correspondência no CoreSSO
+    (ex.: pendência de servidor puro SE1426, ou cliente removido na
+    origem) simplesmente não retornam nada aqui e continuam com
+    ``token_ms_pendente=True`` até a próxima extração completa da
+    fonte correta trazê-los de volta.
+    """
+    from apps.extracao.tasks import (  # noqa: PLC0415
+        _extrair_coresso_por_identificadores,
+    )
+    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+
+    registros = _extrair_coresso_por_identificadores(identificadores)
+    return persistir_extracao_staging(registros, id_execucao=id_execucao)
+
+
+# ---------------------------------------------------------------------------
 # TASK_IDENTIDADE_EXTRAIR_EOL_ALUNOS
 # ---------------------------------------------------------------------------
 
@@ -325,14 +456,22 @@ def task_identidade_resolver_identidade(
 
         total_transformado = resultado_transform.get("total", 0)
         total_dedup = resultado_dedup.get("total_deduplicado", 0)
-
-        execucao.total_transformado = total_transformado
-        execucao.save(update_fields=["total_transformado", "atualizado_em"])
-
-        etapa.registros_entrada = sum(
+        total_extraido = sum(
             (r or {}).get("total_extraido", 0)
             for r in (resultados_extracao or [])
         )
+
+        execucao.total_extraido = total_extraido
+        execucao.total_transformado = total_transformado
+        execucao.save(
+            update_fields=[
+                "total_extraido",
+                "total_transformado",
+                "atualizado_em",
+            ]
+        )
+
+        etapa.registros_entrada = total_extraido
         etapa.registros_saida = total_transformado
         etapa.metadados = {"total_deduplicado": total_dedup}
         etapa.situacao = LogEtapaETL.Situacao.SUCESSO
@@ -439,13 +578,17 @@ def _provisionar_lote_kc(
             )
 
     if itens_token_ms:
+        # Sem `queue=` explícito: deixa CELERY_TASK_ROUTES resolver a
+        # fila (inclui o prefixo de config.settings._PREFIXO_FILA,
+        # usado para isolar um worker local de um broker compartilhado
+        # com o Rancher — passar `queue=` aqui sempre teria prioridade
+        # sobre a rota e ignoraria o prefixo).
         task_carregar_lote_atributos_token.apply_async(
             kwargs={
                 "itens": itens_token_ms,
                 "id_execucao": id_execucao,
                 "realm_destino": execucao.realm_destino,
             },
-            queue="etl_carga_token_ms",
         )
 
     return provisionados, ignorados, erros
@@ -475,6 +618,7 @@ def task_provisionar_identidade_keycloak(
         LogEtapaETL,
     )
     from apps.controle_etl.orquestrador_kc import (  # noqa: PLC0415
+        limpar_cache_roles_grupos_kc,
         obter_admin_keycloak,
     )
     from apps.staging.models import (  # noqa: PLC0415
@@ -510,6 +654,7 @@ def task_provisionar_identidade_keycloak(
         id_execucao,
         execucao.realm_destino,
     )
+    limpar_cache_roles_grupos_kc()
 
     try:
         admin = obter_admin_keycloak(realm=execucao.realm_destino)
@@ -886,6 +1031,9 @@ def task_carregar_atributo_token_individual(
     )
 
     if controle.hash_token_ms == hash_token_atual:
+        if controle.token_ms_pendente:
+            controle.token_ms_pendente = False
+            controle.save(update_fields=["token_ms_pendente"])
         return {"situacao": "ignorado"}
 
     inicio = time.monotonic()
@@ -970,14 +1118,18 @@ def task_carregar_lote_atributos_token(
         calcular_hash_conteudo,
         construir_payload_perfil_token_ms,
         construir_payload_token_ms,
+        obter_admin_keycloak,
         obter_ou_criar_controle,
         payload_tem_identificador,
+        resolver_kc_user_id_de_usuario,
     )
 
     inicio = time.monotonic()
     payloads_envio: list[dict] = []
     controles_pendentes: list[tuple[Any, str]] = []
+    perfis_pendentes: list[tuple[str, dict]] = []
     descartados = 0
+    admin: Any = None  # obtido sob demanda, só se faltar kc_user_id
 
     for item in itens:
         modelo = _resolver_modelo_staging(item["modelo_staging"])
@@ -1002,13 +1154,39 @@ def task_carregar_lote_atributos_token(
             realm_destino,
         )
         if controle.hash_token_ms == hash_atual:
+            # Já confirmado — mas token_ms_pendente pode ter ficado
+            # True de uma checagem anterior (ex.: provisionar_usuario_kc
+            # calculou pendente=True antes deste hash ter sido
+            # confirmado por outra execução). Sem corrigir aqui, o
+            # registro nunca sai da varredura de reprocessamento
+            # mesmo já estando correto.
+            if controle.token_ms_pendente:
+                controle.token_ms_pendente = False
+                controle.save(update_fields=["token_ms_pendente"])
             continue
 
         kc_user_id = item.get("kc_user_id")
+        if not kc_user_id:
+            # O Keycloak é a fonte da chave usada pelo token-ms — se o
+            # item chegou sem kc_user_id (não deveria acontecer:
+            # provisionar_usuario_kc sempre o retorna em sucesso), não
+            # desiste em silêncio: busca ativamente por username antes
+            # de decidir que não há perfil a enviar.
+            if admin is None:
+                admin = obter_admin_keycloak(realm=realm_destino)
+            kc_user_id = resolver_kc_user_id_de_usuario(admin, usuario)
+            if not kc_user_id:
+                logger.warning(
+                    "[%s] task_carregar_lote_atributos_token —"
+                    " kc_user_id não encontrado nem por busca ativa: %s",
+                    id_execucao,
+                    payload_token.get("nome"),
+                )
+
         if kc_user_id:
             payload_perfil = construir_payload_perfil_token_ms(usuario)
             if payload_perfil is not None:
-                enviar_perfil(kc_user_id, payload_perfil)
+                perfis_pendentes.append((kc_user_id, payload_perfil))
 
         payloads_envio.append(payload_token)
         controles_pendentes.append((controle, hash_atual))
@@ -1016,15 +1194,52 @@ def task_carregar_lote_atributos_token(
     if not payloads_envio:
         return {"enviados": 0, "descartados": descartados}
 
+    if perfis_pendentes:
+        # O token-ms não tem endpoint de lote para perfis (PUT
+        # individual por usuário) — paraleliza as chamadas via
+        # threads em vez de série, mesmo padrão usado no
+        # provisionamento Keycloak. Falha de UM perfil não interrompe
+        # o lote (best-effort: o atributo em `enviar_lote` é o que
+        # importa para a idempotência de hash_token_ms).
+        with ThreadPoolExecutor(
+            max_workers=min(len(perfis_pendentes), _MAX_WORKERS_ENVIO_PERFIL)
+        ) as executor:
+            futures = [
+                executor.submit(enviar_perfil, kc_user_id, payload_perfil)
+                for kc_user_id, payload_perfil in perfis_pendentes
+            ]
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] task_carregar_lote_atributos_token —"
+                        " falha ao enviar perfil: %s",
+                        id_execucao,
+                        exc,
+                    )
+
     try:
         enviar_lote(payloads_envio, id_execucao=id_execucao)
 
         # Só grava hash_token_ms de cada um DEPOIS do POST confirmar
         # sucesso — se enviar_lote falhar, nenhum hash é gravado e o
-        # retry reprocessa o lote inteiro.
+        # retry reprocessa o lote inteiro. token_ms_pendente=False
+        # marca esses clientes como resolvidos para a varredura de
+        # reprocessamento (ver task_reprocessar_pendencias) — se o
+        # POST falhar, o except abaixo não toca nesse campo, então
+        # o pendente=True gravado por provisionar_usuario_kc continua
+        # valendo até uma nova tentativa ter sucesso.
         for controle, hash_novo in controles_pendentes:
             controle.hash_token_ms = hash_novo
-            controle.save(update_fields=["hash_token_ms", "atualizado_em"])
+            controle.token_ms_pendente = False
+            controle.save(
+                update_fields=[
+                    "hash_token_ms",
+                    "token_ms_pendente",
+                    "atualizado_em",
+                ]
+            )
 
         _registrar_tentativa(
             id_execucao,
@@ -1239,6 +1454,11 @@ def task_identidade_executar_pipeline(
         tarefas_extracao.append(task_identidade_extrair_se1426.s(**kwargs))
     if fonte in ("todos", "coresso"):
         tarefas_extracao.append(task_identidade_extrair_coresso.s(**kwargs))
+        # Garante que clientes com token_ms_pendente=True (Keycloak já
+        # confirmado, token-ms ainda não) sejam reenviados mesmo sem
+        # dado novo no watermark — ver task_reprocessar_pendencias.
+        # Só cobre CoreSSO nesta versão.
+        tarefas_extracao.append(task_reprocessar_pendencias.s(**kwargs))
     if fonte in ("todos", "eol_alunos"):
         tarefas_extracao.append(task_identidade_extrair_eol_alunos.s(**kwargs))
 

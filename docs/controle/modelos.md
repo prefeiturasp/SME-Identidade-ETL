@@ -13,8 +13,8 @@ Registro central de cada disparo do pipeline.
 | `id_execucao` | UUID (PK) | Identificador único da execução |
 | `fonte` | CharField | `"se1426"`, `"coresso"`, `"eol_alunos"` ou `"todos"` |
 | `realm_destino` | CharField | Realm Keycloak de destino |
-| `situacao` | CharField | `pendente` / `executando` / `sucesso` / `falha` / `cancelado` |
-| `tipo_disparo` | CharField | `"api"` / `"manual"` / `"agendado"` |
+| `situacao` | CharField | `pendente` / `executando` / `sucesso` / `parcial` / `falha` / `cancelado` |
+| `tipo_disparo` | CharField | `"agendado"` (Beat) / `"manual"` (API) |
 | `iniciado_em` | DateTimeField | Timestamp de início |
 | `finalizado_em` | DateTimeField | Timestamp de conclusão |
 | `total_extraido` | IntegerField | Total de registros extraídos |
@@ -32,9 +32,9 @@ Rastreio de cada etapa dentro de uma execução.
 | Campo | Tipo | Descrição |
 |---|---|---|
 | `execucao` | FK → ExecucaoETL | Execução pai |
-| `nome_etapa` | CharField | Nome da task Celery |
-| `ordem_etapa` | IntegerField | Ordem de execução (1–8) |
-| `situacao` | CharField | `pendente` / `executando` / `sucesso` / `falha` |
+| `nome_etapa` | CharField | Nome da task Celery (ver `LogEtapaETL.NomeEtapa`, 1 a 6) |
+| `ordem_etapa` | PositiveSmallIntegerField | Ordem de execução |
+| `situacao` | CharField | `executando` / `sucesso` / `falha` / `ignorado` |
 | `iniciado_em` / `finalizado_em` | DateTimeField | Timestamps |
 | `registros_entrada` | IntegerField | Registros recebidos pela etapa |
 | `registros_saida` | IntegerField | Registros processados com sucesso |
@@ -65,6 +65,7 @@ confirmados. Ver [Provisionamento Keycloak](../pipeline/keycloak.md) e
 | `hash_extracao` | CharField | SHA-256 dos campos do staging pós-extração/resolução — muda quando o dado da fonte muda |
 | `hash_keycloak` | CharField | SHA-256 do payload enviado ao Keycloak (antigo `hash_conteudo`) |
 | `hash_token_ms` | CharField | SHA-256 do payload enviado ao token-ms |
+| `token_ms_pendente` | BooleanField | `True` quando `hash_token_ms` está desatualizado — localiza pendências de envio sem depender do staging (limpo periodicamente) |
 | `versao` | PositiveIntegerField | Incrementada a cada atualização real no Keycloak |
 | `ativo` | BooleanField | Situação ativa/inativa do registro |
 | `erro_sincronizacao` | TextField | Último erro de sincronização, se houver |
@@ -92,11 +93,11 @@ Watermark incremental por fonte — evita re-extração completa.
 
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `fonte` | CharField (unique) | `"se1426"`, `"coresso"` ou `"eol_alunos"` |
-| `ultima_data_referencia` | DateTimeField | Data do último registro processado |
+| `fonte` | CharField (PK) | `"se1426"`, `"coresso"` ou `"eol_alunos"` |
+| `ultimo_processado_em` | DateTimeField | Timestamp do último registro processado com sucesso |
 | `ultima_pagina` | IntegerField | Última página paginada |
 | `total_processado` | IntegerField | Total acumulado de registros processados |
-| `ultimo_processado_em` | DateTimeField | Timestamp da última atualização |
+| `atualizado_em` | DateTimeField | Timestamp da última atualização |
 
 ---
 
