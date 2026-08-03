@@ -37,12 +37,12 @@ digraph G {
     node [shape=box, style="rounded"];
 
     DISP [label="Disparo\n(API / CLI)"];
-    EXT  [label="Extracao\n(chord paralelo)\nEtapa 1"];
-    STG  [label="Persistir\nStaging\nEtapa 2"];
+    EXT  [label="Extracao\n(chord paralelo)\nEtapas 1-2b"];
+    STG  [label="Persistir\nStaging"];
     RES  [label="Resolver\nIdentidade\nEtapa 3"];
     KC   [label="Provisionar\nKeycloak\nEtapa 4"];
-    FIM  [label="Fechar\nExecucao\nEtapa 5"];
-    TMS  [label="Carregar\ntoken-ms\n(por usuario,\nfila separada)"];
+    FIM  [label="Registro\nOperacional\nEtapa 6"];
+    TMS  [label="Carregar\ntoken-ms\nEtapa 5\n(por usuario,\nfila separada)"];
     ERR  [label="Falha no chord\nde extracao"];
 
     DISP -> EXT;
@@ -60,17 +60,19 @@ digraph G {
 
 ## Mapeamento de tasks por etapa
 
+Numeração conforme `LogEtapaETL.NomeEtapa` (`apps/controle_etl/models.py`):
+
 | Etapa | Task Celery | Fila | Arquivo |
 |---|---|---|---|
-| 1a — Extrair SE1426 | `task_identidade_extrair_se1426` | `etl_extracao` | `apps/controle_etl/tasks.py` |
-| 1b — Extrair CoreSSO | `task_identidade_extrair_coresso` | `etl_extracao` | `apps/controle_etl/tasks.py` |
-| 1c — Extrair EOL | `task_identidade_extrair_eol_alunos` | `etl_extracao` | `apps/controle_etl/tasks.py` |
-| 2 — Resolver identidade | `task_identidade_resolver_identidade` | `etl_transformacao` | `apps/controle_etl/tasks.py` |
-| 3 — Provisionar Keycloak | `task_provisionar_identidade_keycloak` | `etl_carga_keycloak` | `apps/controle_etl/tasks.py` |
-| 4 — Fechar execução | `task_sync_rec_etl` | `celery` | `apps/controle_etl/tasks.py` |
-| 5 — Limpar staging | `task_identidade_limpar_staging` | `celery` | `apps/controle_etl/tasks.py` |
-| — Carregar token-ms (individual, fora da chain) | `task_carregar_atributo_token_individual` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
-| — Carregar token-ms (lote, fallback manual) | `task_carregar_atributos_token` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
+| 1 — Extrair SE1426 | `task_identidade_extrair_se1426` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 2 — Extrair CoreSSO | `task_identidade_extrair_coresso` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 2b — Extrair EOL Alunos | `task_identidade_extrair_eol_alunos` | `etl_extracao` | `apps/controle_etl/tasks.py` |
+| 3 — Resolver identidade | `task_identidade_resolver_identidade` | `etl_transformacao` | `apps/controle_etl/tasks.py` |
+| 4 — Provisionar Keycloak | `task_provisionar_identidade_keycloak` | `etl_carga_keycloak` | `apps/controle_etl/tasks.py` |
+| 5 — Carregar atributos token (individual, fora da chain) | `task_carregar_atributo_token_individual` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
+| 5 — Carregar atributos token (lote, fallback manual) | `task_carregar_atributos_token` | `etl_carga_token_ms` | `apps/controle_etl/tasks.py` |
+| 6 — Registro operacional | `task_sync_rec_etl` | `celery` | `apps/controle_etl/tasks.py` |
+| — Limpar staging (agendada por `task_sync_rec_etl`) | `task_identidade_limpar_staging` | `celery` | `apps/controle_etl/tasks.py` |
 | — Tratar erro do chord de extração | `task_identidade_tratar_erro_pipeline` | — (`link_error`) | `apps/controle_etl/tasks.py` |
 
 ---

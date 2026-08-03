@@ -27,27 +27,57 @@ services:
       timeout: 5s
       retries: 5
 
-  etl_worker:
+  # 3 workers separados por fila, replicando os 3 deployments reais do
+  # Rancher (keycloak, token_ms, celery) — uma etapa longa (ex.:
+  # Keycloak com volume grande) não deve bloquear outras filas atrás
+  # dela, o que aconteceria num único worker escutando tudo.
+  etl_worker_celery:
     platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: sme_identidade_etl_worker_dev
+    container_name: sme_identidade_etl_worker_celery_dev
     env_file:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
-      SYNC_REC_DB_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres_sync_rec/${SYNC_REC_DB_NAME:-identidade_sync_rec}
-      URL_KEYDB: redis://keydb:6379/0
+      ETL_WORKER_FILAS: "celery,etl_extracao,etl_transformacao"
     volumes:
       - .:/app
     command: python /app/scripts/watch_celery.py
     restart: unless-stopped
-    depends_on:
-      postgres_sync_rec:
-        condition: service_healthy
-      keydb:
-        condition: service_healthy
+
+  etl_worker_keycloak:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sme_identidade_etl_worker_keycloak_dev
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      ETL_WORKER_FILAS: "etl_carga_keycloak"
+    volumes:
+      - .:/app
+    command: python /app/scripts/watch_celery.py
+    restart: unless-stopped
+
+  etl_worker_token_ms:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sme_identidade_etl_worker_token_ms_dev
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      ETL_WORKER_FILAS: "etl_carga_token_ms"
+    volumes:
+      - .:/app
+    command: python /app/scripts/watch_celery.py
+    restart: unless-stopped
 
   etl_api:
     platform: linux/amd64
@@ -59,8 +89,6 @@ services:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
-      SYNC_REC_DB_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres_sync_rec/${SYNC_REC_DB_NAME:-identidade_sync_rec}
-      URL_KEYDB: redis://keydb:6379/0
     volumes:
       - .:/app
     command: >
@@ -70,11 +98,6 @@ services:
       - "${PORT_WEB:-8001}:8001"
       - "${PORT_DEBUGPY:-5668}:5668"
     restart: unless-stopped
-    depends_on:
-      postgres_sync_rec:
-        condition: service_healthy
-      keydb:
-        condition: service_healthy
 
   etl_flower:
     platform: linux/amd64
@@ -86,7 +109,6 @@ services:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
-      URL_KEYDB: redis://keydb:6379/0
     entrypoint: []
     command: >
       celery -A config.celery:app flower
@@ -94,9 +116,6 @@ services:
     ports:
       - "${PORT_FLOWER:-5555}:5555"
     restart: unless-stopped
-    depends_on:
-      keydb:
-        condition: service_healthy
 
 volumes:
   identidade_sync_rec_data:

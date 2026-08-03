@@ -35,6 +35,7 @@ from apps.controle_etl.orquestrador_kc import (
     construir_payload_kc,
     construir_payload_perfil_token_ms,
     construir_payload_token_ms,
+    limpar_cache_roles_grupos_kc,
     montar_payload_perfil,
     payload_tem_identificador,
     provisionar_usuario_kc,
@@ -43,6 +44,12 @@ from apps.controle_etl.orquestrador_kc import (
     resolver_kc_user_id_de_usuario,
     sincronizar_usuario_kc,
 )
+
+@pytest.fixture(autouse=True)
+def _sem_cache_roles_grupos_kc() -> None:
+    """Evita que o cache de roles/grupos (módulo-level) vaze entre testes."""
+    limpar_cache_roles_grupos_kc()
+
 
 # ---------------------------------------------------------------------------
 # Helpers de dados
@@ -1130,6 +1137,70 @@ class TestProvisionarUsuarioKcMatrizHashes:
         assert resultado["acao"] == "ignorado"
         assert resultado["token_ms_pendente"] is True
 
+    def test_pular_keycloak_persiste_token_ms_pendente(self) -> None:
+        """token_ms_pendente é gravado no banco mesmo com Keycloak ignorado.
+
+        Sem isso, uma varredura por ControleProvisionamento.filter(
+        token_ms_pendente=True) nunca encontraria clientes cujo
+        Keycloak já estava confirmado antes do token-ms — que é
+        justamente o caso observado em produção (fila de token-ms
+        purgada após o Keycloak já ter processado o lote).
+        """
+        u = _usuario(cpf="10000000006", rf="")
+        controle = self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "ignorado"
+        controle.refresh_from_db()
+        assert controle.token_ms_pendente is True
+
+    def test_atualiza_keycloak_tambem_persiste_token_ms_pendente(
+        self,
+    ) -> None:
+        """token_ms_pendente é gravado também quando o Keycloak reenvia."""
+        u = _usuario(cpf="10000000007", rf="", nome="Nome Novo")
+        controle = self._controle_existente(
+            u,
+            hash_extracao="hash-extracao-antigo",
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+
+        admin = MagicMock()
+        resultado = provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        assert resultado["acao"] == "atualizado"
+        controle.refresh_from_db()
+        assert controle.token_ms_pendente is True
+
+    def test_token_ms_confirmado_persiste_pendente_falso(self) -> None:
+        """token_ms_pendente=False é persistido quando o hash já bate."""
+        from apps.controle_etl.orquestrador_kc import _payload_token_ms_hash
+        from apps.controle_etl.orquestrador_kc import (
+            calcular_hash_conteudo as _hash,
+        )
+
+        u = _usuario(cpf="10000000008", rf="")
+        controle = self._controle_existente(
+            u,
+            hash_extracao=calcular_hash_extracao(u),
+            hash_keycloak=self._hash_keycloak_atual(u),
+        )
+        controle.hash_token_ms = _hash(_payload_token_ms_hash(u))
+        controle.token_ms_pendente = True
+        controle.save()
+
+        admin = MagicMock()
+        provisionar_usuario_kc(admin, u, realm="sme-apps")
+
+        controle.refresh_from_db()
+        assert controle.token_ms_pendente is False
+
     def test_token_ms_confirmado_nao_fica_pendente(self) -> None:
         """Hash de token-ms já confirmado não fica pendente.
 
@@ -1385,6 +1456,50 @@ class TestAtribuirRolesEGrupos:
         _atribuir_roles_e_grupos(admin, "kc-id", [], ["/SME/DRE-9"])
 
         admin.group_user_add.assert_not_called()
+
+    def test_cache_evita_get_repetido_para_mesma_role(self) -> None:
+        """2º usuário com a mesma role não deve chamar get_realm_role de novo."""
+        admin = MagicMock()
+        admin.get_realm_role.return_value = {"name": "Professor"}
+
+        _atribuir_roles_e_grupos(admin, "kc-id-1", ["Professor"], [])
+        _atribuir_roles_e_grupos(admin, "kc-id-2", ["Professor"], [])
+
+        admin.get_realm_role.assert_called_once_with("Professor")
+        assert admin.assign_realm_roles.call_count == 2
+
+    def test_cache_evita_get_repetido_para_mesmo_grupo(self) -> None:
+        """2º usuário com o mesmo grupo não deve chamar get_group_by_path de novo."""
+        admin = MagicMock()
+        admin.get_group_by_path.return_value = {"id": "g-1"}
+
+        _atribuir_roles_e_grupos(admin, "kc-id-1", [], ["/SME/DRE-1"])
+        _atribuir_roles_e_grupos(admin, "kc-id-2", [], ["/SME/DRE-1"])
+
+        admin.get_group_by_path.assert_called_once_with("/SME/DRE-1")
+        assert admin.group_user_add.call_count == 2
+
+    def test_cache_e_isolado_por_tipo_role_e_grupo(self) -> None:
+        """Uma role e um grupo com o mesmo nome não compartilham cache."""
+        admin = MagicMock()
+        admin.get_realm_role.return_value = {"name": "SME"}
+        admin.get_group_by_path.return_value = {"id": "g-sme"}
+
+        _atribuir_roles_e_grupos(admin, "kc-id", ["SME"], ["SME"])
+
+        admin.get_realm_role.assert_called_once_with("SME")
+        admin.get_group_by_path.assert_called_once_with("SME")
+
+    def test_limpar_cache_forca_nova_consulta(self) -> None:
+        """Após limpar_cache_roles_grupos_kc, a próxima chamada consulta de novo."""
+        admin = MagicMock()
+        admin.get_realm_role.return_value = {"name": "Professor"}
+
+        _atribuir_roles_e_grupos(admin, "kc-id-1", ["Professor"], [])
+        limpar_cache_roles_grupos_kc()
+        _atribuir_roles_e_grupos(admin, "kc-id-2", ["Professor"], [])
+
+        assert admin.get_realm_role.call_count == 2
 
 
 # ---------------------------------------------------------------------------

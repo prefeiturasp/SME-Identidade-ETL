@@ -26,15 +26,22 @@ Executa o pipeline diretamente, sem Celery. Útil para depuração local.
 
 ---
 
-## 3. Via worker Celery com hot-reload
+## 3. Via workers Celery com hot-reload
 
 ```bash
-docker compose -f docker-compose-dev.yml up etl_worker
+docker compose -f docker-compose-dev.yml up etl_worker_celery etl_worker_keycloak etl_worker_token_ms
 ```
 
-O `scripts/watch_celery.py` inicia o worker com `watchdog.PollingObserver`
-e reinicia automaticamente ao detectar mudanças em `/app/apps` ou `/app/config`.
-Substitui `watchmedo auto-restart` em ambientes sem inotify (Docker Desktop no macOS/Windows).
+Em dev, os workers são divididos por fila (`etl_worker_celery`,
+`etl_worker_keycloak`, `etl_worker_token_ms` — ver
+[Visão Geral](../arquitetura/visao_geral.md)), cada um rodando
+`scripts/watch_celery.py` com `ETL_WORKER_FILAS` próprio. O script inicia o
+worker com `watchdog.PollingObserver` e reinicia automaticamente ao
+detectar mudanças em `/app/apps` ou `/app/config`. Substitui `watchmedo
+auto-restart` em ambientes sem inotify (Docker Desktop no macOS/Windows).
+
+Monitoramento das filas/tasks via Celery Flower: `http://localhost:5555`
+(serviço `etl_flower`).
 
 ---
 

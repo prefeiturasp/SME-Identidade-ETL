@@ -248,6 +248,16 @@ class ControleProvisionamento(models.Model):
         null=True,
         help_text="SHA-256 do payload enviado ao token-ms",
     )
+    token_ms_pendente = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "True quando hash_token_ms está desatualizado em relação"
+            " ao dado atual — permite localizar pendências de envio"
+            " ao token-ms sem depender do staging de uma execução"
+            " específica (que é limpo periodicamente)."
+        ),
+    )
     versao = models.PositiveIntegerField(default=1)
     sincronizado_em = models.DateTimeField(auto_now=True)
     ultima_execucao = models.ForeignKey(

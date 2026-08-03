@@ -4,11 +4,15 @@ Microsserviço ETL responsável por ingerir, reconciliar e provisionar
 identidades da SME-SP (servidores, alunos e terceiros) a partir das bases
  (SE1426, CoreSSO, EOL_DB) no Keycloak e no token-ms.
 
-Roda como worker Celery (`etl_worker`) + API Django (`etl_api`), com KeyDB
-como broker. O `SYNC_REC_DB` (Postgres próprio do serviço) guarda apenas
-controle técnico do pipeline — execuções, watermark, checkpoints, retries e
-idempotência de provisionamento —, nunca dados de negócio ou PII. As fontes
- (SQL Server) são lidas em modo somente leitura.
+Roda como workers Celery + API Django (`etl_api`), com KeyDB como broker.
+Em dev, os workers são divididos por fila (`etl_worker_celery`,
+`etl_worker_keycloak`, `etl_worker_token_ms`), replicando os 3 deployments
+separados do Rancher em produção — uma etapa longa (ex.: Keycloak com
+volume grande) não bloqueia as demais filas atrás dela. O `SYNC_REC_DB`
+(Postgres próprio do serviço) guarda apenas controle técnico do pipeline —
+execuções, watermark, checkpoints, retries e idempotência de
+provisionamento —, nunca dados de negócio ou PII. As fontes (SQL Server)
+são lidas em modo somente leitura.
 
 ## Versão de Python
 
@@ -19,14 +23,19 @@ idempotência de provisionamento —, nunca dados de negócio ou PII. As fontes
 - O ETL não executa sozinho na inicialização.
 - Toda execução roda via pipeline Celery (`task_identidade_executar_pipeline`),
   disparada pela API, pelo dashboard HTML ou por comando de management.
-- O serviço `etl_worker` atua como worker Celery; o `etl_api` expõe a API/dashboard.
+- O `etl_api` expõe a API/dashboard; os workers Celery processam as filas.
 
 ## Compose
 
 - `docker-compose.yml` (base/produção):
-  - `keydb`, `etl_worker`, `etl_api`
+  - `keydb`, `etl_worker` (fila única), `etl_api`
 - `docker-compose-dev.yml` (desenvolvimento):
-  - `postgres_sync_rec`, `keydb`, `etl_worker`, `etl_api` (com debugpy)
+  - `postgres_sync_rec`, `keydb`, `etl_api` (com debugpy), `etl_flower`
+    (Celery Flower em `:5555`) e 3 workers dedicados por fila, espelhando
+    os 3 deployments separados do Rancher:
+    - `etl_worker_celery` — filas `celery`, `etl_extracao`, `etl_transformacao`
+    - `etl_worker_keycloak` — fila `etl_carga_keycloak`
+    - `etl_worker_token_ms` — fila `etl_carga_token_ms`
 
 ## Subir Ambiente
 
@@ -76,18 +85,21 @@ curl -H "X-API-Key: sua_chave" http://localhost:8001/api/v1/etl/execucoes/
 ## Pipeline
 
 O pipeline roda em 6 etapas orquestradas por Celery (ver
-`apps/controle_etl/tasks.py`), iniciadas por `task_identidade_executar_pipeline`:
+`LogEtapaETL.NomeEtapa` em `apps/controle_etl/models.py` e
+`apps/controle_etl/tasks.py`), iniciadas por
+`task_identidade_executar_pipeline`:
 
-1. **Extração** — `task_identidade_extrair_se1426`, `task_identidade_extrair_coresso`
+1-2b. **Extração** — `task_identidade_extrair_se1426`, `task_identidade_extrair_coresso`
    e `task_identidade_extrair_eol_alunos` em paralelo (chord), persistindo em staging
-2. **Resolução de identidade** — `task_identidade_resolver_identidade`: transforma,
+3. **Resolução de identidade** — `task_identidade_resolver_identidade`: transforma,
    reconcilia e deduplica os registros de staging
-3. **Provisionamento Keycloak** — `task_provisionar_identidade_keycloak`: upsert em
+4. **Provisionamento Keycloak** — `task_provisionar_identidade_keycloak`: upsert em
    lote, idempotente (`ControleProvisionamento`); desabilitado por padrão
    (ver `ETL_CARGA_KEYCLOAK_BULK_HABILITADO`)
-4. **Carga token-ms** — `task_carregar_atributos_token`: envia atributos
-   complementares em lotes
-5. **Registro operacional** — `task_sync_rec_etl`: fecha a execução, registra
+5. **Carga token-ms** — `task_carregar_atributo_token_individual`, disparada
+   fire-and-forget por usuário confirmado no Keycloak (fila `etl_carga_token_ms`,
+   fora da chain principal); `task_carregar_atributos_token` é o fallback em lote
+6. **Registro operacional** — `task_sync_rec_etl`: fecha a execução, registra
    métricas finais e agenda a limpeza de staging (`task_identidade_limpar_staging`)
 
 A carga em massa do Keycloak fica desligada por padrão. Use `validar_e2e` para

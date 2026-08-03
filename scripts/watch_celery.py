@@ -6,12 +6,29 @@ em vez de ``watchmedo auto-restart``/inotify porque o volume montado do
 Docker Desktop (macOS/Windows) não propaga eventos inotify do host.
 """
 
+import os
 import subprocess
 import sys
 import time
 
 from watchdog.events import FileSystemEventHandler  # type: ignore
 from watchdog.observers.polling import PollingObserver  # type: ignore
+
+# Mesmo prefixo de config.settings._PREFIXO_FILA — isola este worker
+# das filas reais quando aponta pra um broker compartilhado (ex.:
+# Redis de QA), sem afetar o comportamento padrão (prefixo vazio).
+_PREFIXO_FILA = os.getenv("ETL_PREFIXO_FILA", "")
+
+# ETL_WORKER_FILAS permite subir workers dedicados por fila (réplica
+# local dos 3 deployments separados do Rancher: keycloak, token_ms e
+# celery/extração/transformação) — sem isso, uma única etapa longa
+# (ex.: Keycloak com volume grande) bloqueia as demais filas atrás
+# dela no mesmo processo, o que não acontece em produção.
+_NOMES_FILA = os.getenv(
+    "ETL_WORKER_FILAS",
+    "celery,etl_extracao,etl_transformacao,"
+    "etl_carga_keycloak,etl_carga_token_ms",
+).split(",")
 
 _CELERY_CMD = [
     "celery",
@@ -21,8 +38,7 @@ _CELERY_CMD = [
     "--loglevel=INFO",
     "--concurrency=1",
     "-Q",
-    "celery,etl_extracao,etl_transformacao,etl_carga_keycloak,"
-    "etl_carga_token_ms",
+    ",".join(f"{_PREFIXO_FILA}{nome}" for nome in _NOMES_FILA),
 ]
 
 _WATCH_DIRS = ["/app/apps", "/app/config"]

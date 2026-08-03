@@ -10,15 +10,15 @@ import contextlib
 import hashlib
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.conf import settings
 from django.db import close_old_connections, connection
-
-from apps.controle_etl.libs.thread_processor import ThreadPoolProcessor
 
 logger = logging.getLogger("etl_identidade")
 
@@ -627,6 +627,51 @@ def obter_ou_criar_controle(
     return controle
 
 
+# Cache de roles/grupos do Keycloak, compartilhado entre as threads de
+# uma mesma execução — get_realm_role/get_group_by_path resolvem o
+# mesmo nome/caminho para milhares de usuários diferentes (roles e
+# grupos não mudam durante o provisionamento), então repetir a mesma
+# chamada GET por usuário é overhead puro. `_lock` protege só a seção
+# de popular o dict (a leitura de dict é thread-safe em CPython).
+_cache_roles_grupos_kc_lock = threading.Lock()
+_cache_roles_grupos_kc: dict[str, dict[str, Any | None]] = {
+    "role": {},
+    "grupo": {},
+}
+
+
+def limpar_cache_roles_grupos_kc() -> None:
+    """Limpa o cache de roles/grupos — chamar no início de cada execução.
+
+    Sem isso, uma role/grupo criado ou renomeado no Keycloak entre
+    duas execuções ficaria com o valor (ou ausência) da primeira
+    consulta presa em memória do processo do worker indefinidamente.
+    """
+    with _cache_roles_grupos_kc_lock:
+        _cache_roles_grupos_kc["role"].clear()
+        _cache_roles_grupos_kc["grupo"].clear()
+
+
+def _resolver_com_cache(
+    admin: Any, tipo: str, chave: str, getter: Any
+) -> Any | None:
+    cache = _cache_roles_grupos_kc[tipo]
+    if chave in cache:
+        return cache[chave]
+    valor = _com_reintento(getter, admin, chave)
+    with _cache_roles_grupos_kc_lock:
+        cache[chave] = valor
+    return valor
+
+
+def _com_reintento_role(admin: Any, nome_role: str) -> Any:
+    return _com_reintento(admin.get_realm_role, nome_role)
+
+
+def _com_reintento_grupo(admin: Any, caminho_grupo: str) -> Any:
+    return _com_reintento(admin.get_group_by_path, caminho_grupo)
+
+
 def _atribuir_roles_e_grupos(
     admin: Any,
     kc_user_id: str,
@@ -635,8 +680,11 @@ def _atribuir_roles_e_grupos(
 ) -> None:
     for nome_role in roles_realm:
         try:
-            role = _com_reintento(admin.get_realm_role, nome_role)
-            _com_reintento(admin.assign_realm_roles, kc_user_id, [role])
+            role = _resolver_com_cache(
+                admin, "role", nome_role, _com_reintento_role
+            )
+            if role:
+                _com_reintento(admin.assign_realm_roles, kc_user_id, [role])
         except Exception as exc:
             logger.info(
                 "KC: role '%s' indisponível (ignorada): %s",
@@ -645,7 +693,9 @@ def _atribuir_roles_e_grupos(
             )
     for caminho_grupo in grupos:
         try:
-            grupo = _com_reintento(admin.get_group_by_path, caminho_grupo)
+            grupo = _resolver_com_cache(
+                admin, "grupo", caminho_grupo, _com_reintento_grupo
+            )
             if grupo and grupo.get("id"):
                 _com_reintento(admin.group_user_add, kc_user_id, grupo["id"])
         except Exception as exc:
@@ -793,10 +843,16 @@ def provisionar_usuario_kc(
         if execucao is not None:
             controle.ultima_execucao = execucao
         controle.erro_sincronizacao = None
-        controle.save()
 
     hash_token_atual = calcular_hash_conteudo(_payload_token_ms_hash(usuario))
     token_ms_pendente = controle.hash_token_ms != hash_token_atual
+
+    # Persistido mesmo quando pular_keycloak=True (senão, quando o
+    # Keycloak é ignorado, nada gravaria a pendência de token-ms —
+    # controle.save() abaixo já cobre os dois caminhos, sem duplicar
+    # a chamada).
+    controle.token_ms_pendente = token_ms_pendente
+    controle.save()
 
     return {
         "acao": acao,
@@ -846,16 +902,32 @@ def provisionar_usuarios_kc_em_paralelo(
         except Exception as exc:
             return exc
         finally:
-            # Cada worker do ThreadPoolProcessor roda seu lote inteiro
-            # numa única thread — fechar a conexão aqui (por usuário, não
-            # por lote) evita reter transações/locks abertos se um item
-            # do meio do lote falhar antes do fim do lote inteiro.
+            # Fecha a conexão por usuário (não por lote) — evita reter
+            # transações/locks abertos se um item do meio falhar antes
+            # do fim do lote inteiro.
             connection.close()
 
-    processor = ThreadPoolProcessor(
-        max_workers=workers, prefixo_log="provisionamento_kc"
+    # `ThreadPoolExecutor.map` entrega um item por vez a cada thread
+    # livre (fila dinâmica de verdade) — ao contrário de
+    # `ThreadPoolProcessor`, que fatia o lote em N pedaços FIXOS por
+    # thread: se uma thread termina seu pedaço antes das outras (ex.:
+    # usuários com menos roles/grupos, portanto menos chamadas HTTP),
+    # ela fica ociosa em vez de pegar mais trabalho. Com chamadas HTTP
+    # síncronas de duração variável (via VPN, a variação é ainda
+    # maior), essa ociosidade é o principal desperdício de throughput.
+    inicio = time.monotonic()
+    lista_usuarios = list(usuarios)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        resultados = list(executor.map(_provisionar, lista_usuarios))
+    elapsed = time.monotonic() - inicio
+    taxa = len(lista_usuarios) / elapsed if elapsed > 0 else float("inf")
+    logger.info(
+        "[provisionamento_kc] throughput: %d itens em %.2fs (%.2f itens/s)",
+        len(lista_usuarios),
+        elapsed,
+        taxa,
     )
-    return processor.processar(list(usuarios), _provisionar)
+    return resultados
 
 
 def _slugificar_client_id(nome: str) -> str:
