@@ -49,9 +49,28 @@ class TestCriarUsuarioManualView:
 
     def test_sem_cpf_e_sem_rf_retorna_400(self, cliente: APIClient) -> None:
         """Deve exigir ao menos cpf ou rf."""
-        resp = cliente.post(self.URL, {"nome": "Teste"}, format="json")
+        resp = cliente.post(
+            self.URL,
+            {"nome": "Teste", "email": "teste@externo.com"},
+            format="json",
+        )
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "cpf" in str(resp.json()).lower()
+
+    def test_sem_email_retorna_400(self, cliente: APIClient) -> None:
+        """Deve rejeitar payload sem o campo obrigatório email.
+
+        Sem e-mail, o Keycloak dispara a required action de perfil
+        incompleto no primeiro login e o usuário não consegue
+        autenticar via password grant.
+        """
+        resp = cliente.post(
+            self.URL,
+            {"nome": "Teste", "cpf": "12345678900"},
+            format="json",
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "email" in str(resp.json()).lower()
 
     def test_tipo_usuario_invalido_retorna_400(
         self, cliente: APIClient
@@ -62,6 +81,7 @@ class TestCriarUsuarioManualView:
             {
                 "nome": "Teste",
                 "cpf": "12345678900",
+                "email": "teste@externo.com",
                 "tipo_usuario": "robo",
             },
             format="json",
@@ -127,6 +147,7 @@ class TestCriarUsuarioManualView:
                 {
                     "nome": "Servidor Teste",
                     "rf": "1234567",
+                    "email": "servidor.teste@externo.com",
                     "tipo_usuario": "servidor",
                 },
                 format="json",
@@ -153,6 +174,7 @@ class TestCriarUsuarioManualView:
                 {
                     "nome": "Aluno Teste",
                     "cpf": "98765432100",
+                    "email": "aluno.teste@externo.com",
                     "tipo_usuario": "aluno",
                 },
                 format="json",
@@ -177,12 +199,20 @@ class TestCriarUsuarioManualView:
         ):
             cliente.post(
                 self.URL,
-                {"nome": "Nome Antigo", "cpf": "11122233344"},
+                {
+                    "nome": "Nome Antigo",
+                    "cpf": "11122233344",
+                    "email": "reenvio@externo.com",
+                },
                 format="json",
             )
             cliente.post(
                 self.URL,
-                {"nome": "Nome Novo", "cpf": "11122233344"},
+                {
+                    "nome": "Nome Novo",
+                    "cpf": "11122233344",
+                    "email": "reenvio@externo.com",
+                },
                 format="json",
             )
 
@@ -203,7 +233,11 @@ class TestCriarUsuarioManualView:
         ):
             resp = cliente.post(
                 self.URL,
-                {"nome": "Teste", "cpf": "55566677788"},
+                {
+                    "nome": "Teste",
+                    "cpf": "55566677788",
+                    "email": "teste502@externo.com",
+                },
                 format="json",
             )
 
@@ -216,6 +250,7 @@ class TestCriarUsuarioManualView:
             {
                 "nome": "Teste",
                 "cpf": "12345678900",
+                "email": "roles-sem-sistema@externo.com",
                 "roles": ["Admin"],
             },
             format="json",
@@ -229,6 +264,7 @@ class TestCriarUsuarioManualView:
             {
                 "nome": "Teste",
                 "cpf": "12345678900",
+                "email": "sistema-sem-roles@externo.com",
                 "sistema": 1,
             },
             format="json",
@@ -271,6 +307,7 @@ class TestCriarUsuarioManualView:
                 {
                     "nome": "Fulano",
                     "cpf": "12345678900",
+                    "email": "fulano@externo.com",
                     "sistema": 1,
                     "roles": ["Admin"],
                 },
@@ -315,6 +352,7 @@ class TestCriarUsuarioManualView:
                 {
                     "nome": "Fulano",
                     "cpf": "12345678900",
+                    "email": "fulano@externo.com",
                     "sistema": 1,
                     "roles": ["Admin"],
                 },
@@ -346,6 +384,7 @@ class TestCriarUsuarioManualView:
                 {
                     "nome": "Fulano",
                     "cpf": "12345678900",
+                    "email": "fulano@externo.com",
                     "sistema": 9999,
                     "roles": ["Admin"],
                 },
@@ -374,6 +413,7 @@ class TestCriarUsuarioManualView:
             {
                 "nome": "Fulano",
                 "cpf": "12345678900",
+                "email": "fulano@externo.com",
                 "sistema": 42,
                 "roles": ["Admin"],
             },
