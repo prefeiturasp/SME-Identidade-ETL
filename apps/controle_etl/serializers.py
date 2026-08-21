@@ -254,7 +254,7 @@ class CriarUsuarioManualSerializer(serializers.Serializer):
 
     nome = serializers.CharField()
     cpf = serializers.CharField(required=False, allow_blank=True)
-    email = serializers.EmailField(required=False, allow_blank=True)
+    email = serializers.EmailField()
     rf = serializers.CharField(required=False, allow_blank=True)
     tipo_usuario = serializers.ChoiceField(
         choices=["servidor", "aluno", "terceiro"],
