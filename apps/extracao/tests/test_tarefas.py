@@ -10,8 +10,10 @@ import pytest
 
 from apps.extracao.tasks import (
     RegistroIdentidade,
+    VinculoServidor,
     _atualizar_watermark,
     _extrair_coresso_por_identificadores,
+    _extrair_vinculos_servidor_se1426,
     _iterar_com_watermark,
     _montar_resultado_usuario,
     _obter_watermark,
@@ -472,6 +474,266 @@ class TestExtrairSe1426:
             list(extrair_se1426())
 
         assert MarcaDaguaExtracao.objects.filter(fonte="se1426").exists()
+
+    def test_anexa_vinculos_extraidos_ao_registro_do_rf(
+        self, settings: Any
+    ) -> None:
+        """Confirma a integração entre identidade e vínculos.
+
+        Um vínculo extraído para um RF deve aparecer em
+        ``RegistroIdentidade.vinculos`` do registro daquele mesmo RF.
+        """
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        linha = (
+            "1234567",
+            "Ana Lima",
+            "11122233344",
+            "ATIVO",
+            "ana@sme.sp.gov.br",
+        )
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("rf",),
+            ("nome",),
+            ("cpf",),
+            ("situacao",),
+            ("email",),
+        ]
+        mock_cursor.fetchmany.side_effect = [[linha], []]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        vinculo = VinculoServidor(
+            tipo_vinculo="cargo_base",
+            codigo_vinculo_origem="998877",
+            cargo_codigo="101",
+            unidade_codigo="123456",
+            dre_codigo="11",
+        )
+
+        with (
+            patch("pyodbc.connect", return_value=mock_conn),
+            patch(
+                _SEM_VINCULOS_SERVIDOR,
+                return_value={"1234567": [vinculo]},
+            ),
+        ):
+            registros = list(extrair_se1426())
+
+        assert len(registros) == 1
+        assert registros[0].vinculos == [vinculo]
+
+    def test_rf_sem_vinculo_recebe_lista_vazia(self, settings: Any) -> None:
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        linha = ("7654321", "Sem Vinculo", "99988877766", "ATIVO", None)
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("rf",),
+            ("nome",),
+            ("cpf",),
+            ("situacao",),
+            ("email",),
+        ]
+        mock_cursor.fetchmany.side_effect = [[linha], []]
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        vinculo_de_outro_rf = VinculoServidor(
+            tipo_vinculo="cargo_base",
+            codigo_vinculo_origem="1",
+        )
+
+        with (
+            patch("pyodbc.connect", return_value=mock_conn),
+            patch(
+                _SEM_VINCULOS_SERVIDOR,
+                return_value={"1234567": [vinculo_de_outro_rf]},
+            ),
+        ):
+            registros = list(extrair_se1426())
+
+        assert registros[0].vinculos == []
+
+
+@pytest.mark.django_db
+class TestExtrairVinculosServidorSe1426:
+    """Testes de ``_extrair_vinculos_servidor_se1426``.
+
+    Cada chamada percorre três consultas (uma por tipo de vínculo:
+    cargo base, cargo sobreposto, função/atividade), cada uma sobre o
+    mesmo cursor mockado, em sequência.
+    """
+
+    def _mock_conexao(
+        self, linhas_por_consulta: list[list[tuple]]
+    ) -> MagicMock:
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("rf",),
+            ("codigo_vinculo_origem",),
+            ("cargo_codigo",),
+            ("cargo_nome",),
+            ("unidade_codigo",),
+            ("unidade_nome",),
+            ("dre_codigo",),
+            ("situacao",),
+        ]
+        # fetchmany é chamado até esvaziar cada consulta ([] encerra);
+        # uma lista de linhas por consulta, seguida de [] para cada uma.
+        efeitos = []
+        for linhas in linhas_por_consulta:
+            efeitos.append(linhas)
+            efeitos.append([])
+        mock_cursor.fetchmany.side_effect = efeitos
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        return mock_conn
+
+    def test_extrai_um_vinculo_de_cada_tipo(self, settings: Any) -> None:
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        linha_cargo_base = (
+            "1234567",
+            "381355",
+            "3239",
+            None,
+            "019275",
+            "FRANCISCO REBOLO",
+            "108100",
+            None,
+        )
+        linha_cargo_sobreposto = (
+            "1234567",
+            "511012",
+            "109",
+            None,
+            "108103",
+            "DIVISAO PEDAGOGICA",
+            "108100",
+            None,
+        )
+        linha_funcao_atividade = (
+            "1234567",
+            "381355-2-108100",
+            "2",
+            None,
+            "108100",
+            "DRE BUTANTA",
+            "108100",
+            None,
+        )
+
+        mock_conn = self._mock_conexao(
+            [
+                [linha_cargo_base],
+                [linha_cargo_sobreposto],
+                [linha_funcao_atividade],
+            ]
+        )
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = _extrair_vinculos_servidor_se1426()
+
+        assert set(resultado.keys()) == {"1234567"}
+        vinculos = resultado["1234567"]
+        assert len(vinculos) == 3
+        tipos = {v.tipo_vinculo for v in vinculos}
+        assert tipos == {"cargo_base", "cargo_sobreposto", "funcao_atividade"}
+        mock_conn.close.assert_called_once()
+
+    def test_agrupa_multiplos_vinculos_do_mesmo_rf(
+        self, settings: Any
+    ) -> None:
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        linha_1 = (
+            "1234567",
+            "381355",
+            "3239",
+            None,
+            "019275",
+            "UE 1",
+            "108100",
+            None,
+        )
+        linha_2 = (
+            "1234567",
+            "511012",
+            "3352",
+            None,
+            "108202",
+            "UE 2",
+            "108200",
+            None,
+        )
+
+        mock_conn = self._mock_conexao([[linha_1, linha_2], [], []])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = _extrair_vinculos_servidor_se1426()
+
+        assert len(resultado["1234567"]) == 2
+        codigos = {v.codigo_vinculo_origem for v in resultado["1234567"]}
+        assert codigos == {"381355", "511012"}
+
+    def test_linha_sem_rf_e_ignorada(self, settings: Any) -> None:
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        linha_sem_rf = (
+            None,
+            "381355",
+            "3239",
+            None,
+            "019275",
+            "UE 1",
+            "108100",
+            None,
+        )
+
+        mock_conn = self._mock_conexao([[linha_sem_rf], [], []])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = _extrair_vinculos_servidor_se1426()
+
+        assert resultado == {}
+
+    def test_fecha_conexao_mesmo_sem_vinculos(self, settings: Any) -> None:
+        settings.SE1426_DB_SERVIDOR = "srv-se"
+        settings.SE1426_DB_NOME = "se1426"
+        settings.SE1426_DB_USUARIO = "usr"
+        settings.SE1426_DB_SENHA = "pwd"
+        settings.SE1426_DB_TIMEOUT = 30
+
+        mock_conn = self._mock_conexao([[], [], []])
+
+        with patch("pyodbc.connect", return_value=mock_conn):
+            resultado = _extrair_vinculos_servidor_se1426()
+
+        assert resultado == {}
+        mock_conn.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
