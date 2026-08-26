@@ -31,6 +31,10 @@ from apps.extracao.tasks import (
     extrair_vinculos_usuario_grupo_coresso,
 )
 
+_SEM_VINCULOS_SERVIDOR = (
+    "apps.extracao.tasks._extrair_vinculos_servidor_se1426"
+)
+
 # ---------------------------------------------------------------------------
 # RegistroIdentidade
 # ---------------------------------------------------------------------------
@@ -118,9 +122,7 @@ class TestSanitizarEmail:
         assert _sanitizar_email("joao@sme.sp.gov.br") == "joao@sme.sp.gov.br"
 
     def test_email_com_espacos_nas_pontas(self) -> None:
-        assert (
-            _sanitizar_email(" joao@sme.sp.gov.br ") == "joao@sme.sp.gov.br"
-        )
+        assert _sanitizar_email(" joao@sme.sp.gov.br ") == "joao@sme.sp.gov.br"
 
     def test_sem_dominio_apos_arroba(self) -> None:
         assert _sanitizar_email("8bde384cd48ce311b1fe782bcb3d2d76@") is None
@@ -401,20 +403,25 @@ class TestExtrairSe1426:
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("pyodbc.connect", return_value=mock_conn):
+        with (
+            patch("pyodbc.connect", return_value=mock_conn),
+            patch(_SEM_VINCULOS_SERVIDOR, return_value={}),
+        ):
             registros = list(extrair_se1426())
 
         assert len(registros) == 1
         assert registros[0].rf == "1234567"
         assert registros[0].situacao == "ativo"
+        assert registros[0].vinculos == []
         mock_conn.close.assert_called_once()
 
     def test_sql_nao_aplica_filtro_de_data(self, settings: Any) -> None:
         """Confirma a ausência de filtro incremental no SE1426.
 
         A view v_servidor_sme_serap não expõe data de atualização —
-        a extração SQL sempre traz a base completa, sem filtro
-        incremental (ver apps/extracao/tasks.py:_extrair_se1426_sql).
+        a extração SQL sempre traz a base completa, sem filtro por
+        data (a consulta pode ter WHERE por outro motivo, ex.:
+        deduplicação, mas nunca um filtro de data).
         """
         settings.SE1426_DB_SERVIDOR = "srv-se"
         settings.SE1426_DB_NOME = "se1426"
@@ -428,12 +435,16 @@ class TestExtrairSe1426:
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("pyodbc.connect", return_value=mock_conn) as mock_connect:
+        with (
+            patch("pyodbc.connect", return_value=mock_conn) as mock_connect,
+            patch(_SEM_VINCULOS_SERVIDOR, return_value={}),
+        ):
             list(extrair_se1426(data_referencia="2026-01-01"))
 
         mock_connect.assert_called_once()
         consulta_executada = mock_cursor.execute.call_args[0][0]
-        assert "WHERE" not in consulta_executada
+        assert "dt_alteracao" not in consulta_executada.lower()
+        assert "2026-01-01" not in consulta_executada
 
     def test_atualiza_watermark_apos_extracao(self, settings: Any) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
