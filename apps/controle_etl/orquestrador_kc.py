@@ -258,6 +258,38 @@ def construir_payload_kc(usuario: Any) -> dict[str, Any]:
     }
 
 
+def _vinculos_payload(usuario: Any) -> list[dict[str, Any]]:
+    """Serializa os vínculos funcionais de um servidor para o payload.
+
+    Só ``UsuarioServidorStaging`` tem a relação reversa ``vinculos``
+    (``VinculoServidorStaging``, ver ``apps.staging.models``) — demais
+    tipos de staging não têm vínculo funcional, retornam lista vazia.
+    Ordenado por chave natural para manter ``hash_token_ms`` estável
+    entre execuções quando o conjunto de vínculos não muda.
+    """
+    gerenciador = getattr(usuario, "vinculos", None)
+    if gerenciador is None:
+        return []
+    return sorted(
+        (
+            {
+                "tipo_vinculo": vinculo.tipo_vinculo,
+                "codigo_vinculo_origem": vinculo.codigo_vinculo_origem,
+                "cargo_codigo": vinculo.cargo_codigo,
+                "cargo_nome": vinculo.cargo_nome,
+                "unidade_codigo": vinculo.unidade_codigo,
+                "unidade_nome": vinculo.unidade_nome,
+                "dre_codigo": vinculo.dre_codigo,
+                "situacao": vinculo.situacao,
+                "data_inicio": vinculo.data_inicio,
+                "vigente": vinculo.vigente,
+            }
+            for vinculo in gerenciador.all()
+        ),
+        key=lambda v: (v["tipo_vinculo"], v["codigo_vinculo_origem"]),
+    )
+
+
 def _payload_token_ms_hash(usuario: Any) -> dict[str, Any]:
     """Campos de negócio do payload do token-ms, sem metadado de execução.
 
@@ -293,6 +325,7 @@ def _payload_token_ms_hash(usuario: Any) -> dict[str, Any]:
         "tipo_acesso": getattr(usuario, "tipo_acesso", None),
         "situacao": usuario.situacao,
         "fonte": usuario.fonte,
+        "vinculos": _vinculos_payload(usuario),
     }
 
 

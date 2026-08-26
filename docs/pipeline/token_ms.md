@@ -139,18 +139,58 @@ do `SME-Identidade-Token-Microsservico`.
 
 ---
 
-## Limitações conhecidas
+## Vínculos funcionais de servidor (`vinculos`)
 
-Os campos `cargo`, `funcao`, `unidade`, `unidade_codigo`, `dre` e `ue`
-de **servidores** (fonte SE1426) são sempre enviados como `null`
-hoje: a extração de SE1426 (`apps/extracao/tasks.py`) só lê
-`rf, nome, cpf, situacao, email` — nenhuma view atualmente consultada
-expõe cargo ou lotação de servidor. No sistema legado esses dados
-vinham de uma API de fachada (EOL/SGP) que o projeto decidiu
-deliberadamente não reintegrar, por perpetuar a dependência que o
-projeto existe para eliminar. Popular esses campos depende de uma
-investigação de schema em SE1426 (ou fonte irmã) com o time de dados,
-ainda em aberto.
+Um servidor pode ter múltiplos vínculos funcionais vigentes e
+independentes ao mesmo tempo — cargo base, cargo sobreposto/comissionado
+e função/atividade, cada um com seu próprio cargo e sua própria
+unidade/DRE, inclusive mais de um cargo base simultâneo. Por isso esse
+dado **não** é um conjunto de campos escalares no payload — é uma lista
+aninhada:
+
+```json
+{
+  "rf": "1234567",
+  ...,
+  "vinculos": [
+    {
+      "tipo_vinculo": "cargo_base",
+      "codigo_vinculo_origem": "998877",
+      "cargo_codigo": "101",
+      "cargo_nome": "PROFESSOR",
+      "unidade_codigo": "123456",
+      "unidade_nome": "EMEF FULANO DE TAL",
+      "dre_codigo": "11",
+      "situacao": "ativo",
+      "data_inicio": null,
+      "vigente": true
+    }
+  ]
+}
+```
+
+Extraído em `_extrair_vinculos_servidor_se1426` (`apps/extracao/tasks.py`)
+a partir de `v_servidor_cotic` + `v_cargo_base_cotic` (cargo base do
+servidor, join por `cd_servidor`) + `lotacao_servidor` (unidade do cargo
+base), `cargo_sobreposto_servidor` (cargo sobreposto) e
+`funcao_atividade_cargo_servidor` (função/atividade). Cada tipo é
+extraído como vínculo independente, sem `COALESCE`/fallback sobre o
+cargo base — nenhum tipo prevalece sobre outro. Todos resolvem a DRE
+via `v_cadastro_unidade_educacao.cd_unidade_administrativa_referencia` a
+partir da UE — a DRE nunca é coluna direta do vínculo. Só vínculos
+vigentes (`dt_fim_nomeacao`/`dt_cancelamento`/`dt_fim_cargo_sobreposto`/
+`dt_fim_funcao_atividade` nulos ou futuros, conforme cada tabela) são
+extraídos neste momento; histórico completo fica fora de escopo.
+Persistido em staging como `VinculoServidorStaging` (`apps.staging.models`,
+FK para `UsuarioServidorStaging`), incluído no payload por
+`_vinculos_payload`/`_payload_token_ms_hash`
+(`apps/controle_etl/orquestrador_kc.py`) e coberto automaticamente pelo
+hash de idempotência — mudança em qualquer vínculo já dispara reenvio.
+
+Os campos escalares `cargo`, `funcao`, `unidade`, `unidade_codigo`,
+`dre` e `ue` do payload permanecem sempre `null` para servidor (usados
+hoje só por outros tipos de usuário, ex. aluno) — não confundir com
+`vinculos`, que é a fonte real desse dado para servidor.
 
 ---
 

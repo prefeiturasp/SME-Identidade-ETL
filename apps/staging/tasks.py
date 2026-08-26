@@ -55,6 +55,33 @@ def _instanciar_staging(modelo: type, registro: Any, id_execucao: str) -> Any:
     return modelo(**campos)
 
 
+def _instanciar_vinculos(
+    modelo: type, servidor: Any, registro: Any, id_execucao: str
+) -> list:
+    """Monta as instâncias de vínculo (não salvas) de um servidor.
+
+    Só populado para ``tipo == "servidor"`` — os demais tipos de
+    staging não têm ``vinculos`` no ``RegistroIdentidade``.
+    """
+    return [
+        modelo(
+            servidor=servidor,
+            id_execucao=id_execucao,
+            tipo_vinculo=vinculo.tipo_vinculo,
+            codigo_vinculo_origem=vinculo.codigo_vinculo_origem,
+            cargo_codigo=vinculo.cargo_codigo,
+            cargo_nome=vinculo.cargo_nome,
+            unidade_codigo=vinculo.unidade_codigo,
+            unidade_nome=vinculo.unidade_nome,
+            dre_codigo=vinculo.dre_codigo,
+            situacao=vinculo.situacao,
+            data_inicio=vinculo.data_inicio,
+            vigente=vinculo.vigente,
+        )
+        for vinculo in getattr(registro, "vinculos", [])
+    ]
+
+
 def persistir_extracao_staging(
     registros: Iterable, *, id_execucao: str
 ) -> int:
@@ -71,12 +98,18 @@ def persistir_extracao_staging(
     (ex.: SE1426 completo), acumular tudo antes de gravar já causou
     OOM/SIGKILL do worker em ambientes com memória limitada.
 
+    Servidores com vínculos funcionais (cargo base, sobreposto,
+    função/atividade) têm as ``VinculoServidorStaging`` filhas gravadas
+    logo após o ``bulk_create`` do pai, aproveitando os PKs que o
+    Postgres devolve na própria chamada (Django ``bulk_create`` popula
+    ``pk`` nas instâncias quando o backend suporta ``RETURNING``).
+
     Args:
         registros: Iterável (idealmente generator) de RegistroIdentidade.
         id_execucao: UUID da ExecucaoETL associada.
 
     Returns:
-        Total de registros persistidos.
+        Total de registros persistidos (staging pai, sem contar vínculos).
     """
     from apps.staging import models as modelos_staging  # noqa: PLC0415
 
@@ -85,6 +118,10 @@ def persistir_extracao_staging(
         "aluno": [],
         "terceiro": [],
     }
+    # Pareia cada instância de servidor pendente de bulk_create com o
+    # RegistroIdentidade de origem, só para extrair os vínculos depois
+    # que a instância tiver PK.
+    registros_servidor_pendentes: list = []
     total = 0
 
     def _descarregar(tipo: str) -> None:
@@ -97,6 +134,26 @@ def persistir_extracao_staging(
         total += len(lote)
         lotes_por_tipo[tipo] = []
 
+        if tipo == "servidor":
+            _descarregar_vinculos()
+
+    def _descarregar_vinculos() -> None:
+        vinculos: list = []
+        for servidor, registro in registros_servidor_pendentes:
+            vinculos.extend(
+                _instanciar_vinculos(
+                    modelos_staging.VinculoServidorStaging,
+                    servidor,
+                    registro,
+                    id_execucao,
+                )
+            )
+        registros_servidor_pendentes.clear()
+        if vinculos:
+            modelos_staging.VinculoServidorStaging.objects.bulk_create(
+                vinculos, batch_size=_TAMANHO_LOTE_PERSISTENCIA
+            )
+
     for registro in registros:
         tipo = registro.tipo
         if tipo not in lotes_por_tipo:
@@ -108,9 +165,10 @@ def persistir_extracao_staging(
             continue
 
         modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
-        lotes_por_tipo[tipo].append(
-            _instanciar_staging(modelo, registro, id_execucao)
-        )
+        instancia = _instanciar_staging(modelo, registro, id_execucao)
+        lotes_por_tipo[tipo].append(instancia)
+        if tipo == "servidor" and registro.vinculos:
+            registros_servidor_pendentes.append((instancia, registro))
 
         if len(lotes_por_tipo[tipo]) >= _TAMANHO_LOTE_PERSISTENCIA:
             _descarregar(tipo)
