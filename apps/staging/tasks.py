@@ -55,6 +55,107 @@ def _instanciar_staging(modelo: type, registro: Any, id_execucao: str) -> Any:
     return modelo(**campos)
 
 
+def _instanciar_vinculos(
+    modelo: type, servidor: Any, registro: Any, id_execucao: str
+) -> list:
+    """Monta as instâncias de vínculo (não salvas) de um servidor.
+
+    Só populado para ``tipo == "servidor"`` — os demais tipos de
+    staging não têm ``vinculos`` no ``RegistroIdentidade``.
+    """
+    return [
+        modelo(
+            servidor=servidor,
+            id_execucao=id_execucao,
+            tipo_vinculo=vinculo.tipo_vinculo,
+            codigo_vinculo_origem=vinculo.codigo_vinculo_origem,
+            cargo_codigo=vinculo.cargo_codigo,
+            cargo_nome=vinculo.cargo_nome,
+            unidade_codigo=vinculo.unidade_codigo,
+            unidade_nome=vinculo.unidade_nome,
+            dre_codigo=vinculo.dre_codigo,
+            situacao=vinculo.situacao,
+            data_inicio=vinculo.data_inicio,
+            vigente=vinculo.vigente,
+        )
+        for vinculo in getattr(registro, "vinculos", [])
+    ]
+
+
+class _EstadoPersistencia:
+    """Estado acumulado durante uma chamada a persistir_extracao_staging."""
+
+    def __init__(self, id_execucao: str) -> None:
+        self.id_execucao = id_execucao
+        self.lotes_por_tipo: dict[str, list] = {
+            "servidor": [],
+            "aluno": [],
+            "terceiro": [],
+        }
+        # Pareia cada instância de servidor pendente de bulk_create com
+        # o RegistroIdentidade de origem, só para extrair os vínculos
+        # depois que a instância tiver PK.
+        self.registros_servidor_pendentes: list = []
+        self.total = 0
+
+
+def _descarregar_vinculos(
+    modelos_staging: Any, estado: _EstadoPersistencia
+) -> None:
+    vinculos: list = []
+    for servidor, registro in estado.registros_servidor_pendentes:
+        vinculos.extend(
+            _instanciar_vinculos(
+                modelos_staging.VinculoServidorStaging,
+                servidor,
+                registro,
+                estado.id_execucao,
+            )
+        )
+    estado.registros_servidor_pendentes.clear()
+    if vinculos:
+        modelos_staging.VinculoServidorStaging.objects.bulk_create(
+            vinculos, batch_size=_TAMANHO_LOTE_PERSISTENCIA
+        )
+
+
+def _descarregar_lote(
+    modelos_staging: Any, estado: _EstadoPersistencia, tipo: str
+) -> None:
+    lote = estado.lotes_por_tipo[tipo]
+    if not lote:
+        return
+    modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
+    modelo.objects.bulk_create(lote, batch_size=_TAMANHO_LOTE_PERSISTENCIA)
+    estado.total += len(lote)
+    estado.lotes_por_tipo[tipo] = []
+
+    if tipo == "servidor":
+        _descarregar_vinculos(modelos_staging, estado)
+
+
+def _consumir_registro(
+    modelos_staging: Any, estado: _EstadoPersistencia, registro: Any
+) -> None:
+    tipo = registro.tipo
+    if tipo not in estado.lotes_por_tipo:
+        logger.warning(
+            "[%s] persistir_extracao_staging — tipo desconhecido: %s",
+            estado.id_execucao,
+            tipo,
+        )
+        return
+
+    modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
+    instancia = _instanciar_staging(modelo, registro, estado.id_execucao)
+    estado.lotes_por_tipo[tipo].append(instancia)
+    if tipo == "servidor" and registro.vinculos:
+        estado.registros_servidor_pendentes.append((instancia, registro))
+
+    if len(estado.lotes_por_tipo[tipo]) >= _TAMANHO_LOTE_PERSISTENCIA:
+        _descarregar_lote(modelos_staging, estado, tipo)
+
+
 def persistir_extracao_staging(
     registros: Iterable, *, id_execucao: str
 ) -> int:
@@ -71,59 +172,35 @@ def persistir_extracao_staging(
     (ex.: SE1426 completo), acumular tudo antes de gravar já causou
     OOM/SIGKILL do worker em ambientes com memória limitada.
 
+    Servidores com vínculos funcionais (cargo base, sobreposto,
+    função/atividade) têm as ``VinculoServidorStaging`` filhas gravadas
+    logo após o ``bulk_create`` do pai, aproveitando os PKs que o
+    Postgres devolve na própria chamada (Django ``bulk_create`` popula
+    ``pk`` nas instâncias quando o backend suporta ``RETURNING``).
+
     Args:
         registros: Iterável (idealmente generator) de RegistroIdentidade.
         id_execucao: UUID da ExecucaoETL associada.
 
     Returns:
-        Total de registros persistidos.
+        Total de registros persistidos (staging pai, sem contar vínculos).
     """
     from apps.staging import models as modelos_staging  # noqa: PLC0415
 
-    lotes_por_tipo: dict[str, list] = {
-        "servidor": [],
-        "aluno": [],
-        "terceiro": [],
-    }
-    total = 0
-
-    def _descarregar(tipo: str) -> None:
-        nonlocal total
-        lote = lotes_por_tipo[tipo]
-        if not lote:
-            return
-        modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
-        modelo.objects.bulk_create(lote, batch_size=_TAMANHO_LOTE_PERSISTENCIA)
-        total += len(lote)
-        lotes_por_tipo[tipo] = []
+    estado = _EstadoPersistencia(id_execucao)
 
     for registro in registros:
-        tipo = registro.tipo
-        if tipo not in lotes_por_tipo:
-            logger.warning(
-                "[%s] persistir_extracao_staging — tipo desconhecido: %s",
-                id_execucao,
-                tipo,
-            )
-            continue
+        _consumir_registro(modelos_staging, estado, registro)
 
-        modelo = getattr(modelos_staging, _MODELO_POR_TIPO[tipo])
-        lotes_por_tipo[tipo].append(
-            _instanciar_staging(modelo, registro, id_execucao)
-        )
-
-        if len(lotes_por_tipo[tipo]) >= _TAMANHO_LOTE_PERSISTENCIA:
-            _descarregar(tipo)
-
-    for tipo in lotes_por_tipo:
-        _descarregar(tipo)
+    for tipo in estado.lotes_por_tipo:
+        _descarregar_lote(modelos_staging, estado, tipo)
 
     logger.info(
         "[%s] persistir_extracao_staging — %d registros persistidos",
         id_execucao,
-        total,
+        estado.total,
     )
-    return total
+    return estado.total
 
 
 @shared_task(name="staging.tasks.transformar_staging")

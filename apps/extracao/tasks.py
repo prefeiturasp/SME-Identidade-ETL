@@ -65,6 +65,29 @@ def _sanitizar_email(valor: object) -> str | None:
 
 
 @dataclass
+class VinculoServidor:
+    """Um vínculo funcional vigente de um servidor no SE1426.
+
+    Um servidor pode ter múltiplos vínculos simultâneos e independentes
+    (cargo base, cargo sobreposto/comissionado e função/atividade —
+    inclusive mais de um cargo base ao mesmo tempo), cada um com sua
+    própria unidade e DRE — não há prevalência entre tipos, todos são
+    fatos distintos do domínio.
+    """
+
+    tipo_vinculo: str  # cargo_base | cargo_sobreposto | funcao_atividade
+    codigo_vinculo_origem: str
+    cargo_codigo: str | None = None
+    cargo_nome: str | None = None
+    unidade_codigo: str | None = None
+    unidade_nome: str | None = None
+    dre_codigo: str | None = None
+    situacao: str | None = None
+    data_inicio: str | None = None
+    vigente: bool = True
+
+
+@dataclass
 class RegistroIdentidade:
     """Representa um registro de identidade extraído de uma fonte legada.
 
@@ -88,6 +111,7 @@ class RegistroIdentidade:
     cod_escola: str | None = None
     turma: str | None = None
     tipo_acesso: str | None = None
+    vinculos: list[VinculoServidor] = field(default_factory=list)
     dados_extras: dict = field(default_factory=dict)
 
 
@@ -255,6 +279,151 @@ def _iterar_com_watermark(
 # ---------------------------------------------------------------------------
 
 
+# Consultas de vínculo funcional, uma por tipo — cada uma empilhada como
+# um vínculo independente, sem COALESCE/fallback sobre o cargo base: o
+# domínio permite múltiplos vínculos simultâneos por servidor (inclusive
+# mais de um cargo base ao mesmo tempo), então nenhum tipo prevalece
+# sobre outro.
+#
+#   - v_servidor_cotic: RF -> cd_servidor.
+#   - v_cargo_base_cotic: cargo base do servidor (join por cd_servidor),
+#     vigente quando dt_fim_nomeacao IS NULL AND dt_cancelamento IS NULL.
+#   - lotacao_servidor / cargo_sobreposto_servidor /
+#     funcao_atividade_cargo_servidor: unidade de cada tipo de vínculo.
+#   - v_cadastro_unidade_educacao: resolve nome/DRE a partir da UE — a
+#     DRE responsável nunca é coluna direta do vínculo, sempre se resolve
+#     via cd_unidade_administrativa_referencia da UE de lotação.
+_CONSULTAS_VINCULO_SE1426 = {
+    "cargo_base": """
+        SELECT
+            sev.cd_registro_funcional     AS rf,
+            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))
+                                           AS codigo_vinculo_origem,
+            CAST(cba.cd_cargo AS VARCHAR(50)) AS cargo_codigo,
+            NULL                           AS cargo_nome,
+            ls.cd_unidade_educacao        AS unidade_codigo,
+            ue.nm_unidade_educacao        AS unidade_nome,
+            ue.cd_unidade_administrativa_referencia AS dre_codigo,
+            NULL                           AS situacao
+        FROM v_servidor_cotic sev
+        INNER JOIN v_cargo_base_cotic cba
+            ON sev.cd_servidor = cba.cd_servidor
+        INNER JOIN lotacao_servidor ls
+            ON ls.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND ls.dt_fim IS NULL
+        LEFT JOIN v_cadastro_unidade_educacao ue
+            ON ue.cd_unidade_educacao = ls.cd_unidade_educacao
+        WHERE cba.dt_fim_nomeacao IS NULL
+            AND cba.dt_cancelamento IS NULL
+    """,
+    "cargo_sobreposto": """
+        SELECT
+            sev.cd_registro_funcional     AS rf,
+            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))
+                                           AS codigo_vinculo_origem,
+            CAST(css.cd_cargo AS VARCHAR(50)) AS cargo_codigo,
+            NULL                           AS cargo_nome,
+            css.cd_unidade_local_servico   AS unidade_codigo,
+            ue.nm_unidade_educacao         AS unidade_nome,
+            ue.cd_unidade_administrativa_referencia AS dre_codigo,
+            NULL                           AS situacao
+        FROM v_servidor_cotic sev
+        INNER JOIN v_cargo_base_cotic cba
+            ON sev.cd_servidor = cba.cd_servidor
+        INNER JOIN cargo_sobreposto_servidor css
+            ON css.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND (css.dt_fim_cargo_sobreposto IS NULL
+                 OR css.dt_fim_cargo_sobreposto > getdate())
+        LEFT JOIN v_cadastro_unidade_educacao ue
+            ON ue.cd_unidade_educacao = css.cd_unidade_local_servico
+        WHERE cba.dt_fim_nomeacao IS NULL
+            AND cba.dt_cancelamento IS NULL
+    """,
+    "funcao_atividade": """
+        SELECT
+            sev.cd_registro_funcional     AS rf,
+            CONCAT(
+                fat.cd_cargo_base_servidor, '-', fat.cd_tipo_funcao, '-',
+                fat.cd_unidade_local_servico
+            )                              AS codigo_vinculo_origem,
+            CAST(fat.cd_tipo_funcao AS VARCHAR(50)) AS cargo_codigo,
+            NULL                           AS cargo_nome,
+            fat.cd_unidade_local_servico   AS unidade_codigo,
+            ue.nm_unidade_educacao         AS unidade_nome,
+            ue.cd_unidade_administrativa_referencia AS dre_codigo,
+            NULL                           AS situacao
+        FROM v_servidor_cotic sev
+        INNER JOIN v_cargo_base_cotic cba
+            ON sev.cd_servidor = cba.cd_servidor
+        INNER JOIN funcao_atividade_cargo_servidor fat
+            ON fat.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
+            AND (fat.dt_cancelamento IS NULL
+                 OR fat.dt_fim_funcao_atividade > getdate())
+            AND (fat.dt_fim_funcao_atividade IS NULL
+                 OR fat.dt_fim_funcao_atividade > getdate())
+        LEFT JOIN v_cadastro_unidade_educacao ue
+            ON ue.cd_unidade_educacao = fat.cd_unidade_local_servico
+        WHERE cba.dt_fim_nomeacao IS NULL
+            AND cba.dt_cancelamento IS NULL
+    """,
+}
+
+
+def _extrair_vinculos_servidor_se1426() -> dict[str, list[VinculoServidor]]:
+    """Extrai os vínculos funcionais vigentes de todos os servidores.
+
+    Roda uma consulta por tipo de vínculo (cargo base, cargo sobreposto
+    e função/atividade) trazendo todos os servidores de uma vez, em vez
+    de uma consulta por RF — evita repetir a consulta para cada
+    servidor durante a extração de identidade.
+
+    Returns:
+        Vínculos agrupados por RF, para anexar a cada
+        ``RegistroIdentidade`` correspondente durante a extração de
+        identidade.
+    """
+    import pyodbc
+
+    vinculos_por_rf: dict[str, list[VinculoServidor]] = {}
+    conn = pyodbc.connect(
+        _string_conexao_se1426(), timeout=settings.SE1426_DB_TIMEOUT
+    )
+    try:
+        cursor = conn.cursor()
+        for tipo_vinculo, consulta in _CONSULTAS_VINCULO_SE1426.items():
+            cursor.execute(consulta)
+            colunas = [d[0] for d in cursor.description]
+            while True:
+                linhas = cursor.fetchmany(settings.ETL_CHUNK_SIZE)
+                if not linhas:
+                    break
+                for linha in linhas:
+                    item = dict(zip(colunas, linha, strict=False))
+                    rf = item.get("rf")
+                    if not rf:
+                        continue
+                    vinculos_por_rf.setdefault(str(rf), []).append(
+                        VinculoServidor(
+                            tipo_vinculo=tipo_vinculo,
+                            codigo_vinculo_origem=str(
+                                item["codigo_vinculo_origem"]
+                            ),
+                            cargo_codigo=item.get("cargo_codigo"),
+                            cargo_nome=item.get("cargo_nome"),
+                            unidade_codigo=item.get("unidade_codigo"),
+                            unidade_nome=item.get("unidade_nome"),
+                            dre_codigo=item.get("dre_codigo"),
+                            situacao=(
+                                (item.get("situacao") or "").lower() or None
+                            ),
+                            vigente=True,
+                        )
+                    )
+    finally:
+        conn.close()
+    return vinculos_por_rf
+
+
 def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
     """Extrai servidores do SE1426 via SQL Server (read-only).
 
@@ -263,24 +432,43 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
     a extração sempre traz a base completa.
 
     Yields:
-        RegistroIdentidade para cada servidor encontrado.
+        RegistroIdentidade para cada servidor encontrado, com os
+        vínculos funcionais vigentes (cargo base, sobreposto e
+        função/atividade) já anexados em ``vinculos``.
     """
     import pyodbc
 
+    # v_servidor_sme_serap traz 2 linhas para ~16% dos RFs (Ativo +
+    # Inativo, mesmo cadastro repetido só com a situação diferente —
+    # confirmado por inspeção direta contra o SE1426; não é efeito do
+    # LEFT JOIN abaixo). ROW_NUMBER() prioriza Ativo, para extrair uma
+    # única linha por RF — sem isso, cada RF duplicado geraria dois
+    # RegistroIdentidade recebendo a mesma lista de vínculos, dobrando
+    # staging/payload sem necessidade.
     consulta = """
-        SELECT
-            s.cd_registro_funcional  AS rf,
-            s.nm_pessoa              AS nome,
-            s.cd_cpf_pessoa          AS cpf,
-            s.situacao               AS situacao,
-            e.dc_dispositivo         AS email
-        FROM v_servidor_sme_serap s
-        LEFT JOIN v_servidor_cotic sc
-            ON sc.cd_registro_funcional = s.cd_registro_funcional
-        LEFT JOIN v_servidor_email_cotic e
-            ON e.cd_servidor = sc.cd_servidor
-            AND e.dt_fim IS NULL
+        SELECT rf, nome, cpf, situacao, email
+        FROM (
+            SELECT
+                s.cd_registro_funcional  AS rf,
+                s.nm_pessoa              AS nome,
+                s.cd_cpf_pessoa          AS cpf,
+                s.situacao               AS situacao,
+                e.dc_dispositivo         AS email,
+                ROW_NUMBER() OVER (
+                    PARTITION BY s.cd_registro_funcional
+                    ORDER BY CASE WHEN s.situacao = 'Ativo' THEN 0 ELSE 1 END
+                ) AS rn
+            FROM v_servidor_sme_serap s
+            LEFT JOIN v_servidor_cotic sc
+                ON sc.cd_registro_funcional = s.cd_registro_funcional
+            LEFT JOIN v_servidor_email_cotic e
+                ON e.cd_servidor = sc.cd_servidor
+                AND e.dt_fim IS NULL
+        ) dedup
+        WHERE rn = 1
     """
+
+    vinculos_por_rf = _extrair_vinculos_servidor_se1426()
 
     conn = pyodbc.connect(
         _string_conexao_se1426(), timeout=settings.SE1426_DB_TIMEOUT
@@ -295,14 +483,16 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
                 break
             for linha in linhas:
                 item = dict(zip(colunas, linha, strict=False))
+                rf = item.get("rf")
                 yield RegistroIdentidade(
                     fonte="se1426",
                     tipo="servidor",
-                    rf=item.get("rf"),
+                    rf=rf,
                     nome=item.get("nome"),
                     cpf=_sanitizar_cpf(item.get("cpf")),
                     email=_sanitizar_email(item.get("email")),
                     situacao=((item.get("situacao") or "").lower() or None),
+                    vinculos=(vinculos_por_rf.get(str(rf), []) if rf else []),
                     dados_extras={
                         k: str(v) if v is not None else None
                         for k, v in item.items()

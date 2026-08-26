@@ -11,6 +11,7 @@ from apps.staging.models import (
     UsuarioAlunoStaging,
     UsuarioServidorStaging,
     UsuarioTerceiroStaging,
+    VinculoServidorStaging,
 )
 from apps.staging.tasks import (
     deduplicar_identidades,
@@ -416,3 +417,110 @@ class TestPersistirExtracaoStaging:
 
         assert total == 0
         assert UsuarioServidorStaging.objects.count() == 0
+
+    def test_persiste_vinculos_de_servidor(self) -> None:
+        from apps.extracao.tasks import VinculoServidor
+
+        id_execucao = uuid.uuid4()
+        registros = [
+            self._registro(
+                tipo="servidor",
+                rf="1234567",
+                nome="Ana Lima",
+                vinculos=[
+                    VinculoServidor(
+                        tipo_vinculo="cargo_base",
+                        codigo_vinculo_origem="998877",
+                        cargo_codigo="101",
+                        cargo_nome="PROFESSOR",
+                        unidade_codigo="123456",
+                        unidade_nome="EMEF FULANO DE TAL",
+                        dre_codigo="11",
+                    ),
+                    VinculoServidor(
+                        tipo_vinculo="funcao_atividade",
+                        codigo_vinculo_origem="998877-2-123456",
+                        cargo_codigo="2",
+                        unidade_codigo="123456",
+                        unidade_nome="EMEF FULANO DE TAL",
+                        dre_codigo="11",
+                    ),
+                ],
+            )
+        ]
+
+        total = persistir_extracao_staging(
+            registros, id_execucao=str(id_execucao)
+        )
+
+        assert total == 1
+        servidor = UsuarioServidorStaging.objects.get()
+        vinculos = VinculoServidorStaging.objects.filter(servidor=servidor)
+        assert vinculos.count() == 2
+        assert {v.tipo_vinculo for v in vinculos} == {
+            "cargo_base",
+            "funcao_atividade",
+        }
+        cargo_base = vinculos.get(tipo_vinculo="cargo_base")
+        assert cargo_base.cargo_nome == "PROFESSOR"
+        assert cargo_base.dre_codigo == "11"
+
+    def test_servidor_sem_vinculos_nao_cria_registros_filhos(self) -> None:
+        id_execucao = uuid.uuid4()
+        registros = [
+            self._registro(tipo="servidor", rf="7654321", nome="Sem Vinculo")
+        ]
+
+        persistir_extracao_staging(registros, id_execucao=str(id_execucao))
+
+        assert VinculoServidorStaging.objects.count() == 0
+
+    def test_persiste_vinculos_de_multiplos_servidores(self) -> None:
+        from apps.extracao.tasks import VinculoServidor
+
+        id_execucao = uuid.uuid4()
+        registros = [
+            self._registro(
+                tipo="servidor",
+                rf="1111111",
+                nome="Servidor Um",
+                vinculos=[
+                    VinculoServidor(
+                        tipo_vinculo="cargo_base",
+                        codigo_vinculo_origem="111",
+                    )
+                ],
+            ),
+            self._registro(
+                tipo="servidor",
+                rf="2222222",
+                nome="Servidor Dois",
+                vinculos=[
+                    VinculoServidor(
+                        tipo_vinculo="cargo_base",
+                        codigo_vinculo_origem="222",
+                    ),
+                    VinculoServidor(
+                        tipo_vinculo="cargo_sobreposto",
+                        codigo_vinculo_origem="223",
+                    ),
+                ],
+            ),
+        ]
+
+        persistir_extracao_staging(registros, id_execucao=str(id_execucao))
+
+        servidor_um = UsuarioServidorStaging.objects.get(rf="1111111")
+        servidor_dois = UsuarioServidorStaging.objects.get(rf="2222222")
+        assert (
+            VinculoServidorStaging.objects.filter(
+                servidor=servidor_um
+            ).count()
+            == 1
+        )
+        assert (
+            VinculoServidorStaging.objects.filter(
+                servidor=servidor_dois
+            ).count()
+            == 2
+        )

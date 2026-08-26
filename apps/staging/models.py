@@ -49,6 +49,47 @@ class UsuarioServidorStaging(_UsuarioStagingBase):
         return f"Servidor rf={self.rf} cpf={self.cpf} [{self.situacao}]"
 
 
+class VinculoServidorStaging(models.Model):
+    """Um vínculo funcional vigente de um servidor (SE1426).
+
+    Um servidor pode ter múltiplos vínculos simultâneos e independentes
+    (cargo base, cargo sobreposto/comissionado e função/atividade —
+    inclusive mais de um cargo base ao mesmo tempo), cada um com sua
+    própria unidade e DRE.
+    """
+
+    servidor = models.ForeignKey(
+        UsuarioServidorStaging,
+        on_delete=models.CASCADE,
+        related_name="vinculos",
+    )
+    id_execucao = models.UUIDField(db_index=True)
+    tipo_vinculo = models.CharField(max_length=20)
+    codigo_vinculo_origem = models.CharField(max_length=50)
+    cargo_codigo = models.CharField(max_length=50, blank=True, null=True)
+    cargo_nome = models.CharField(max_length=255, blank=True, null=True)
+    unidade_codigo = models.CharField(max_length=50, blank=True, null=True)
+    unidade_nome = models.CharField(max_length=255, blank=True, null=True)
+    dre_codigo = models.CharField(max_length=50, blank=True, null=True)
+    situacao = models.CharField(max_length=50, blank=True, null=True)
+    data_inicio = models.CharField(max_length=50, blank=True, null=True)
+    vigente = models.BooleanField(default=True)
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "staging_vinculo_servidor"
+        indexes = [
+            models.Index(fields=["id_execucao"]),
+            models.Index(fields=["servidor", "tipo_vinculo"]),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"Vinculo {self.tipo_vinculo} servidor_id={self.servidor_id}"
+            f" origem={self.codigo_vinculo_origem}"
+        )
+
+
 class UsuarioAlunoStaging(_UsuarioStagingBase):
     """Aluno extraído do EOL_DB."""
 
