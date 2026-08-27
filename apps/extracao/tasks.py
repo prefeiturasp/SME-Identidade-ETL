@@ -691,6 +691,7 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
         _string_conexao_coresso(),
         timeout=settings.CORESSO_DB_TIMEOUT,
     )
+    conn.timeout = settings.CORESSO_DB_TIMEOUT
     try:
         cursor = conn.cursor()
         cursor.execute(consulta)

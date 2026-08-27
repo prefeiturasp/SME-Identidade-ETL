@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -263,9 +264,7 @@ class TestDeduplicarIdentidades:
 
         assert resultado["ignorados"] == 1
         situacoes = list(
-            UsuarioTerceiroStaging.objects.values_list(
-                "situacao", flat=True
-            )
+            UsuarioTerceiroStaging.objects.values_list("situacao", flat=True)
         )
         assert situacoes.count("pronto") == 1
         assert situacoes.count("ignorado") == 1
@@ -297,12 +296,8 @@ class TestDeduplicarIdentidades:
         resultado = deduplicar_identidades({}, str(id_execucao))
 
         assert resultado["ignorados"] == 0
-        assert (
-            UsuarioServidorStaging.objects.get().situacao == "pronto"
-        )
-        assert (
-            UsuarioTerceiroStaging.objects.get().situacao == "pronto"
-        )
+        assert UsuarioServidorStaging.objects.get().situacao == "pronto"
+        assert UsuarioTerceiroStaging.objects.get().situacao == "pronto"
 
 
 @pytest.mark.django_db
@@ -513,9 +508,7 @@ class TestPersistirExtracaoStaging:
         servidor_um = UsuarioServidorStaging.objects.get(rf="1111111")
         servidor_dois = UsuarioServidorStaging.objects.get(rf="2222222")
         assert (
-            VinculoServidorStaging.objects.filter(
-                servidor=servidor_um
-            ).count()
+            VinculoServidorStaging.objects.filter(servidor=servidor_um).count()
             == 1
         )
         assert (
@@ -524,3 +517,43 @@ class TestPersistirExtracaoStaging:
             ).count()
             == 2
         )
+
+    def test_descarrega_vinculos_ao_atingir_tamanho_do_lote(self) -> None:
+        """Confirma o descarregamento intermediário (sem esperar o fim).
+
+        Reduz o tamanho de lote para forçar um ``_descarregar_lote``
+        no meio da iteração, não só no fechamento final — mesmo
+        caminho usado em execuções grandes (ex.: SE1426 completo).
+        """
+        from apps.extracao.tasks import VinculoServidor
+        from apps.staging import tasks as staging_tasks
+
+        with patch.object(staging_tasks, "_TAMANHO_LOTE_PERSISTENCIA", 2):
+            id_execucao = uuid.uuid4()
+            registros = [
+                self._registro(
+                    tipo="servidor",
+                    rf=f"{n:07d}",
+                    nome=f"Servidor {n}",
+                    vinculos=[
+                        VinculoServidor(
+                            tipo_vinculo="cargo_base",
+                            codigo_vinculo_origem=str(n),
+                        )
+                    ],
+                )
+                for n in range(1, 4)
+            ]
+
+            total = persistir_extracao_staging(
+                registros, id_execucao=str(id_execucao)
+            )
+
+        assert total == 3
+        assert UsuarioServidorStaging.objects.count() == 3
+        assert VinculoServidorStaging.objects.count() == 3
+        for n in range(1, 4):
+            servidor = UsuarioServidorStaging.objects.get(rf=f"{n:07d}")
+            assert VinculoServidorStaging.objects.filter(
+                servidor=servidor
+            ).exists()
