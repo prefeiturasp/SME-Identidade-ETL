@@ -218,6 +218,8 @@ _TAMANHO_LOTE_REPROCESSAMENTO = 200
     bind=True,
     name="task_reprocessar_pendencias",
     max_retries=5,
+    soft_time_limit=1800,
+    time_limit=1860,
 )
 def task_reprocessar_pendencias(
     self: Any,

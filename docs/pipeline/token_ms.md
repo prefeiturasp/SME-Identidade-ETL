@@ -18,11 +18,11 @@ Disparada **fire-and-forget** (`apply_async`) de dentro de
 `_provisionar_lote_kc` assim que **um único usuário** é confirmado no
 Keycloak — não espera o restante do lote terminar. A `chain` do
 pipeline principal (`task_identidade_executar_pipeline`) não inclui
-mais essa carga: `ExecucaoETL` fecha (`sucesso`/`parcial`) ao final do
-Keycloak, e o progresso do token-ms por usuário passa a ser
-rastreável via `hash_token_ms` em `ControleProvisionamento`
-(`token_ms_confirmado` no serializer, ver
-[API de Controle](../controle/api.md)), não pela `situacao` da execução.
+essa carga: `ExecucaoETL` fecha (`sucesso`/`parcial`) ao final do
+Keycloak, e o progresso do token-ms por usuário é rastreável via
+`hash_token_ms` em `ControleProvisionamento` (`token_ms_confirmado`
+no serializer, ver [API de Controle](../controle/api.md)), não pela
+`situacao` da execução.
 
 Antes de enviar, recalcula `hash_token_ms` do payload atual e compara
 com o valor persistido — se já bate, é *no-op* idempotente. Descarta
@@ -43,9 +43,9 @@ próxima execução completa do pipeline.
 
 ## Carga em lote (fallback / reprocessamento manual)
 
-`task_carregar_atributos_token` — mesma fila `etl_carga_token_ms`, não
-faz mais parte do caminho síncrono do pipeline. Processa todos os
-registros com `situacao__in=["pronto", "carregado"]` do staging
+`task_carregar_atributos_token` — mesma fila `etl_carga_token_ms`, fora
+do caminho síncrono do pipeline. Processa todos os registros com
+`situacao__in=["pronto", "carregado"]` do staging
 (`UsuarioServidorStaging`, `UsuarioAlunoStaging`,
 `UsuarioTerceiroStaging`) filtrados pelo `id_execucao`, checando
 `hash_token_ms` por registro antes de enviar (mesma idempotência da
@@ -101,9 +101,9 @@ de `{"id_execucao": "<uuid>", "usuarios": [...]}`:
 | `nome` | `usuario.nome` | comum |
 | `email` | `usuario.email` | comum |
 | `tipo_usuario` | inferido (`servidor`/`aluno`/`tipo_acesso`/`outro`) | |
-| `cargo`, `funcao` | staging de servidor | **sempre `null` hoje** — ver limitações |
-| `unidade`, `unidade_codigo` | staging (lotação) | **sempre `null` para servidor hoje** |
-| `dre`, `ue` | staging | populado para alunos (EOL_DB); **`null` para servidor hoje** |
+| `cargo`, `funcao` | staging de servidor | usado por outros tipos de usuário — para servidor, ver `vinculos` |
+| `unidade`, `unidade_codigo` | staging (lotação) | usado por outros tipos de usuário — para servidor, ver `vinculos` |
+| `dre`, `ue` | staging | populado para alunos (EOL_DB) — para servidor, ver `vinculos` |
 | `matricula` | staging | servidor/aluno/terceiro |
 | `cod_escola`, `turma` | staging | só aluno |
 | `tipo_acesso` | staging | só terceiro (CoreSSO) |
@@ -139,18 +139,58 @@ do `SME-Identidade-Token-Microsservico`.
 
 ---
 
-## Limitações conhecidas
+## Vínculos funcionais de servidor (`vinculos`)
 
-Os campos `cargo`, `funcao`, `unidade`, `unidade_codigo`, `dre` e `ue`
-de **servidores** (fonte SE1426) são sempre enviados como `null`
-hoje: a extração de SE1426 (`apps/extracao/tasks.py`) só lê
-`rf, nome, cpf, situacao, email` — nenhuma view atualmente consultada
-expõe cargo ou lotação de servidor. No sistema legado esses dados
-vinham de uma API de fachada (EOL/SGP) que o projeto decidiu
-deliberadamente não reintegrar, por perpetuar a dependência que o
-projeto existe para eliminar. Popular esses campos depende de uma
-investigação de schema em SE1426 (ou fonte irmã) com o time de dados,
-ainda em aberto.
+Um servidor pode ter múltiplos vínculos funcionais vigentes e
+independentes ao mesmo tempo — cargo base, cargo sobreposto/comissionado
+e função/atividade, cada um com seu próprio cargo e sua própria
+unidade/DRE, inclusive mais de um cargo base simultâneo. Por isso esse
+dado **não** é um conjunto de campos escalares no payload — é uma lista
+aninhada:
+
+```json
+{
+  "rf": "1234567",
+  ...,
+  "vinculos": [
+    {
+      "tipo_vinculo": "cargo_base",
+      "codigo_vinculo_origem": "998877",
+      "cargo_codigo": "101",
+      "cargo_nome": "PROFESSOR",
+      "unidade_codigo": "123456",
+      "unidade_nome": "EMEF FULANO DE TAL",
+      "dre_codigo": "11",
+      "situacao": "ativo",
+      "data_inicio": null,
+      "vigente": true
+    }
+  ]
+}
+```
+
+Extraído em `_extrair_vinculos_servidor_se1426` (`apps/extracao/tasks.py`)
+a partir de `v_servidor_cotic` + `v_cargo_base_cotic` (cargo base do
+servidor, join por `cd_servidor`) + `lotacao_servidor` (unidade do cargo
+base), `cargo_sobreposto_servidor` (cargo sobreposto) e
+`funcao_atividade_cargo_servidor` (função/atividade). Cada tipo é
+extraído como vínculo independente, sem `COALESCE`/fallback sobre o
+cargo base — nenhum tipo prevalece sobre outro. Todos resolvem a DRE
+via `v_cadastro_unidade_educacao.cd_unidade_administrativa_referencia` a
+partir da UE — a DRE nunca é coluna direta do vínculo. Só vínculos
+vigentes (`dt_fim_nomeacao`/`dt_cancelamento`/`dt_fim_cargo_sobreposto`/
+`dt_fim_funcao_atividade` nulos ou futuros, conforme cada tabela) são
+extraídos neste momento; histórico completo fica fora de escopo.
+Persistido em staging como `VinculoServidorStaging` (`apps.staging.models`,
+FK para `UsuarioServidorStaging`), incluído no payload por
+`_vinculos_payload`/`_payload_token_ms_hash`
+(`apps/controle_etl/orquestrador_kc.py`) e coberto automaticamente pelo
+hash de idempotência — mudança em qualquer vínculo já dispara reenvio.
+
+Os campos escalares `cargo`, `funcao`, `unidade`, `unidade_codigo`,
+`dre` e `ue` do payload permanecem sempre `null` para servidor (usados
+hoje só por outros tipos de usuário, ex. aluno) — não confundir com
+`vinculos`, que é a fonte real desse dado para servidor.
 
 ---
 
@@ -218,7 +258,8 @@ o token-ms — por isso usam `montar_payload_perfil(dados, ...)`
 diretamente (`orquestrador_kc.py`), em vez de
 `construir_payload_perfil_token_ms`, evitando uma segunda consulta
 redundante ao CoreSSO. `construir_payload_perfil_token_ms` (staging)
-passou a ser um wrapper fino sobre `montar_payload_perfil`.
+só resolve `dados`/`kc_user_id` a partir do registro de staging e
+repassa para `montar_payload_perfil`.
 
 Mesma filosofia *best-effort* do pipeline: falha ao chamar o
 token-ms é só logada (`logger.exception`), sem alterar o status HTTP
@@ -231,15 +272,12 @@ materializado via `usuario/criar/`, sem vínculo prévio no CoreSSO)
 não há grupos para montar `perfis` — o token-ms não é chamado nesse
 caminho.
 
-### `permissoes` — fonte real confirmada (`SYS_GrupoPermissao`/`SYS_Modulo`)
+### `permissoes` — fonte no CoreSSO (`SYS_GrupoPermissao`/`SYS_Modulo`)
 
-Diferente do que se supunha inicialmente, o CoreSSO **tem** uma fonte
-real de permissões, confirmada por varredura de schema
-(`INFORMATION_SCHEMA`) contra o banco: `SYS_GrupoPermissao` (matriz
-grupo×sistema×módulo, ~10 mil linhas em produção) e `SYS_Modulo`
-(nome do módulo por sistema). Cada linha traz quatro flags booleanas
-independentes — `grp_consultar`, `grp_inserir`, `grp_alterar`,
-`grp_excluir`.
+O CoreSSO tem uma fonte real de permissões: `SYS_GrupoPermissao`
+(matriz grupo×sistema×módulo) e `SYS_Modulo` (nome do módulo por
+sistema). Cada linha traz quatro flags booleanas independentes —
+`grp_consultar`, `grp_inserir`, `grp_alterar`, `grp_excluir`.
 
 **Importante**: `mod_id` sozinho **não é chave única** — o mesmo
 `mod_id` é reaproveitado em módulos de sistemas diferentes (até 19
@@ -267,14 +305,11 @@ Formato de cada item de `permissoes`:
 ```
 
 Modelado no token-ms como `ModuloPermissaoUsuario`
-(`apps/perfil/models.py`) — substituiu o antigo `PermissaoUsuario`
-(`{codigo, descricao}`), que nunca teve dado real e não representava
-a granularidade verdadeira da fonte (sistema+módulo, não um código
-plano). O Gateway-MS (`DadosAcessoView`) foi atualizado no mesmo
-momento para consumir o novo formato.
+(`apps/perfil/models.py`) — a granularidade do model é sistema+módulo,
+refletindo a granularidade real da fonte. O Gateway-MS
+(`DadosAcessoView`) consome esse formato.
 
 **Volume por usuário**: um usuário com poucos grupos pode ter
-dezenas a centenas de módulos permissionados (ex.: 229 módulos
-observados para um usuário de teste com 3 grupos). Acompanhar se
-isso se torna um problema de tamanho de payload para usuários com
-muitos grupos (ex.: perfis administrativos amplos).
+dezenas a centenas de módulos permissionados. Acompanhar se isso se
+torna um problema de tamanho de payload para usuários com muitos
+grupos (ex.: perfis administrativos amplos).
