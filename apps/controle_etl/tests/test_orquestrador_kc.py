@@ -461,6 +461,7 @@ class TestMontarPayloadPerfil:
         assert payload["situacao"] == "ativo"
         assert payload["permissoes"] == []
         assert [p["nome"] for p in payload["perfis"]] == ["Administrador"]
+        assert [p["sistema_id"] for p in payload["perfis"]] == [1]
 
     def test_usa_identificador_como_login_de_fallback(self) -> None:
         """Verifica o fallback de login quando dados["login"] é vazio."""
