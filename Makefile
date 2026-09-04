@@ -1,5 +1,6 @@
-DC           = docker compose -f docker-compose-dev.yml
-RUN          = $(DC) run --rm etl_api
+COMPOSE      = docker compose -f docker-compose-dev.yml
+EXEC_API     = $(COMPOSE) exec etl_api
+RUN_API      = $(COMPOSE) run --rm etl_api
 PYTEST_ARGS ?= --cov=apps --cov-report=term-missing --cov-fail-under=90
 
 .PHONY: help build up down logs shell migrate \
@@ -61,64 +62,70 @@ help:
 # ---------------------------------------------------------------------------
 
 build:
-	$(DC) build etl_api
+	$(COMPOSE) up -d --build
 
 up:
-	$(DC) up -d postgres_sync_rec postgres_staging keydb
+	$(COMPOSE) up -d \
+		postgres_sync_rec \
+		keydb
 
 down:
-	$(DC) down
+	$(COMPOSE) down
 
 logs:
-	$(DC) logs -f etl_api
+	$(COMPOSE) logs -f etl_api
 
 shell:
-	$(RUN) python manage.py shell
+	$(EXEC_API) python manage.py shell
 
 # ---------------------------------------------------------------------------
 # Migrações
 # ---------------------------------------------------------------------------
 
 migrate:
-	$(RUN) python manage.py migrate --noinput
+	$(EXEC_API) python manage.py migrate --noinput
 
 # ---------------------------------------------------------------------------
 # Testes
 # ---------------------------------------------------------------------------
 
 test:
-	$(RUN) python -m pytest $(PYTEST_ARGS) -v
+	$(RUN_API) python -m pytest $(PYTEST_ARGS) -v
 
 test-controle:
-	$(RUN) python -m pytest apps/controle_etl/tests/ \
-		--cov=apps.controle_etl --cov-report=term-missing -v
+	$(RUN_API) python -m pytest apps/controle_etl/tests/ \
+		--cov=apps.controle_etl \
+		--cov-report=term-missing \
+		-v
 
 test-extracao:
-	$(RUN) python -m pytest apps/extracao/tests/ \
-		--cov=apps.extracao --cov-report=term-missing -v
+	$(RUN_API) python -m pytest apps/extracao/tests/ \
+		--cov=apps.extracao \
+		--cov-report=term-missing \
+		-v
 
 # ---------------------------------------------------------------------------
 # Qualidade
 # ---------------------------------------------------------------------------
 
 lint:
-	$(RUN) bash -c "\
+	$(RUN_API) bash -c "\
 		ruff check . && \
 		black --check . && \
 		isort --check-only . && \
 		mypy apps config"
 
 coverage:
-	$(RUN) python -m pytest $(PYTEST_ARGS) \
+	$(RUN_API) python -m pytest $(PYTEST_ARGS) \
 		--cov-report=html:docs/_cov
 	@echo "Relatório gerado em docs/_cov/index.html"
 
 schema:
-	$(RUN) python manage.py spectacular --file schema.yml
+	$(EXEC_API) python manage.py spectacular --file schema.yml
 	@echo "Schema gerado em schema.yml"
 
 docs:
-	$(RUN) sphinx-build -b html docs docs/_build/html
+	$(RUN_API) sphinx-build -b html docs docs/_build/html
 	@echo "Documentação gerada em docs/_build/html/index.html"
 
 docs-clean:
@@ -135,7 +142,7 @@ SIS_ID ?= -
 REALM  ?=
 
 carregar-perfis:
-	$(RUN) python manage.py carregar_perfis \
+	$(EXEC_API) python manage.py carregar_perfis \
 		$(if $(filter-out -,$(SIS_ID)),--sis-id $(SIS_ID)) \
 		$(if $(REALM),--realm $(REALM))
 
@@ -153,7 +160,7 @@ FORCAR      ?=
 FONTE       ?= todos
 
 validar-e2e:
-	$(RUN) python manage.py validar_e2e \
+	$(EXEC_API) python manage.py validar_e2e \
 		--lote-maximo $(LOTE_MAXIMO) \
 		--fonte $(FONTE) \
 		$(if $(REALM),--realm $(REALM)) \
@@ -168,7 +175,7 @@ validar-e2e:
 SENHA ?=
 
 validar-login:
-	$(RUN) python manage.py validar_login $(USER) \
+	$(EXEC_API) python manage.py validar_login $(USER) \
 		$(if $(SENHA),--senha $(SENHA)) \
 		$(if $(REALM),--realm $(REALM))
 	@echo "Resultado salvo em validacao_login/"
@@ -177,6 +184,6 @@ validar-login:
 # make sincronizar-usuario USER=11122233344
 # make sincronizar-usuario USER=angela@sme.sp REALM=sme-hom
 sincronizar-usuario:
-	$(RUN) python manage.py sincronizar_usuario $(USER) \
+	$(EXEC_API) python manage.py sincronizar_usuario $(USER) \
 		$(if $(REALM),--realm $(REALM))
 	@echo "Resultado salvo em validacao_e2e/"
