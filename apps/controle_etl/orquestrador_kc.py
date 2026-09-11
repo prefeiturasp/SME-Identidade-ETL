@@ -481,8 +481,14 @@ def montar_payload_perfil(
         for grupo in sistema["grupos"]
     ]
     perfis = [
-        {"id": str(uuid.uuid4()), "nome": grupo["nome"], "ativo": True}
-        for grupo in grupos
+        {
+            "id": str(uuid.uuid4()),
+            "nome": grupo["nome"],
+            "ativo": True,
+            "sistema_id": sistema["sis_id"],
+        }
+        for sistema in dados["sistemas"].values()
+        for grupo in sistema["grupos"]
     ]
     gru_ids = [grupo["gru_id"] for grupo in grupos]
 
