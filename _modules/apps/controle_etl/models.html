@@ -1,0 +1,560 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apps.controle_etl.models &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../../_static/translations.js?v=71a39b36"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../../../genindex.html" />
+    <link rel="search" title="Buscar" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Código do módulo</a></li>
+      <li class="breadcrumb-item active">apps.controle_etl.models</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Código-fonte para apps.controle_etl.models</h1><div class="highlight"><pre>
+<span></span><span class="sd">"""Modelos operacionais do SYNC_REC_DB.</span>
+
+<span class="sd">Persistências de controle técnico do pipeline ETL:</span>
+<span class="sd">execuções, watermark, checkpoints, rastreio de tentativas</span>
+<span class="sd">e controle de provisionamento por idempotência.</span>
+<span class="sd">"""</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">uuid</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.conf</span><span class="w"> </span><span class="kn">import</span> <span class="n">settings</span> <span class="k">as</span> <span class="n">django_settings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">models</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">timezone</span>
+
+<span class="n">_Seconds</span> <span class="o">=</span> <span class="nb">float</span>
+
+
+<div class="viewcode-block" id="ExecucaoETL">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ExecucaoETL">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ExecucaoETL</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Registro de uma execução do pipeline ETL."""</span>
+
+<div class="viewcode-block" id="ExecucaoETL.Situacao">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ExecucaoETL.Situacao">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Situacao</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TextChoices</span><span class="p">):</span>
+        <span class="n">PENDENTE</span> <span class="o">=</span> <span class="s2">"pendente"</span><span class="p">,</span> <span class="s2">"Pendente"</span>
+        <span class="n">EXECUTANDO</span> <span class="o">=</span> <span class="s2">"executando"</span><span class="p">,</span> <span class="s2">"Executando"</span>
+        <span class="n">SUCESSO</span> <span class="o">=</span> <span class="s2">"sucesso"</span><span class="p">,</span> <span class="s2">"Sucesso"</span>
+        <span class="n">PARCIAL</span> <span class="o">=</span> <span class="s2">"parcial"</span><span class="p">,</span> <span class="s2">"Parcial (com erros)"</span>
+        <span class="n">FALHA</span> <span class="o">=</span> <span class="s2">"falha"</span><span class="p">,</span> <span class="s2">"Falha"</span>
+        <span class="n">CANCELADO</span> <span class="o">=</span> <span class="s2">"cancelado"</span><span class="p">,</span> <span class="s2">"Cancelado"</span></div>
+
+
+<div class="viewcode-block" id="ExecucaoETL.TipoDisparo">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ExecucaoETL.TipoDisparo">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">TipoDisparo</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TextChoices</span><span class="p">):</span>
+        <span class="n">AGENDADO</span> <span class="o">=</span> <span class="s2">"agendado"</span><span class="p">,</span> <span class="s2">"Agendado (Beat)"</span>
+        <span class="n">MANUAL</span> <span class="o">=</span> <span class="s2">"manual"</span><span class="p">,</span> <span class="s2">"Manual (API)"</span></div>
+
+
+    <span class="nb">id</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BigAutoField</span><span class="p">(</span><span class="n">primary_key</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">id_execucao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">UUIDField</span><span class="p">(</span>
+        <span class="n">unique</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">,</span>
+        <span class="n">editable</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">fonte</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="s2">"todos"</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Fonte: todos | se1426 | coresso | eol_alunos"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm_destino</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">django_settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">tipo_disparo</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+        <span class="n">choices</span><span class="o">=</span><span class="n">TipoDisparo</span><span class="o">.</span><span class="n">choices</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">TipoDisparo</span><span class="o">.</span><span class="n">AGENDADO</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">situacao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+        <span class="n">choices</span><span class="o">=</span><span class="n">Situacao</span><span class="o">.</span><span class="n">choices</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">Situacao</span><span class="o">.</span><span class="n">PENDENTE</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">total_extraido</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">total_transformado</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">total_carregado</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">total_erros</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">total_ignorados</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">iniciado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">finalizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">criado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now_add</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">atualizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">id_tarefa_celery</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">max_length</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">observacao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">TextField</span><span class="p">(</span><span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">disparado_por</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">max_length</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_execucao"</span>
+        <span class="n">ordering</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"-criado_em"</span><span class="p">]</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Execução ETL"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Execuções ETL"</span>
+        <span class="n">indexes</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span><span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"-criado_em"</span><span class="p">],</span> <span class="n">name</span><span class="o">=</span><span class="s2">"idx_execucao_criado"</span><span class="p">),</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span><span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"situacao"</span><span class="p">],</span> <span class="n">name</span><span class="o">=</span><span class="s2">"idx_execucao_situacao"</span><span class="p">),</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span><span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"fonte"</span><span class="p">],</span> <span class="n">name</span><span class="o">=</span><span class="s2">"idx_execucao_fonte"</span><span class="p">),</span>
+        <span class="p">]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"Execução-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id_execucao</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">8</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">" [</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">situacao</span><span class="si">}</span><span class="s2">] </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">fonte</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">duracao_segundos</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Duração da execução em segundos."""</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">iniciado_em</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">finalizado_em</span><span class="p">:</span>
+            <span class="n">delta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">finalizado_em</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">iniciado_em</span>
+            <span class="n">resultado</span><span class="p">:</span> <span class="n">_Seconds</span> <span class="o">=</span> <span class="n">delta</span><span class="o">.</span><span class="n">total_seconds</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">resultado</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+<div class="viewcode-block" id="ExecucaoETL.marcar_executando">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ExecucaoETL.marcar_executando">[documentos]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">marcar_executando</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Marca a execução como em andamento."""</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">situacao</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">Situacao</span><span class="o">.</span><span class="n">EXECUTANDO</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">iniciado_em</span> <span class="o">=</span> <span class="n">timezone</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">update_fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"situacao"</span><span class="p">,</span> <span class="s2">"iniciado_em"</span><span class="p">,</span> <span class="s2">"atualizado_em"</span><span class="p">])</span></div>
+
+
+<div class="viewcode-block" id="ExecucaoETL.marcar_finalizada">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ExecucaoETL.marcar_finalizada">[documentos]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">marcar_finalizada</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">situacao</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"sucesso"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Finaliza a execução com a situação informada."""</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">situacao</span> <span class="o">=</span> <span class="n">situacao</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">finalizado_em</span> <span class="o">=</span> <span class="n">timezone</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span>
+            <span class="n">update_fields</span><span class="o">=</span><span class="p">[</span>
+                <span class="s2">"situacao"</span><span class="p">,</span>
+                <span class="s2">"finalizado_em"</span><span class="p">,</span>
+                <span class="s2">"total_extraido"</span><span class="p">,</span>
+                <span class="s2">"total_transformado"</span><span class="p">,</span>
+                <span class="s2">"total_carregado"</span><span class="p">,</span>
+                <span class="s2">"total_erros"</span><span class="p">,</span>
+                <span class="s2">"total_ignorados"</span><span class="p">,</span>
+                <span class="s2">"atualizado_em"</span><span class="p">,</span>
+            <span class="p">]</span>
+        <span class="p">)</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="LogEtapaETL">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.LogEtapaETL">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">LogEtapaETL</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Log de uma etapa individual do pipeline ETL."""</span>
+
+<div class="viewcode-block" id="LogEtapaETL.NomeEtapa">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.LogEtapaETL.NomeEtapa">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">NomeEtapa</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TextChoices</span><span class="p">):</span>
+        <span class="n">EXTRAIR_SE1426</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_identidade_extrair_se1426"</span><span class="p">,</span>
+            <span class="s2">"1. Extrair SE1426"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">EXTRAIR_CORESSO</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_identidade_extrair_coresso"</span><span class="p">,</span>
+            <span class="s2">"2. Extrair CoreSSO"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">EXTRAIR_EOL_ALUNOS</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_identidade_extrair_eol_alunos"</span><span class="p">,</span>
+            <span class="s2">"2b. Extrair EOL Alunos"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">RESOLVER_IDENTIDADE</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_identidade_resolver_identidade"</span><span class="p">,</span>
+            <span class="s2">"3. Resolver Identidade"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">PROVISIONAR_KEYCLOAK</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_provisionar_identidade_keycloak"</span><span class="p">,</span>
+            <span class="s2">"4. Provisionar Keycloak"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">CARREGAR_TOKEN</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_carregar_atributos_token"</span><span class="p">,</span>
+            <span class="s2">"5. Carregar Atributos Token"</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">SYNC_REC</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">"task_sync_rec_etl"</span><span class="p">,</span>
+            <span class="s2">"6. Registro Operacional"</span><span class="p">,</span>
+        <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LogEtapaETL.Situacao">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.LogEtapaETL.Situacao">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Situacao</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TextChoices</span><span class="p">):</span>
+        <span class="n">EXECUTANDO</span> <span class="o">=</span> <span class="s2">"executando"</span><span class="p">,</span> <span class="s2">"Executando"</span>
+        <span class="n">SUCESSO</span> <span class="o">=</span> <span class="s2">"sucesso"</span><span class="p">,</span> <span class="s2">"Sucesso"</span>
+        <span class="n">FALHA</span> <span class="o">=</span> <span class="s2">"falha"</span><span class="p">,</span> <span class="s2">"Falha"</span>
+        <span class="n">IGNORADO</span> <span class="o">=</span> <span class="s2">"ignorado"</span><span class="p">,</span> <span class="s2">"Ignorado"</span></div>
+
+
+    <span class="nb">id</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BigAutoField</span><span class="p">(</span><span class="n">primary_key</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">execucao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">ForeignKey</span><span class="p">(</span>
+        <span class="n">ExecucaoETL</span><span class="p">,</span>
+        <span class="n">on_delete</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">CASCADE</span><span class="p">,</span>
+        <span class="n">related_name</span><span class="o">=</span><span class="s2">"etapas"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">nome_etapa</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">max_length</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">choices</span><span class="o">=</span><span class="n">NomeEtapa</span><span class="o">.</span><span class="n">choices</span><span class="p">)</span>
+    <span class="n">ordem_etapa</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">PositiveSmallIntegerField</span><span class="p">()</span>
+    <span class="n">situacao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+        <span class="n">choices</span><span class="o">=</span><span class="n">Situacao</span><span class="o">.</span><span class="n">choices</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">Situacao</span><span class="o">.</span><span class="n">EXECUTANDO</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">registros_entrada</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">registros_saida</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">registros_erro</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">iniciado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now_add</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">finalizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">detalhe_erro</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">TextField</span><span class="p">(</span><span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">metadados</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">JSONField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_log_etapa"</span>
+        <span class="n">ordering</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"execucao"</span><span class="p">,</span> <span class="s2">"ordem_etapa"</span><span class="p">]</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Log de Etapa ETL"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Logs de Etapas ETL"</span>
+        <span class="n">unique_together</span> <span class="o">=</span> <span class="p">[(</span><span class="s2">"execucao"</span><span class="p">,</span> <span class="s2">"nome_etapa"</span><span class="p">)]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">execucao</span><span class="o">.</span><span class="n">id_execucao</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">8</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">" → </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">nome_etapa</span><span class="si">}</span><span class="s2"> [</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">situacao</span><span class="si">}</span><span class="s2">]"</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ControleProvisionamento">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ControleProvisionamento">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ControleProvisionamento</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Controle de idempotência multi-estágio do pipeline de identidade.</span>
+
+<span class="sd">    Guarda 3 hashes independentes por registro — ``hash_extracao``</span>
+<span class="sd">    (dado da fonte), ``hash_keycloak`` (payload enviado ao Keycloak) e</span>
+<span class="sd">    ``hash_token_ms`` (payload enviado ao token-ms) — para que cada</span>
+<span class="sd">    estágio decida, sem depender dos outros, se precisa reexecutar.</span>
+<span class="sd">    Um estágio só é pulado quando seu próprio hash bate com o hash</span>
+<span class="sd">    atual; os 3 precisam bater para o registro inteiro ser ignorado.</span>
+<span class="sd">    """</span>
+
+<div class="viewcode-block" id="ControleProvisionamento.TipoEntidade">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.ControleProvisionamento.TipoEntidade">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">TipoEntidade</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TextChoices</span><span class="p">):</span>
+        <span class="n">USUARIO</span> <span class="o">=</span> <span class="s2">"usuario"</span><span class="p">,</span> <span class="s2">"Usuário"</span>
+        <span class="n">GRUPO</span> <span class="o">=</span> <span class="s2">"grupo"</span><span class="p">,</span> <span class="s2">"Grupo"</span>
+        <span class="n">ROLE</span> <span class="o">=</span> <span class="s2">"role"</span><span class="p">,</span> <span class="s2">"Role"</span>
+        <span class="n">CLIENT</span> <span class="o">=</span> <span class="s2">"client"</span><span class="p">,</span> <span class="s2">"Client"</span></div>
+
+
+    <span class="nb">id</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BigAutoField</span><span class="p">(</span><span class="n">primary_key</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">tipo_entidade</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">choices</span><span class="o">=</span><span class="n">TipoEntidade</span><span class="o">.</span><span class="n">choices</span>
+    <span class="p">)</span>
+    <span class="n">sistema_origem</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Sistema de origem: se1426, coresso"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">id_origem</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Identificador na fonte (RF, CPF, matrícula)"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">id_destino</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"ID no Keycloak"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm_destino</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">django_settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">hash_extracao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"SHA-256 dos campos do staging pós-extração/resolução"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">hash_keycloak</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"SHA-256 do payload enviado ao Keycloak"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">hash_token_ms</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"SHA-256 do payload enviado ao token-ms"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">token_ms_pendente</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BooleanField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">db_index</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="p">(</span>
+            <span class="s2">"True quando hash_token_ms está desatualizado em relação"</span>
+            <span class="s2">" ao dado atual — permite localizar pendências de envio"</span>
+            <span class="s2">" ao token-ms sem depender do staging de uma execução"</span>
+            <span class="s2">" específica (que é limpo periodicamente)."</span>
+        <span class="p">),</span>
+    <span class="p">)</span>
+    <span class="n">versao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">PositiveIntegerField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">sincronizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">ultima_execucao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">ForeignKey</span><span class="p">(</span>
+        <span class="n">ExecucaoETL</span><span class="p">,</span>
+        <span class="n">on_delete</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">SET_NULL</span><span class="p">,</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">related_name</span><span class="o">=</span><span class="s2">"registros_provisionamento"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">ativo</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BooleanField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">erro_sincronizacao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">TextField</span><span class="p">(</span><span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">criado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now_add</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">atualizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_controle_provisionamento"</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Controle de Provisionamento"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Controles de Provisionamento"</span>
+        <span class="n">unique_together</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="p">(</span><span class="s2">"tipo_entidade"</span><span class="p">,</span> <span class="s2">"sistema_origem"</span><span class="p">,</span> <span class="s2">"id_origem"</span><span class="p">,</span> <span class="s2">"realm_destino"</span><span class="p">)</span>
+        <span class="p">]</span>
+        <span class="n">indexes</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span>
+                <span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"tipo_entidade"</span><span class="p">,</span> <span class="s2">"sistema_origem"</span><span class="p">],</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">"idx_prov_entidade_sistema"</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span><span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"id_origem"</span><span class="p">],</span> <span class="n">name</span><span class="o">=</span><span class="s2">"idx_prov_id_origem"</span><span class="p">),</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span><span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"hash_keycloak"</span><span class="p">],</span> <span class="n">name</span><span class="o">=</span><span class="s2">"idx_prov_hash"</span><span class="p">),</span>
+        <span class="p">]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">tipo_entidade</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">sistema_origem</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">":</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id_origem</span><span class="si">}</span><span class="s2"> v</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">versao</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="MarcaDaguaExtracao">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.MarcaDaguaExtracao">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MarcaDaguaExtracao</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Controle de watermark por fonte de dados.</span>
+
+<span class="sd">    Persiste o ponto de parada de cada extração para</span>
+<span class="sd">    permitir cargas incrementais (delta) nas execuções seguintes.</span>
+<span class="sd">    """</span>
+
+    <span class="n">fonte</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
+        <span class="n">primary_key</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Identificador da fonte: se1426 | coresso | eol_alunos"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">ultimo_processado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Timestamp do último registro processado com sucesso"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">ultima_pagina</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Última página processada na extração paginada"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">total_processado</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Total acumulado de registros processados"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">atualizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_marca_dagua_extracao"</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Marca D'Água de Extração"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Marcas D'Água de Extração"</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"[</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">fonte</span><span class="si">}</span><span class="s2">] último: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">ultimo_processado_em</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">" pág: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">ultima_pagina</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="CheckpointEtl">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.CheckpointEtl">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">CheckpointEtl</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Checkpoint de retomada por execução ETL.</span>
+
+<span class="sd">    Permite que uma execução interrompida seja retomada</span>
+<span class="sd">    do ponto de parada, sem reprocessar registros já tratados.</span>
+<span class="sd">    """</span>
+
+    <span class="n">id_execucao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">UUIDField</span><span class="p">(</span>
+        <span class="n">unique</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"UUID da ExecucaoETL associada"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">etapa</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Nome da etapa (nome_tarefa da spec)"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">pagina_atual</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Índice da página ao interromper"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">ultimo_id_processado</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">max_length</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Último ID processado antes da interrupção"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">estado_json</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">JSONField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
+        <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Estado arbitrário da etapa para retomada"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">atualizado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_checkpoint"</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Checkpoint ETL"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Checkpoints ETL"</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"Checkpoint </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id_execucao</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">8</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">" [</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">etapa</span><span class="si">}</span><span class="s2">] pág </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">pagina_atual</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="RastreioTentativa">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.models.RastreioTentativa">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">RastreioTentativa</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">Model</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Rastreio de tentativas (retries) por tarefa e execução.</span>
+
+<span class="sd">    Registra cada tentativa de uma tarefa, permitindo</span>
+<span class="sd">    auditoria de falhas transitórias e análise de estabilidade.</span>
+<span class="sd">    """</span>
+
+    <span class="nb">id</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">BigAutoField</span><span class="p">(</span><span class="n">primary_key</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">id_execucao</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">UUIDField</span><span class="p">(</span><span class="n">db_index</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">nome_tarefa</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">max_length</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
+    <span class="n">numero_tentativa</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">PositiveSmallIntegerField</span><span class="p">()</span>
+    <span class="n">iniciado_em</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">DateTimeField</span><span class="p">(</span><span class="n">auto_now_add</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">erro</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">TextField</span><span class="p">(</span><span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">duracao_segundos</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">FloatField</span><span class="p">(</span><span class="n">null</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">app_label</span> <span class="o">=</span> <span class="s2">"controle_etl"</span>
+        <span class="n">db_table</span> <span class="o">=</span> <span class="s2">"etl_rastreio_tentativa"</span>
+        <span class="n">verbose_name</span> <span class="o">=</span> <span class="s2">"Rastreio de Tentativa"</span>
+        <span class="n">verbose_name_plural</span> <span class="o">=</span> <span class="s2">"Rastreios de Tentativas"</span>
+        <span class="n">indexes</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">models</span><span class="o">.</span><span class="n">Index</span><span class="p">(</span>
+                <span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"id_execucao"</span><span class="p">,</span> <span class="s2">"nome_tarefa"</span><span class="p">],</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">"idx_rastreio_exec_tarefa"</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">nome_tarefa</span><span class="si">}</span><span class="s2"> tentativa </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">numero_tentativa</span><span class="si">}</span><span class="s2">"</span>
+            <span class="sa">f</span><span class="s2">" [</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id_execucao</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">8</span><span class="p">]</span><span class="si">}</span><span class="s2">]"</span>
+        <span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,542 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apps.staging.tasks &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../../_static/translations.js?v=71a39b36"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../../../genindex.html" />
+    <link rel="search" title="Buscar" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Código do módulo</a></li>
+      <li class="breadcrumb-item active">apps.staging.tasks</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Código-fonte para apps.staging.tasks</h1><div class="highlight"><pre>
+<span></span><span class="sd">"""Tasks Celery de extração, transformação e deduplicação do staging ETL."""</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Iterable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">celery</span><span class="w"> </span><span class="kn">import</span> <span class="n">shared_task</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.db.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">Model</span>
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">"etl_identidade"</span><span class="p">)</span>
+
+<span class="n">_MODELO_POR_TIPO</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"servidor"</span><span class="p">:</span> <span class="s2">"UsuarioServidorStaging"</span><span class="p">,</span>
+    <span class="s2">"aluno"</span><span class="p">:</span> <span class="s2">"UsuarioAlunoStaging"</span><span class="p">,</span>
+    <span class="s2">"terceiro"</span><span class="p">:</span> <span class="s2">"UsuarioTerceiroStaging"</span><span class="p">,</span>
+<span class="p">}</span>
+
+<span class="n">_CAMPOS_COMUNS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="s2">"fonte"</span><span class="p">,</span>
+    <span class="s2">"cpf"</span><span class="p">,</span>
+    <span class="s2">"nome"</span><span class="p">,</span>
+    <span class="s2">"email"</span><span class="p">,</span>
+    <span class="s2">"situacao"</span><span class="p">,</span>
+    <span class="s2">"lotacao"</span><span class="p">,</span>
+    <span class="s2">"lotacao_nome"</span><span class="p">,</span>
+    <span class="s2">"dre"</span><span class="p">,</span>
+    <span class="s2">"ue"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">_CAMPOS_POR_TIPO</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"servidor"</span><span class="p">:</span> <span class="p">(</span><span class="s2">"rf"</span><span class="p">,</span> <span class="s2">"matricula"</span><span class="p">,</span> <span class="s2">"cargo"</span><span class="p">,</span> <span class="s2">"funcao"</span><span class="p">),</span>
+    <span class="s2">"aluno"</span><span class="p">:</span> <span class="p">(</span><span class="s2">"cod_escola"</span><span class="p">,</span> <span class="s2">"turma"</span><span class="p">,</span> <span class="s2">"matricula"</span><span class="p">),</span>
+    <span class="s2">"terceiro"</span><span class="p">:</span> <span class="p">(</span><span class="s2">"tipo_acesso"</span><span class="p">,</span> <span class="s2">"matricula"</span><span class="p">),</span>
+<span class="p">}</span>
+
+<span class="n">_TAMANHO_LOTE_PERSISTENCIA</span> <span class="o">=</span> <span class="mi">500</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_instanciar_staging</span><span class="p">(</span><span class="n">modelo</span><span class="p">:</span> <span class="nb">type</span><span class="p">,</span> <span class="n">registro</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta a instância de staging (não salva) a partir de um registro."""</span>
+    <span class="n">tipo</span> <span class="o">=</span> <span class="n">registro</span><span class="o">.</span><span class="n">tipo</span>
+    <span class="n">campos</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">"id_execucao"</span><span class="p">:</span> <span class="n">id_execucao</span><span class="p">,</span>
+        <span class="s2">"situacao"</span><span class="p">:</span> <span class="s2">"extraido"</span><span class="p">,</span>
+        <span class="o">**</span><span class="p">{</span>
+            <span class="n">campo</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">registro</span><span class="p">,</span> <span class="n">campo</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">campo</span> <span class="ow">in</span> <span class="n">_CAMPOS_COMUNS</span>
+            <span class="k">if</span> <span class="n">campo</span> <span class="o">!=</span> <span class="s2">"situacao"</span>
+        <span class="p">},</span>
+        <span class="o">**</span><span class="p">{</span>
+            <span class="n">campo</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">registro</span><span class="p">,</span> <span class="n">campo</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">campo</span> <span class="ow">in</span> <span class="n">_CAMPOS_POR_TIPO</span><span class="p">[</span><span class="n">tipo</span><span class="p">]</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">modelo</span><span class="p">(</span><span class="o">**</span><span class="n">campos</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_instanciar_vinculos</span><span class="p">(</span>
+    <span class="n">modelo</span><span class="p">:</span> <span class="nb">type</span><span class="p">,</span> <span class="n">servidor</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">registro</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta as instâncias de vínculo (não salvas) de um servidor.</span>
+
+<span class="sd">    Só populado para ``tipo == "servidor"`` — os demais tipos de</span>
+<span class="sd">    staging não têm ``vinculos`` no ``RegistroIdentidade``.</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="p">[</span>
+        <span class="n">modelo</span><span class="p">(</span>
+            <span class="n">servidor</span><span class="o">=</span><span class="n">servidor</span><span class="p">,</span>
+            <span class="n">id_execucao</span><span class="o">=</span><span class="n">id_execucao</span><span class="p">,</span>
+            <span class="n">tipo_vinculo</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">tipo_vinculo</span><span class="p">,</span>
+            <span class="n">codigo_vinculo_origem</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">codigo_vinculo_origem</span><span class="p">,</span>
+            <span class="n">cargo_codigo</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">cargo_codigo</span><span class="p">,</span>
+            <span class="n">cargo_nome</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">cargo_nome</span><span class="p">,</span>
+            <span class="n">unidade_codigo</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">unidade_codigo</span><span class="p">,</span>
+            <span class="n">unidade_nome</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">unidade_nome</span><span class="p">,</span>
+            <span class="n">dre_codigo</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">dre_codigo</span><span class="p">,</span>
+            <span class="n">situacao</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">situacao</span><span class="p">,</span>
+            <span class="n">data_inicio</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">data_inicio</span><span class="p">,</span>
+            <span class="n">vigente</span><span class="o">=</span><span class="n">vinculo</span><span class="o">.</span><span class="n">vigente</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">for</span> <span class="n">vinculo</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">registro</span><span class="p">,</span> <span class="s2">"vinculos"</span><span class="p">,</span> <span class="p">[])</span>
+    <span class="p">]</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_EstadoPersistencia</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Estado acumulado durante uma chamada a persistir_extracao_staging."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">id_execucao</span> <span class="o">=</span> <span class="n">id_execucao</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">"servidor"</span><span class="p">:</span> <span class="p">[],</span>
+            <span class="s2">"aluno"</span><span class="p">:</span> <span class="p">[],</span>
+            <span class="s2">"terceiro"</span><span class="p">:</span> <span class="p">[],</span>
+        <span class="p">}</span>
+        <span class="c1"># Pareia cada instância de servidor pendente de bulk_create com</span>
+        <span class="c1"># o RegistroIdentidade de origem, só para extrair os vínculos</span>
+        <span class="c1"># depois que a instância tiver PK.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">registros_servidor_pendentes</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_descarregar_vinculos</span><span class="p">(</span>
+    <span class="n">modelos_staging</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">estado</span><span class="p">:</span> <span class="n">_EstadoPersistencia</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">vinculos</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">servidor</span><span class="p">,</span> <span class="n">registro</span> <span class="ow">in</span> <span class="n">estado</span><span class="o">.</span><span class="n">registros_servidor_pendentes</span><span class="p">:</span>
+        <span class="n">vinculos</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+            <span class="n">_instanciar_vinculos</span><span class="p">(</span>
+                <span class="n">modelos_staging</span><span class="o">.</span><span class="n">VinculoServidorStaging</span><span class="p">,</span>
+                <span class="n">servidor</span><span class="p">,</span>
+                <span class="n">registro</span><span class="p">,</span>
+                <span class="n">estado</span><span class="o">.</span><span class="n">id_execucao</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">)</span>
+    <span class="n">estado</span><span class="o">.</span><span class="n">registros_servidor_pendentes</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">vinculos</span><span class="p">:</span>
+        <span class="n">modelos_staging</span><span class="o">.</span><span class="n">VinculoServidorStaging</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">bulk_create</span><span class="p">(</span>
+            <span class="n">vinculos</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="n">_TAMANHO_LOTE_PERSISTENCIA</span>
+        <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_descarregar_lote</span><span class="p">(</span>
+    <span class="n">modelos_staging</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">estado</span><span class="p">:</span> <span class="n">_EstadoPersistencia</span><span class="p">,</span> <span class="n">tipo</span><span class="p">:</span> <span class="nb">str</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">lote</span> <span class="o">=</span> <span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">[</span><span class="n">tipo</span><span class="p">]</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">lote</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="n">modelo</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">_MODELO_POR_TIPO</span><span class="p">[</span><span class="n">tipo</span><span class="p">])</span>
+    <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">bulk_create</span><span class="p">(</span><span class="n">lote</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="n">_TAMANHO_LOTE_PERSISTENCIA</span><span class="p">)</span>
+    <span class="n">estado</span><span class="o">.</span><span class="n">total</span> <span class="o">+=</span> <span class="nb">len</span><span class="p">(</span><span class="n">lote</span><span class="p">)</span>
+    <span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">[</span><span class="n">tipo</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">if</span> <span class="n">tipo</span> <span class="o">==</span> <span class="s2">"servidor"</span><span class="p">:</span>
+        <span class="n">_descarregar_vinculos</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">estado</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_consumir_registro</span><span class="p">(</span>
+    <span class="n">modelos_staging</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">estado</span><span class="p">:</span> <span class="n">_EstadoPersistencia</span><span class="p">,</span> <span class="n">registro</span><span class="p">:</span> <span class="n">Any</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">tipo</span> <span class="o">=</span> <span class="n">registro</span><span class="o">.</span><span class="n">tipo</span>
+    <span class="k">if</span> <span class="n">tipo</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+            <span class="s2">"[</span><span class="si">%s</span><span class="s2">] persistir_extracao_staging — tipo desconhecido: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+            <span class="n">estado</span><span class="o">.</span><span class="n">id_execucao</span><span class="p">,</span>
+            <span class="n">tipo</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">modelo</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">_MODELO_POR_TIPO</span><span class="p">[</span><span class="n">tipo</span><span class="p">])</span>
+    <span class="n">instancia</span> <span class="o">=</span> <span class="n">_instanciar_staging</span><span class="p">(</span><span class="n">modelo</span><span class="p">,</span> <span class="n">registro</span><span class="p">,</span> <span class="n">estado</span><span class="o">.</span><span class="n">id_execucao</span><span class="p">)</span>
+    <span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">[</span><span class="n">tipo</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">instancia</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">tipo</span> <span class="o">==</span> <span class="s2">"servidor"</span> <span class="ow">and</span> <span class="n">registro</span><span class="o">.</span><span class="n">vinculos</span><span class="p">:</span>
+        <span class="n">estado</span><span class="o">.</span><span class="n">registros_servidor_pendentes</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">instancia</span><span class="p">,</span> <span class="n">registro</span><span class="p">))</span>
+
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">[</span><span class="n">tipo</span><span class="p">])</span> <span class="o">&gt;=</span> <span class="n">_TAMANHO_LOTE_PERSISTENCIA</span><span class="p">:</span>
+        <span class="n">_descarregar_lote</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">estado</span><span class="p">,</span> <span class="n">tipo</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="persistir_extracao_staging">
+<a class="viewcode-back" href="../../../api.html#apps.staging.tasks.persistir_extracao_staging">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">persistir_extracao_staging</span><span class="p">(</span>
+    <span class="n">registros</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Persistir RegistroIdentidade extraídos como staging records.</span>
+
+<span class="sd">    Mapeia cada registro para o modelo de staging correspondente ao</span>
+<span class="sd">    seu ``tipo`` (servidor, aluno ou terceiro), marcando ``situacao``</span>
+<span class="sd">    como 'extraido' para posterior processamento por</span>
+<span class="sd">    ``transformar_staging``.</span>
+
+<span class="sd">    Grava em lotes de ``_TAMANHO_LOTE_PERSISTENCIA`` conforme consome</span>
+<span class="sd">    ``registros``, em vez de acumular a fonte inteira em memória antes</span>
+<span class="sd">    do primeiro ``bulk_create`` — para fontes grandes/represadas</span>
+<span class="sd">    (ex.: SE1426 completo), acumular tudo antes de gravar já causou</span>
+<span class="sd">    OOM/SIGKILL do worker em ambientes com memória limitada.</span>
+
+<span class="sd">    Servidores com vínculos funcionais (cargo base, sobreposto,</span>
+<span class="sd">    função/atividade) têm as ``VinculoServidorStaging`` filhas gravadas</span>
+<span class="sd">    logo após o ``bulk_create`` do pai, aproveitando os PKs que o</span>
+<span class="sd">    Postgres devolve na própria chamada (Django ``bulk_create`` popula</span>
+<span class="sd">    ``pk`` nas instâncias quando o backend suporta ``RETURNING``).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        registros: Iterável (idealmente generator) de RegistroIdentidade.</span>
+<span class="sd">        id_execucao: UUID da ExecucaoETL associada.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Total de registros persistidos (staging pai, sem contar vínculos).</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.staging</span><span class="w"> </span><span class="kn">import</span> <span class="n">models</span> <span class="k">as</span> <span class="n">modelos_staging</span>  <span class="c1"># noqa: PLC0415</span>
+
+    <span class="n">estado</span> <span class="o">=</span> <span class="n">_EstadoPersistencia</span><span class="p">(</span><span class="n">id_execucao</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">registro</span> <span class="ow">in</span> <span class="n">registros</span><span class="p">:</span>
+        <span class="n">_consumir_registro</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">estado</span><span class="p">,</span> <span class="n">registro</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">tipo</span> <span class="ow">in</span> <span class="n">estado</span><span class="o">.</span><span class="n">lotes_por_tipo</span><span class="p">:</span>
+        <span class="n">_descarregar_lote</span><span class="p">(</span><span class="n">modelos_staging</span><span class="p">,</span> <span class="n">estado</span><span class="p">,</span> <span class="n">tipo</span><span class="p">)</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+        <span class="s2">"[</span><span class="si">%s</span><span class="s2">] persistir_extracao_staging — </span><span class="si">%d</span><span class="s2"> registros persistidos"</span><span class="p">,</span>
+        <span class="n">id_execucao</span><span class="p">,</span>
+        <span class="n">estado</span><span class="o">.</span><span class="n">total</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">estado</span><span class="o">.</span><span class="n">total</span></div>
+
+
+
+<div class="viewcode-block" id="transformar_staging">
+<a class="viewcode-back" href="../../../api.html#apps.staging.tasks.transformar_staging">[documentos]</a>
+<span class="nd">@shared_task</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">"staging.tasks.transformar_staging"</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">transformar_staging</span><span class="p">(</span><span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Normaliza e valida registros de staging de uma execução.</span>
+
+<span class="sd">    Percorre UsuarioServidorStaging, UsuarioAlunoStaging e</span>
+<span class="sd">    UsuarioTerceiroStaging marcando cada registro como 'pronto'</span>
+<span class="sd">    após validação básica de CPF e campos obrigatórios.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        id_execucao: UUID da ExecucaoETL associada.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Dicionário com totais por tipo de usuário.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.staging.models</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>  <span class="c1"># noqa: PLC0415</span>
+        <span class="n">UsuarioAlunoStaging</span><span class="p">,</span>
+        <span class="n">UsuarioServidorStaging</span><span class="p">,</span>
+        <span class="n">UsuarioTerceiroStaging</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">totais</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">"servidor"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="s2">"aluno"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="s2">"terceiro"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="s2">"erros"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="p">}</span>
+
+    <span class="k">for</span> <span class="n">modelo</span><span class="p">,</span> <span class="n">chave</span> <span class="ow">in</span> <span class="p">(</span>
+        <span class="p">(</span><span class="n">UsuarioServidorStaging</span><span class="p">,</span> <span class="s2">"servidor"</span><span class="p">),</span>
+        <span class="p">(</span><span class="n">UsuarioAlunoStaging</span><span class="p">,</span> <span class="s2">"aluno"</span><span class="p">),</span>
+        <span class="p">(</span><span class="n">UsuarioTerceiroStaging</span><span class="p">,</span> <span class="s2">"terceiro"</span><span class="p">),</span>
+    <span class="p">):</span>
+        <span class="n">qs</span> <span class="o">=</span> <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span>
+            <span class="n">id_execucao</span><span class="o">=</span><span class="n">id_execucao</span><span class="p">,</span> <span class="n">situacao</span><span class="o">=</span><span class="s2">"extraido"</span>
+        <span class="p">)</span>
+        <span class="n">prontos</span> <span class="o">=</span> <span class="n">erros</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">atualizacoes</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">usuario</span> <span class="ow">in</span> <span class="n">qs</span><span class="o">.</span><span class="n">iterator</span><span class="p">(</span><span class="n">chunk_size</span><span class="o">=</span><span class="mi">500</span><span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">usuario</span><span class="o">.</span><span class="n">nome</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">usuario</span><span class="o">.</span><span class="n">cpf</span><span class="p">:</span>
+                <span class="n">usuario</span><span class="o">.</span><span class="n">situacao</span> <span class="o">=</span> <span class="s2">"erro"</span>
+                <span class="n">usuario</span><span class="o">.</span><span class="n">detalhe_erro</span> <span class="o">=</span> <span class="s2">"nome e CPF ausentes"</span>
+                <span class="n">erros</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">usuario</span><span class="o">.</span><span class="n">situacao</span> <span class="o">=</span> <span class="s2">"pronto"</span>
+                <span class="n">prontos</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">atualizacoes</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">usuario</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">atualizacoes</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">500</span><span class="p">:</span>
+                <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">bulk_update</span><span class="p">(</span>
+                    <span class="n">atualizacoes</span><span class="p">,</span>  <span class="c1"># type: ignore[arg-type]</span>
+                    <span class="p">[</span><span class="s2">"situacao"</span><span class="p">,</span> <span class="s2">"detalhe_erro"</span><span class="p">],</span>
+                    <span class="n">batch_size</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="n">atualizacoes</span> <span class="o">=</span> <span class="p">[]</span>
+
+        <span class="k">if</span> <span class="n">atualizacoes</span><span class="p">:</span>
+            <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">bulk_update</span><span class="p">(</span>
+                <span class="n">atualizacoes</span><span class="p">,</span>  <span class="c1"># type: ignore[arg-type]</span>
+                <span class="p">[</span><span class="s2">"situacao"</span><span class="p">,</span> <span class="s2">"detalhe_erro"</span><span class="p">],</span>
+                <span class="n">batch_size</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="n">totais</span><span class="p">[</span><span class="n">chave</span><span class="p">]</span> <span class="o">=</span> <span class="n">prontos</span>
+        <span class="n">totais</span><span class="p">[</span><span class="s2">"erros"</span><span class="p">]</span> <span class="o">+=</span> <span class="n">erros</span>
+
+    <span class="n">totais</span><span class="p">[</span><span class="s2">"total"</span><span class="p">]</span> <span class="o">=</span> <span class="n">totais</span><span class="p">[</span><span class="s2">"servidor"</span><span class="p">]</span> <span class="o">+</span> <span class="n">totais</span><span class="p">[</span><span class="s2">"aluno"</span><span class="p">]</span> <span class="o">+</span> <span class="n">totais</span><span class="p">[</span><span class="s2">"terceiro"</span><span class="p">]</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+        <span class="s2">"[</span><span class="si">%s</span><span class="s2">] transformar_staging — </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+        <span class="n">id_execucao</span><span class="p">,</span>
+        <span class="n">totais</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">totais</span></div>
+
+
+
+<span class="n">_PRIORIDADE_FONTE</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"se1426"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"eol_db"</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">"coresso"</span><span class="p">:</span> <span class="mi">3</span><span class="p">}</span>
+
+<span class="n">_TAMANHO_LOTE_DEDUP</span> <span class="o">=</span> <span class="mi">2000</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_resolver_vencedores</span><span class="p">(</span><span class="n">registros</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">dict</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Determina, em streaming, o vencedor por CPF e por RF.</span>
+
+<span class="sd">    Recebe dicts leves (``id``, ``cpf``, ``rf``, ``fonte``) em vez de</span>
+<span class="sd">    instâncias completas do model — guarda em memória só a menor</span>
+<span class="sd">    prioridade já vista por chave, não a lista inteira de registros.</span>
+<span class="sd">    """</span>
+    <span class="n">vencedor_cpf</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">vencedor_rf</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">for</span> <span class="n">registro</span> <span class="ow">in</span> <span class="n">registros</span><span class="p">:</span>
+        <span class="n">prioridade</span> <span class="o">=</span> <span class="n">_PRIORIDADE_FONTE</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"fonte"</span><span class="p">],</span> <span class="mi">99</span><span class="p">)</span>
+        <span class="n">chave_cpf</span> <span class="o">=</span> <span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"cpf"</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="n">chave_rf</span> <span class="o">=</span> <span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"rf"</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+
+        <span class="k">for</span> <span class="n">chave</span><span class="p">,</span> <span class="n">vencedores</span> <span class="ow">in</span> <span class="p">(</span>
+            <span class="p">(</span><span class="n">chave_cpf</span><span class="p">,</span> <span class="n">vencedor_cpf</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">chave_rf</span><span class="p">,</span> <span class="n">vencedor_rf</span><span class="p">),</span>
+        <span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">chave</span><span class="p">:</span>
+                <span class="k">continue</span>
+            <span class="n">atual</span> <span class="o">=</span> <span class="n">vencedores</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">chave</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">atual</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">prioridade</span> <span class="o">&lt;</span> <span class="n">atual</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
+                <span class="n">vencedores</span><span class="p">[</span><span class="n">chave</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">prioridade</span><span class="p">,</span> <span class="n">registro</span><span class="p">[</span><span class="s2">"id"</span><span class="p">])</span>
+
+    <span class="n">ids_cpf</span> <span class="o">=</span> <span class="p">{</span><span class="n">v</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">vencedor_cpf</span><span class="o">.</span><span class="n">values</span><span class="p">()}</span>
+    <span class="n">ids_rf</span> <span class="o">=</span> <span class="p">{</span><span class="n">v</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">vencedor_rf</span><span class="o">.</span><span class="n">values</span><span class="p">()}</span>
+    <span class="k">return</span> <span class="n">ids_cpf</span> <span class="o">|</span> <span class="n">ids_rf</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_marcar_duplicatas</span><span class="p">(</span>
+    <span class="n">modelo</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">Model</span><span class="p">],</span> <span class="n">registros</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span> <span class="n">vencedores_ids</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Marca como 'ignorado', em lotes, todo registro fora dos vencedores."""</span>
+    <span class="n">ignorados</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">lote</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">registro</span> <span class="ow">in</span> <span class="n">registros</span><span class="p">:</span>
+        <span class="n">cpf</span> <span class="o">=</span> <span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"cpf"</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="n">rf</span> <span class="o">=</span> <span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"rf"</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">cpf</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">rf</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="n">registro</span><span class="p">[</span><span class="s2">"id"</span><span class="p">]</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">vencedores_ids</span><span class="p">:</span>
+            <span class="n">lote</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">registro</span><span class="p">[</span><span class="s2">"id"</span><span class="p">])</span>
+            <span class="n">ignorados</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">lote</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">_TAMANHO_LOTE_DEDUP</span><span class="p">:</span>
+            <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">id__in</span><span class="o">=</span><span class="n">lote</span><span class="p">)</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">situacao</span><span class="o">=</span><span class="s2">"ignorado"</span><span class="p">)</span>
+            <span class="n">lote</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">if</span> <span class="n">lote</span><span class="p">:</span>
+        <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">id__in</span><span class="o">=</span><span class="n">lote</span><span class="p">)</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">situacao</span><span class="o">=</span><span class="s2">"ignorado"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">ignorados</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_deduplicar_modelo</span><span class="p">(</span>
+    <span class="n">modelo</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">Model</span><span class="p">],</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Deduplica um único modelo de staging por CPF/RF.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        modelo: Model de staging (UsuarioServidorStaging,</span>
+<span class="sd">            UsuarioAlunoStaging ou UsuarioTerceiroStaging).</span>
+<span class="sd">        id_execucao: UUID da ExecucaoETL associada.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Tupla ``(total, ignorados)``.</span>
+<span class="sd">    """</span>
+    <span class="n">base_qs</span> <span class="o">=</span> <span class="n">modelo</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span>
+        <span class="n">id_execucao</span><span class="o">=</span><span class="n">id_execucao</span><span class="p">,</span> <span class="n">situacao</span><span class="o">=</span><span class="s2">"pronto"</span>
+    <span class="p">)</span><span class="o">.</span><span class="n">order_by</span><span class="p">(</span><span class="s2">"id"</span><span class="p">)</span>
+
+    <span class="n">total</span> <span class="o">=</span> <span class="n">base_qs</span><span class="o">.</span><span class="n">count</span><span class="p">()</span>
+
+    <span class="n">vencedores_ids</span> <span class="o">=</span> <span class="n">_resolver_vencedores</span><span class="p">(</span>
+        <span class="n">base_qs</span><span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="s2">"id"</span><span class="p">,</span> <span class="s2">"cpf"</span><span class="p">,</span> <span class="s2">"rf"</span><span class="p">,</span> <span class="s2">"fonte"</span><span class="p">)</span><span class="o">.</span><span class="n">iterator</span><span class="p">(</span>
+            <span class="n">chunk_size</span><span class="o">=</span><span class="n">_TAMANHO_LOTE_DEDUP</span>
+        <span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">ignorados</span> <span class="o">=</span> <span class="n">_marcar_duplicatas</span><span class="p">(</span>
+        <span class="n">modelo</span><span class="p">,</span>
+        <span class="n">base_qs</span><span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="s2">"id"</span><span class="p">,</span> <span class="s2">"cpf"</span><span class="p">,</span> <span class="s2">"rf"</span><span class="p">)</span><span class="o">.</span><span class="n">iterator</span><span class="p">(</span>
+            <span class="n">chunk_size</span><span class="o">=</span><span class="n">_TAMANHO_LOTE_DEDUP</span>
+        <span class="p">),</span>
+        <span class="n">vencedores_ids</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">total</span><span class="p">,</span> <span class="n">ignorados</span>
+
+
+<div class="viewcode-block" id="deduplicar_identidades">
+<a class="viewcode-back" href="../../../api.html#apps.staging.tasks.deduplicar_identidades">[documentos]</a>
+<span class="nd">@shared_task</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">"staging.tasks.deduplicar_identidades"</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">deduplicar_identidades</span><span class="p">(</span>
+    <span class="n">resultado_transform</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Deduplica identidades por CPF/RF, um modelo de staging por vez.</span>
+
+<span class="sd">    Mantém o registro de maior prioridade de fonte (se1426 &gt; coresso)</span>
+<span class="sd">    quando o mesmo CPF/RF aparece mais de uma vez no MESMO modelo de</span>
+<span class="sd">    staging — inclui duplicatas dentro da própria fonte (ex.: CoreSSO</span>
+<span class="sd">    com mais de um documento de CPF cadastrado para a mesma pessoa),</span>
+<span class="sd">    não só entre fontes distintas. Roda separadamente por modelo</span>
+<span class="sd">    (servidor/aluno/terceiro): CPFs coincidentes entre modelos</span>
+<span class="sd">    diferentes não são deduplicados aqui — são tipos de vínculo</span>
+<span class="sd">    distintos, não a mesma linha disputando o mesmo registro.</span>
+
+<span class="sd">    Processa em streaming (``.iterator()`` + valores leves) para</span>
+<span class="sd">    suportar execuções com milhões de registros sem carregar tudo em</span>
+<span class="sd">    memória de uma vez — ver histórico de OOM em execuções de grande</span>
+<span class="sd">    volume do CoreSSO.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        resultado_transform: Resultado da task transformar_staging.</span>
+<span class="sd">        id_execucao: UUID da ExecucaoETL associada.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Dicionário com totais de deduplicação.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.staging.models</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>  <span class="c1"># noqa: PLC0415</span>
+        <span class="n">UsuarioAlunoStaging</span><span class="p">,</span>
+        <span class="n">UsuarioServidorStaging</span><span class="p">,</span>
+        <span class="n">UsuarioTerceiroStaging</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">total_geral</span> <span class="o">=</span> <span class="n">ignorados_geral</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">modelo</span> <span class="ow">in</span> <span class="p">(</span>
+        <span class="n">UsuarioServidorStaging</span><span class="p">,</span>
+        <span class="n">UsuarioAlunoStaging</span><span class="p">,</span>
+        <span class="n">UsuarioTerceiroStaging</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="n">total</span><span class="p">,</span> <span class="n">ignorados</span> <span class="o">=</span> <span class="n">_deduplicar_modelo</span><span class="p">(</span><span class="n">modelo</span><span class="p">,</span> <span class="n">id_execucao</span><span class="p">)</span>
+        <span class="n">total_geral</span> <span class="o">+=</span> <span class="n">total</span>
+        <span class="n">ignorados_geral</span> <span class="o">+=</span> <span class="n">ignorados</span>
+
+    <span class="n">total_deduplicado</span> <span class="o">=</span> <span class="n">total_geral</span> <span class="o">-</span> <span class="n">ignorados_geral</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+        <span class="s2">"[</span><span class="si">%s</span><span class="s2">] deduplicar_identidades — </span><span class="si">%d</span><span class="s2"> ignorados"</span><span class="p">,</span>
+        <span class="n">id_execucao</span><span class="p">,</span>
+        <span class="n">ignorados_geral</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span>
+        <span class="s2">"ignorados"</span><span class="p">:</span> <span class="n">ignorados_geral</span><span class="p">,</span>
+        <span class="s2">"total_deduplicado"</span><span class="p">:</span> <span class="n">total_deduplicado</span><span class="p">,</span>
+        <span class="o">**</span><span class="n">resultado_transform</span><span class="p">,</span>
+    <span class="p">}</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

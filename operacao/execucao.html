@@ -1,0 +1,188 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Caminhos de Execução &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Retomada após Falha" href="retomada.html" />
+    <link rel="prev" title="Operação" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Operação</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Caminhos de Execução</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#via-api-rest-assincrono-producao">1. Via API REST (assíncrono — produção)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#via-comando-django-sincrono-debug">2. Via comando Django (síncrono — debug)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#via-workers-celery-com-hot-reload">3. Via workers Celery com hot-reload</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#dashboard-html">4. Dashboard HTML</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#fluxo-de-chamadas">Fluxo de chamadas</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="retomada.html">Retomada após Falha</a></li>
+<li class="toctree-l2"><a class="reference internal" href="watermark.html">Watermark Incremental</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Operação</a></li>
+      <li class="breadcrumb-item active">Caminhos de Execução</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/operacao/execucao.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="caminhos-de-execucao">
+<h1>Caminhos de Execução<a class="headerlink" href="#caminhos-de-execucao" title="Link para este cabeçalho"></a></h1>
+<section id="via-api-rest-assincrono-producao">
+<h2>1. Via API REST (assíncrono — produção)<a class="headerlink" href="#via-api-rest-assincrono-producao" title="Link para este cabeçalho"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>POST<span class="w"> </span>/api/v1/etl/execucoes/
+X-API-Key:<span class="w"> </span>&lt;chave&gt;
+Content-Type:<span class="w"> </span>application/json
+
+<span class="o">{</span><span class="s2">"fonte"</span>:<span class="w"> </span><span class="s2">"todos"</span>,<span class="w"> </span><span class="s2">"realm_destino"</span>:<span class="w"> </span><span class="s2">"sme-apps"</span><span class="o">}</span>
+</pre></div>
+</div>
+<p>Cria uma <code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code> com <code class="docutils literal notranslate"><span class="pre">situacao=&quot;pendente&quot;</span></code> e dispara
+<code class="docutils literal notranslate"><span class="pre">task_identidade_executar_pipeline.apply_async</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="via-comando-django-sincrono-debug">
+<h2>2. Via comando Django (síncrono — debug)<a class="headerlink" href="#via-comando-django-sincrono-debug" title="Link para este cabeçalho"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker-compose-dev.yml<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>etl_api<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>python<span class="w"> </span>manage.py<span class="w"> </span>executar_etl<span class="w"> </span>--fonte<span class="w"> </span>todos<span class="w"> </span>--realm<span class="w"> </span>sme-apps
+</pre></div>
+</div>
+<p>Executa o pipeline diretamente, sem Celery. Útil para depuração local.</p>
+</section>
+<hr class="docutils" />
+<section id="via-workers-celery-com-hot-reload">
+<h2>3. Via workers Celery com hot-reload<a class="headerlink" href="#via-workers-celery-com-hot-reload" title="Link para este cabeçalho"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker-compose-dev.yml<span class="w"> </span>up<span class="w"> </span>etl_worker_celery<span class="w"> </span>etl_worker_keycloak<span class="w"> </span>etl_worker_token_ms
+</pre></div>
+</div>
+<p>Em dev, os workers são divididos por fila (<code class="docutils literal notranslate"><span class="pre">etl_worker_celery</span></code>,
+<code class="docutils literal notranslate"><span class="pre">etl_worker_keycloak</span></code>, <code class="docutils literal notranslate"><span class="pre">etl_worker_token_ms</span></code> — ver
+<a class="reference internal" href="../arquitetura/visao_geral.html"><span class="std std-doc">Visão Geral</span></a>), cada um rodando
+<code class="docutils literal notranslate"><span class="pre">scripts/watch_celery.py</span></code> com <code class="docutils literal notranslate"><span class="pre">ETL_WORKER_FILAS</span></code> próprio. O script inicia o
+worker com <code class="docutils literal notranslate"><span class="pre">watchdog.PollingObserver</span></code> e reinicia automaticamente ao
+detectar mudanças em <code class="docutils literal notranslate"><span class="pre">/app/apps</span></code> ou <code class="docutils literal notranslate"><span class="pre">/app/config</span></code>. Substitui <code class="docutils literal notranslate"><span class="pre">watchmedo</span> <span class="pre">auto-restart</span></code> em ambientes sem inotify (Docker Desktop no macOS/Windows).</p>
+<p>Monitoramento das filas/tasks via Celery Flower: <code class="docutils literal notranslate"><span class="pre">http://localhost:5555</span></code>
+(serviço <code class="docutils literal notranslate"><span class="pre">etl_flower</span></code>).</p>
+</section>
+<hr class="docutils" />
+<section id="dashboard-html">
+<h2>4. Dashboard HTML<a class="headerlink" href="#dashboard-html" title="Link para este cabeçalho"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span> <span class="o">/</span><span class="n">etl</span><span class="o">/</span><span class="n">dashboard</span><span class="o">/</span>
+</pre></div>
+</div>
+<p>Exibe execuções em andamento e permite disparar novas execuções via formulário.</p>
+</section>
+<hr class="docutils" />
+<section id="fluxo-de-chamadas">
+<h2>Fluxo de chamadas<a class="headerlink" href="#fluxo-de-chamadas" title="Link para este cabeçalho"></a></h2>
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    API  [label=&quot;POST /api/v1/\netl/execucoes/&quot;];
+    CMD  [label=&quot;manage.py\nexecutar_etl&quot;];
+    TASK [label=&quot;task_identidade_\nexecutar_pipeline\n(Celery)&quot;];
+    PIPE [label=&quot;Pipeline\n(chord + chain)&quot;];
+    CTL  [label=&quot;ExecucaoETL&quot;];
+
+    API -&gt; TASK -&gt; PIPE;
+    CMD -&gt; PIPE;
+    PIPE -&gt; CTL [style=dashed, label=&quot;atualiza&quot;];
+}</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="index.html" class="btn btn-neutral float-left" title="Operação" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="retomada.html" class="btn btn-neutral float-right" title="Retomada após Falha" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

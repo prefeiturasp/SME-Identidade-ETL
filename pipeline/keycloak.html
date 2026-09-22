@@ -1,0 +1,408 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Provisionamento Keycloak &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Carga no token-ms" href="token_ms.html" />
+    <link rel="prev" title="Resolução de Identidade" href="resolucao.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Pipeline ETL de Identidades</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html#etapas">Etapas</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="extracao.html">Extração</a></li>
+<li class="toctree-l3"><a class="reference internal" href="staging.html">Staging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Provisionamento Keycloak</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#hierarquia-no-keycloak">Hierarquia no Keycloak</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#orquestrador">Orquestrador</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#mapeamento-coresso-keycloak">Mapeamento CoreSSO → Keycloak</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#fluxo-de-upsert-por-usuario">Fluxo de upsert por usuário</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#provisionamento-de-vinculos-client-roles">Provisionamento de vínculos (client roles)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#sincronizacao-individual">Sincronização individual</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#concessao-de-acesso-a-sistema">Concessão de acesso a sistema</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#roles-e-grupos-derivados">Roles e grupos derivados</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#reconexao-entre-lotes">Reconexão entre lotes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#retry-seletivo-por-status-http">Retry seletivo por status HTTP</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="token_ms.html">Carga no token-ms</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Pipeline ETL de Identidades</a></li>
+      <li class="breadcrumb-item active">Provisionamento Keycloak</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/keycloak.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="provisionamento-keycloak">
+<h1>Provisionamento Keycloak<a class="headerlink" href="#provisionamento-keycloak" title="Link para este cabeçalho"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link para este cabeçalho"></a></h2>
+<p>Criar ou atualizar usuários, clients, client roles, grupos e vínculos no
+Keycloak a partir dos dados do CoreSSO e das fontes SE1426/EOL_DB.</p>
+</section>
+<hr class="docutils" />
+<section id="hierarquia-no-keycloak">
+<h2>Hierarquia no Keycloak<a class="headerlink" href="#hierarquia-no-keycloak" title="Link para este cabeçalho"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Realm (sme-apps)
+├── Client (sistema CoreSSO → clientId: "{nome_slug}-{sufixo}")
+│   └── Client Role (grupo CoreSSO → name: slug de gru_nome)
+├── User (username: CPF ou RF)
+│   ├── Realm Roles (cargo/função: Professor, Diretor, etc.)
+│   ├── Groups (hierarquia: /SME/DRE-{dre}/UE-{ue})
+│   └── Client Role Mappings (vínculos grupo↔sistema)
+└── Realm Role (cargo/função genérica)
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="orquestrador">
+<h2>Orquestrador<a class="headerlink" href="#orquestrador" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/orquestrador_kc.py</span></code> — encapsula toda a comunicação com a
+Admin API do Keycloak via <code class="docutils literal notranslate"><span class="pre">python-keycloak</span></code>.</p>
+<section id="funcoes-principais">
+<h3>Funções principais<a class="headerlink" href="#funcoes-principais" title="Link para este cabeçalho"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Função</p></th>
+<th class="head"><p>Responsabilidade</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">obter_admin_keycloak(realm)</span></code></p></td>
+<td><p>Autentica e retorna cliente <code class="docutils literal notranslate"><span class="pre">KeycloakAdmin</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">construir_payload_kc(usuario)</span></code></p></td>
+<td><p>Monta atributos do usuário para o Keycloak</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">provisionar_usuario_kc(admin,</span> <span class="pre">usuario,</span> <span class="pre">...)</span></code></p></td>
+<td><p>Upsert de um usuário; verifica os 3 hashes (ver abaixo); suporta <code class="docutils literal notranslate"><span class="pre">forcar_atualizacao</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">provisionar_usuarios_kc_em_paralelo(...)</span></code></p></td>
+<td><p>Lotes via <code class="docutils literal notranslate"><span class="pre">ThreadPoolProcessor</span></code> (<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/libs/thread_processor.py</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">provisionar_client_kc(admin,</span> <span class="pre">sistema)</span></code></p></td>
+<td><p>Cria ou atualiza client a partir de <code class="docutils literal notranslate"><span class="pre">SistemaStaging</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">provisionar_role_client_kc(admin,</span> <span class="pre">perfil)</span></code></p></td>
+<td><p>Cria ou atualiza client role a partir de <code class="docutils literal notranslate"><span class="pre">PerfilCoressoStaging</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">atribuir_client_roles_usuario_kc(admin,</span> <span class="pre">vinculos)</span></code></p></td>
+<td><p>Atribui client roles em streaming com cache</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sincronizar_usuario_kc(admin,</span> <span class="pre">dados_coresso)</span></code></p></td>
+<td><p>Sincroniza um usuário com todos os seus roles</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conceder_acesso_kc(admin,</span> <span class="pre">dados_coresso,</span> <span class="pre">sis_id,</span> <span class="pre">roles)</span></code></p></td>
+<td><p>Upsert de usuário do CoreSSO + concessão de roles de um sistema</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">_conceder_roles_sistema_kc(admin,</span> <span class="pre">kc_user_id,</span> <span class="pre">sis_id,</span> <span class="pre">roles)</span></code></p></td>
+<td><p>Núcleo de resolução/atribuição de roles — não faz upsert de usuário</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">calcular_hash_conteudo(payload)</span></code></p></td>
+<td><p>SHA-256 de um payload dict (Keycloak ou token-ms)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">calcular_hash_extracao(usuario)</span></code></p></td>
+<td><p>SHA-256 dos campos do staging usados para decidir reextração</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resolver_id_origem(usuario)</span></code></p></td>
+<td><p>CPF (prioridade), senão RF, senão PK do staging — chave de <code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">obter_ou_criar_controle(...)</span></code></p></td>
+<td><p>Localiza/cria a linha de <code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code>, reaproveitada pela carga no token-ms</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">payload_tem_identificador(payload)</span></code></p></td>
+<td><p>Descarta registros sem rf/cpf/matrícula antes de enviar ao token-ms (rejeitaria o lote inteiro)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">_e_retriavel_kc(exc)</span></code></p></td>
+<td><p>Só retenta erros do Keycloak com status transitório real (<code class="docutils literal notranslate"><span class="pre">response_code</span></code> em <code class="docutils literal notranslate"><span class="pre">408/425/429/500/502/503/504</span></code>) — 400 de validação propaga na 1ª tentativa</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<hr class="docutils" />
+<section id="mapeamento-coresso-keycloak">
+<h2>Mapeamento CoreSSO → Keycloak<a class="headerlink" href="#mapeamento-coresso-keycloak" title="Link para este cabeçalho"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CoreSSO</p></th>
+<th class="head"><p>Keycloak</p></th>
+<th class="head"><p>Exemplo</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SYS_Sistema</span></code></p></td>
+<td><p>Client</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">auto-servico-qa</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SYS_Grupo</span></code></p></td>
+<td><p>Client Role</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COPED</span></code>, <code class="docutils literal notranslate"><span class="pre">ASCOM</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SYS_Usuario</span></code></p></td>
+<td><p>User</p></td>
+<td><p>username = CPF ou RF</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SYS_UsuarioGrupo</span></code></p></td>
+<td><p>Client Role Mapping</p></td>
+<td><p>Usuário ← role COPED no client auto-servico-qa</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="fluxo-de-upsert-por-usuario">
+<h2>Fluxo de upsert por usuário<a class="headerlink" href="#fluxo-de-upsert-por-usuario" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">provisionar_usuario_kc</span></code> verifica 2 dos 3 hashes independentes de
+<code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code> (ver <a class="reference internal" href="../controle/modelos.html"><span class="std std-doc">Modelos de Controle</span></a>)
+antes de decidir se reenvia ao Keycloak — só pula quando <code class="docutils literal notranslate"><span class="pre">hash_extracao</span></code>
+<strong>e</strong> <code class="docutils literal notranslate"><span class="pre">hash_keycloak</span></code> batem com o estado atual do staging. O 3º hash
+(<code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code>) é sempre recalculado, mesmo quando o Keycloak é
+ignorado, para que o chamador saiba se precisa disparar a carga no
+token-ms (ver <a class="reference internal" href="token_ms.html"><span class="std std-doc">Carga no token-ms</span></a>) independentemente do
+resultado do Keycloak — token-ms nunca dispara sem o Keycloak já ter
+resolvido <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code>.</p>
+digraph G {
+    rankdir=TB;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    HASHEXT [label=&quot;Calcular hash_extracao\n(staging) e hash_keycloak\n(payload)&quot;];
+    BUSCA   [label=&quot;hash_extracao E\nhash_keycloak batem?\n(forcar_atualizacao?)&quot;];
+    IGN     [label=&quot;Keycloak: ignorado&quot;];
+    UPD     [label=&quot;Atualizar usuario\n+ roles + grupos&quot;];
+    CRT     [label=&quot;Criar usuario\n+ roles + grupos&quot;];
+    CTL     [label=&quot;Gravar hash_extracao\n+ hash_keycloak&quot;];
+    TOKENHASH [label=&quot;Calcular hash_token_ms\ndo payload atual&quot;];
+    TOKENCMP  [label=&quot;Bate com\nhash_token_ms salvo?&quot;];
+    TOKENSKIP [label=&quot;token_ms_pendente=False&quot;];
+    TOKENFIRE [label=&quot;token_ms_pendente=True\n(dispara fila etl_carga_token_ms)&quot;];
+
+    HASHEXT -&gt; BUSCA;
+    BUSCA -&gt; IGN  [label=&quot;sim&quot;];
+    BUSCA -&gt; CRT  [label=&quot;usuario novo&quot;];
+    BUSCA -&gt; UPD  [label=&quot;usuario existe,\nhash diferente&quot;];
+    UPD   -&gt; CTL;
+    CRT   -&gt; CTL;
+    CTL   -&gt; TOKENHASH;
+    IGN   -&gt; TOKENHASH;
+    TOKENHASH -&gt; TOKENCMP;
+    TOKENCMP  -&gt; TOKENSKIP [label=&quot;sim&quot;];
+    TOKENCMP  -&gt; TOKENFIRE [label=&quot;nao&quot;];
+}</section>
+<hr class="docutils" />
+<section id="provisionamento-de-vinculos-client-roles">
+<h2>Provisionamento de vínculos (client roles)<a class="headerlink" href="#provisionamento-de-vinculos-client-roles" title="Link para este cabeçalho"></a></h2>
+<p>A função <code class="docutils literal notranslate"><span class="pre">atribuir_client_roles_usuario_kc</span></code> opera em streaming:</p>
+<ol class="arabic simple">
+<li><p>Recebe iterador de vínculos <code class="docutils literal notranslate"><span class="pre">{login,</span> <span class="pre">cpf,</span> <span class="pre">gru_id,</span> <span class="pre">gru_nome,</span> <span class="pre">sis_id}</span></code></p></li>
+<li><p>Para cada vínculo, resolve o role e o usuário via cache local</p></li>
+<li><p>Chama <code class="docutils literal notranslate"><span class="pre">admin.assign_client_role(user_id,</span> <span class="pre">client_uuid,</span> <span class="pre">[role])</span></code></p></li>
+<li><p>Retorna contadores <code class="docutils literal notranslate"><span class="pre">{atribuidos,</span> <span class="pre">ignorados,</span> <span class="pre">erros}</span></code></p></li>
+</ol>
+<p>Cache evita lookups repetidos na API do Keycloak (mesmo usuário
+em múltiplos grupos, mesmo grupo para múltiplos usuários).</p>
+</section>
+<hr class="docutils" />
+<section id="sincronizacao-individual">
+<h2>Sincronização individual<a class="headerlink" href="#sincronizacao-individual" title="Link para este cabeçalho"></a></h2>
+<p>A função <code class="docutils literal notranslate"><span class="pre">sincronizar_usuario_kc</span></code> recebe os dados do CoreSSO
+(resultado de <code class="docutils literal notranslate"><span class="pre">buscar_dados_usuario_coresso</span></code>) e:</p>
+<ol class="arabic simple">
+<li><p>Cria ou atualiza o usuário no Keycloak</p></li>
+<li><p>Para cada sistema do usuário, atribui os client roles correspondentes</p></li>
+<li><p>Retorna resumo com ação, roles atribuídos e link do admin console</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="concessao-de-acesso-a-sistema">
+<h2>Concessão de acesso a sistema<a class="headerlink" href="#concessao-de-acesso-a-sistema" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">_conceder_roles_sistema_kc(admin,</span> <span class="pre">kc_user_id,</span> <span class="pre">sis_id,</span> <span class="pre">nomes_roles)</span></code> é o
+núcleo reaproveitável de concessão de acesso — recebe um <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> já
+existente (upsert feito por quem chama) e:</p>
+<ol class="arabic simple">
+<li><p>Busca o <code class="docutils literal notranslate"><span class="pre">SistemaStaging</span></code> pelo <code class="docutils literal notranslate"><span class="pre">coresso_sis_id</span></code> informado — se não
+encontrado ou sem <code class="docutils literal notranslate"><span class="pre">kc_client_uuid</span></code>, retorna só <code class="docutils literal notranslate"><span class="pre">{&quot;erro&quot;:</span> <span class="pre">...}</span></code></p></li>
+<li><p>Para cada role solicitado, busca o <code class="docutils literal notranslate"><span class="pre">PerfilCoressoStaging</span></code> correspondente
+(por <code class="docutils literal notranslate"><span class="pre">nome</span></code> ou <code class="docutils literal notranslate"><span class="pre">kc_role_nome</span></code>); se não existir, cria via <code class="docutils literal notranslate"><span class="pre">_criar_role_kc</span></code></p></li>
+<li><p>Atribui o client role ao usuário (<code class="docutils literal notranslate"><span class="pre">admin.assign_client_role</span></code>)</p></li>
+<li><p>Retorna <code class="docutils literal notranslate"><span class="pre">sistema</span></code>, <code class="docutils literal notranslate"><span class="pre">client_id</span></code>, <code class="docutils literal notranslate"><span class="pre">roles_atribuidos</span></code>, <code class="docutils literal notranslate"><span class="pre">roles_nao_encontrados</span></code>
+e <code class="docutils literal notranslate"><span class="pre">erros</span></code></p></li>
+</ol>
+<p>Duas rotas da API reaproveitam esse núcleo, cada uma resolvendo o
+<code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> de um jeito diferente:</p>
+digraph G {
+    rankdir=TB;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    subgraph cluster_coresso {
+        label=&quot;usuario/conceder-acesso/&quot;;
+        BUSCA_CS [label=&quot;buscar_dados_usuario_coresso&quot;];
+        UPSERT_CS [label=&quot;_upsert_coresso_kc&quot;];
+        BUSCA_CS -&gt; UPSERT_CS;
+    }
+
+    subgraph cluster_manual {
+        label=&quot;usuario/criar/&quot;;
+        STAGING [label=&quot;materializa\nUsuarioXStaging\n(fonte=api_manual)&quot;];
+        UPSERT_MAN [label=&quot;provisionar_usuario_kc&quot;];
+        STAGING -&gt; UPSERT_MAN;
+    }
+
+    NUCLEO [label=&quot;_conceder_roles_sistema_kc\n(kc_user_id, sis_id, roles)&quot;];
+
+    UPSERT_CS -&gt; NUCLEO;
+    UPSERT_MAN -&gt; NUCLEO [label=&quot;se sistema/roles\nforem informados&quot;];
+}<p>Na criação manual (<code class="docutils literal notranslate"><span class="pre">usuario/criar/</span></code>), <code class="docutils literal notranslate"><span class="pre">sistema</span></code>/<code class="docutils literal notranslate"><span class="pre">roles</span></code> são opcionais —
+sem eles, a chamada só cria a identidade; com eles, cria e concede acesso
+na mesma requisição.</p>
+</section>
+<hr class="docutils" />
+<section id="roles-e-grupos-derivados">
+<h2>Roles e grupos derivados<a class="headerlink" href="#roles-e-grupos-derivados" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">_derivar_roles_realm(usuario)</span></code> — mapeia cargo e função para roles do realm:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Cargo / Função</p></th>
+<th class="head"><p>Role Keycloak</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PROFESSOR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Professor</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DIRETOR</span> <span class="pre">DE</span> <span class="pre">ESCOLA</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Diretor</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">COORDENADOR</span> <span class="pre">PEDAGOGICO</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CoordenadorPedagogico</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ASSISTENTE</span> <span class="pre">DE</span> <span class="pre">DIRETOR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">AssistenteDiretor</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p><code class="docutils literal notranslate"><span class="pre">_derivar_grupos(usuario)</span></code> — determina grupos de DRE e UE:
+<code class="docutils literal notranslate"><span class="pre">/SME/DRE-{dre}/UE-{ue}</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="reconexao-entre-lotes">
+<h2>Reconexão entre lotes<a class="headerlink" href="#reconexao-entre-lotes" title="Link para este cabeçalho"></a></h2>
+<p>A cada lote, <code class="docutils literal notranslate"><span class="pre">obter_admin_keycloak</span></code> é chamado novamente para renovar o token
+de sessão do Keycloak antes que expire.</p>
+</section>
+<hr class="docutils" />
+<section id="retry-seletivo-por-status-http">
+<h2>Retry seletivo por status HTTP<a class="headerlink" href="#retry-seletivo-por-status-http" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">_com_reintento</span></code> (usada em todas as chamadas ao Admin API do Keycloak)
+faz backoff exponencial (base 1s, máximo 60s, até 5 tentativas) só para
+falhas transitórias reais. <code class="docutils literal notranslate"><span class="pre">_e_retriavel_kc(exc)</span></code> inspeciona
+<code class="docutils literal notranslate"><span class="pre">exc.response_code</span></code> das exceções <code class="docutils literal notranslate"><span class="pre">KeycloakGetError</span></code>/<code class="docutils literal notranslate"><span class="pre">PostError</span></code>/<code class="docutils literal notranslate"><span class="pre">PutError</span></code>
+— erros de validação (<code class="docutils literal notranslate"><span class="pre">400</span></code>, ex.: e-mail malformado) propagam
+imediatamente na 1ª tentativa, sem esperar backoff, já que nunca se
+resolvem sozinhos. Erros sem <code class="docutils literal notranslate"><span class="pre">response_code</span></code> (conexão, timeout)
+continuam sempre retriáveis.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="resolucao.html" class="btn btn-neutral float-left" title="Resolução de Identidade" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="token_ms.html" class="btn btn-neutral float-right" title="Carga no token-ms" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

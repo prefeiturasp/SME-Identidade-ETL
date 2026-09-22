@@ -1,0 +1,504 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carga no token-ms &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Controle e Auditoria de Execução" href="../controle/index.html" />
+    <link rel="prev" title="Provisionamento Keycloak" href="keycloak.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Pipeline ETL de Identidades</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html#etapas">Etapas</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="extracao.html">Extração</a></li>
+<li class="toctree-l3"><a class="reference internal" href="staging.html">Staging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a></li>
+<li class="toctree-l3"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Carga no token-ms</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#carga-individual-caminho-principal">Carga individual (caminho principal)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#carga-em-lote-fallback-reprocessamento-manual">Carga em lote (fallback / reprocessamento manual)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#cliente-http">Cliente HTTP</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#endpoint-no-token-ms">Endpoint no token-ms</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#payload">Payload</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#autenticacao">Autenticação</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#variaveis-de-ambiente-relevantes">Variáveis de ambiente relevantes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#vinculos-funcionais-de-servidor-vinculos">Vínculos funcionais de servidor (<code class="docutils literal notranslate"><span class="pre">vinculos</span></code>)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#sincronizacao-de-perfis-put-perfis-usuario-id">Sincronização de perfis (<code class="docutils literal notranslate"><span class="pre">PUT</span> <span class="pre">/perfis/{usuario_id}/</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Pipeline ETL de Identidades</a></li>
+      <li class="breadcrumb-item active">Carga no token-ms</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/token_ms.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="carga-no-token-ms">
+<h1>Carga no token-ms<a class="headerlink" href="#carga-no-token-ms" title="Link para este cabeçalho"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link para este cabeçalho"></a></h2>
+<p>Enviar atributos complementares de identidade (cargo, lotação, DRE/UE,
+vínculos) ao microsserviço <code class="docutils literal notranslate"><span class="pre">token-ms</span></code> após o provisionamento no Keycloak,
+para compor claims de autorização usadas na geração do token JWT.</p>
+</section>
+<hr class="docutils" />
+<section id="carga-individual-caminho-principal">
+<h2>Carga individual (caminho principal)<a class="headerlink" href="#carga-individual-caminho-principal" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">task_carregar_atributo_token_individual</span></code> em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code>,
+roteada para a fila <code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code> — desacoplada da fila do
+Keycloak (<code class="docutils literal notranslate"><span class="pre">etl_carga_keycloak</span></code>).</p>
+<p>Disparada <strong>fire-and-forget</strong> (<code class="docutils literal notranslate"><span class="pre">apply_async</span></code>) de dentro de
+<code class="docutils literal notranslate"><span class="pre">_provisionar_lote_kc</span></code> assim que <strong>um único usuário</strong> é confirmado no
+Keycloak — não espera o restante do lote terminar. A <code class="docutils literal notranslate"><span class="pre">chain</span></code> do
+pipeline principal (<code class="docutils literal notranslate"><span class="pre">task_identidade_executar_pipeline</span></code>) não inclui
+essa carga: <code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code> fecha (<code class="docutils literal notranslate"><span class="pre">sucesso</span></code>/<code class="docutils literal notranslate"><span class="pre">parcial</span></code>) ao final do
+Keycloak, e o progresso do token-ms por usuário é rastreável via
+<code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code> em <code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code> (<code class="docutils literal notranslate"><span class="pre">token_ms_confirmado</span></code>
+no serializer, ver <a class="reference internal" href="../controle/api.html"><span class="std std-doc">API de Controle</span></a>), não pela
+<code class="docutils literal notranslate"><span class="pre">situacao</span></code> da execução.</p>
+<p>Antes de enviar, recalcula <code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code> do payload atual e compara
+com o valor persistido — se já bate, é <em>no-op</em> idempotente. Descarta
+(loga, não reenvia) registros sem identificador via
+<code class="docutils literal notranslate"><span class="pre">payload_tem_identificador</span></code>. Em sucesso, sincroniza o perfil
+(<code class="docutils literal notranslate"><span class="pre">enviar_perfil</span></code>) e envia o lote de 1 (<code class="docutils literal notranslate"><span class="pre">enviar_lote</span></code>), gravando o novo
+<code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code>. Retry (<code class="docutils literal notranslate"><span class="pre">max_retries=5</span></code>, backoff igual às demais
+tasks) usa <code class="docutils literal notranslate"><span class="pre">_registrar_tentativa</span></code>/<code class="docutils literal notranslate"><span class="pre">_calcular_atraso</span></code> compartilhados.</p>
+<p><strong>Limitação conhecida</strong>: se um retry tardio ocorrer depois que o
+staging da execução original já foi limpo
+(<code class="docutils literal notranslate"><span class="pre">task_identidade_limpar_staging</span></code>, disparada por <code class="docutils literal notranslate"><span class="pre">task_sync_rec_etl</span></code>
+com <code class="docutils literal notranslate"><span class="pre">countdown=600</span></code> — alinhado à janela máxima de retry), a task falha
+por não encontrar o registro. A janela de retry (~10min no pior caso)
+é sempre menor que a retenção do staging, então isso só ocorre em
+cenários anômalos; uma falha definitiva nesse ponto só se resolve numa
+próxima execução completa do pipeline.</p>
+</section>
+<section id="carga-em-lote-fallback-reprocessamento-manual">
+<h2>Carga em lote (fallback / reprocessamento manual)<a class="headerlink" href="#carga-em-lote-fallback-reprocessamento-manual" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">task_carregar_atributos_token</span></code> — mesma fila <code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code>, fora
+do caminho síncrono do pipeline. Processa todos os registros com
+<code class="docutils literal notranslate"><span class="pre">situacao__in=[&quot;pronto&quot;,</span> <span class="pre">&quot;carregado&quot;]</span></code> do staging
+(<code class="docutils literal notranslate"><span class="pre">UsuarioServidorStaging</span></code>, <code class="docutils literal notranslate"><span class="pre">UsuarioAlunoStaging</span></code>,
+<code class="docutils literal notranslate"><span class="pre">UsuarioTerceiroStaging</span></code>) filtrados pelo <code class="docutils literal notranslate"><span class="pre">id_execucao</span></code>, checando
+<code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code> por registro antes de enviar (mesma idempotência da
+carga individual, em vez de reenviar sempre) e agrupando via
+<code class="docutils literal notranslate"><span class="pre">enviar_todos</span></code>. Útil para reprocessar uma execução específica
+manualmente ou como malha de segurança adicional.</p>
+</section>
+<hr class="docutils" />
+<section id="cliente-http">
+<h2>Cliente HTTP<a class="headerlink" href="#cliente-http" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/cliente_token_ms.py</span></code> — cliente <code class="docutils literal notranslate"><span class="pre">httpx</span></code> com retry
+exponencial (base 1s, máximo 60s, até 5 tentativas) para erros
+transitórios (<code class="docutils literal notranslate"><span class="pre">408,</span> <span class="pre">425,</span> <span class="pre">429,</span> <span class="pre">500,</span> <span class="pre">502,</span> <span class="pre">503,</span> <span class="pre">504</span></code> e falhas de
+transporte/timeout).</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Função</p></th>
+<th class="head"><p>Responsabilidade</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">enviar_lote(usuarios,</span> <span class="pre">id_execucao)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">{TOKEN_MS_URL}/api/v1/etl/push-batch</span></code> com um lote de atributos</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">enviar_todos(usuarios,</span> <span class="pre">id_execucao,</span> <span class="pre">tamanho_lote=None)</span></code></p></td>
+<td><p>Itera o iterável de payloads em lotes de <code class="docutils literal notranslate"><span class="pre">TOKEN_MS_TAMANHO_LOTE</span></code> (padrão 500)</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_URL</span></code> deve incluir o prefixo de serviço do token-ms</strong>
+(ex.: <code class="docutils literal notranslate"><span class="pre">https://qa-identidade.sme.prefeitura.sp.gov.br/identidade-token</span></code>)
+— o cliente concatena apenas <code class="docutils literal notranslate"><span class="pre">/api/v1/etl/push-batch</span></code> a este valor.</p>
+</section>
+<hr class="docutils" />
+<section id="endpoint-no-token-ms">
+<h2>Endpoint no token-ms<a class="headerlink" href="#endpoint-no-token-ms" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">{TOKEN_MS_URL}/api/v1/etl/push-batch</span></code>, implementado no
+repositório <code class="docutils literal notranslate"><span class="pre">SME-Identidade-Token-Microsservico</span></code>
+(<code class="docutils literal notranslate"><span class="pre">apps/atributos_complementares/</span></code>). Faz upsert idempotente por
+identificador natural (RF, senão CPF, senão matrícula) — reenvios do
+mesmo <code class="docutils literal notranslate"><span class="pre">id_execucao</span></code> ou de execuções diferentes atualizam o registro
+existente, sem duplicar. O vínculo com a projeção de identidade
+(<code class="docutils literal notranslate"><span class="pre">ProjecaoUsuario</span></code>) é oportunista: resolvido por RF/CPF quando existe,
+sem bloquear o upsert quando ainda não existe.</p>
+<p>Resposta: <code class="docutils literal notranslate"><span class="pre">{&quot;processados&quot;:</span> <span class="pre">int,</span> <span class="pre">&quot;criados&quot;:</span> <span class="pre">int,</span> <span class="pre">&quot;atualizados&quot;:</span> <span class="pre">int}</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="payload">
+<h2>Payload<a class="headerlink" href="#payload" title="Link para este cabeçalho"></a></h2>
+<p>Construído por <code class="docutils literal notranslate"><span class="pre">construir_payload_token_ms(usuario)</span></code> em
+<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/orquestrador_kc.py</span></code>, um objeto por usuário dentro
+de <code class="docutils literal notranslate"><span class="pre">{&quot;id_execucao&quot;:</span> <span class="pre">&quot;&lt;uuid&gt;&quot;,</span> <span class="pre">&quot;usuarios&quot;:</span> <span class="pre">[...]}</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Origem</p></th>
+<th class="head"><p>Observação</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rf</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">usuario.rf</span></code></p></td>
+<td><p>só <code class="docutils literal notranslate"><span class="pre">UsuarioServidorStaging</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cpf</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">usuario.cpf</span></code></p></td>
+<td><p>comum a todos os tipos</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nome</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">usuario.nome</span></code></p></td>
+<td><p>comum</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">email</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">usuario.email</span></code></p></td>
+<td><p>comum</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tipo_usuario</span></code></p></td>
+<td><p>inferido (<code class="docutils literal notranslate"><span class="pre">servidor</span></code>/<code class="docutils literal notranslate"><span class="pre">aluno</span></code>/<code class="docutils literal notranslate"><span class="pre">tipo_acesso</span></code>/<code class="docutils literal notranslate"><span class="pre">outro</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cargo</span></code>, <code class="docutils literal notranslate"><span class="pre">funcao</span></code></p></td>
+<td><p>staging de servidor</p></td>
+<td><p>usado por outros tipos de usuário — para servidor, ver <code class="docutils literal notranslate"><span class="pre">vinculos</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unidade</span></code>, <code class="docutils literal notranslate"><span class="pre">unidade_codigo</span></code></p></td>
+<td><p>staging (lotação)</p></td>
+<td><p>usado por outros tipos de usuário — para servidor, ver <code class="docutils literal notranslate"><span class="pre">vinculos</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dre</span></code>, <code class="docutils literal notranslate"><span class="pre">ue</span></code></p></td>
+<td><p>staging</p></td>
+<td><p>populado para alunos (EOL_DB) — para servidor, ver <code class="docutils literal notranslate"><span class="pre">vinculos</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">matricula</span></code></p></td>
+<td><p>staging</p></td>
+<td><p>servidor/aluno/terceiro</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cod_escola</span></code>, <code class="docutils literal notranslate"><span class="pre">turma</span></code></p></td>
+<td><p>staging</p></td>
+<td><p>só aluno</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tipo_acesso</span></code></p></td>
+<td><p>staging</p></td>
+<td><p>só terceiro (CoreSSO)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">situacao</span></code>, <code class="docutils literal notranslate"><span class="pre">fonte</span></code>, <code class="docutils literal notranslate"><span class="pre">id_execucao</span></code></p></td>
+<td><p>staging</p></td>
+<td><p>comuns</p></td>
+</tr>
+</tbody>
+</table>
+<p>Pelo menos um de <code class="docutils literal notranslate"><span class="pre">rf</span></code>, <code class="docutils literal notranslate"><span class="pre">cpf</span></code> ou <code class="docutils literal notranslate"><span class="pre">matricula</span></code> é obrigatório — o
+token-ms rejeita (400) usuários sem nenhum identificador natural.</p>
+</section>
+<hr class="docutils" />
+<section id="autenticacao">
+<h2>Autenticação<a class="headerlink" href="#autenticacao" title="Link para este cabeçalho"></a></h2>
+<p>O token-ms autentica via header <code class="docutils literal notranslate"><span class="pre">X-API-Key</span></code> comparado contra a
+variável <code class="docutils literal notranslate"><span class="pre">API_KEY</span></code> (mesmo mecanismo usado pelo próprio ETL para
+autenticar requisições que recebe). O cliente ETL envia esse header
+quando <code class="docutils literal notranslate"><span class="pre">TOKEN_MS_API_KEY</span></code> está configurado.</p>
+</section>
+<hr class="docutils" />
+<section id="variaveis-de-ambiente-relevantes">
+<h2>Variáveis de ambiente relevantes<a class="headerlink" href="#variaveis-de-ambiente-relevantes" title="Link para este cabeçalho"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Variável</p></th>
+<th class="head"><p>Descrição</p></th>
+<th class="head"><p>Padrão</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_URL</span></code></p></td>
+<td><p>URL base do token-ms, incluindo prefixo <code class="docutils literal notranslate"><span class="pre">/identidade-token</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://token-ms:8000/identidade-token</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_API_KEY</span></code></p></td>
+<td><p>Valor enviado no header de autenticação</p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_API_KEY_HEADER</span></code></p></td>
+<td><p>Nome do header de autenticação</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">X-API-Key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_TIMEOUT</span></code></p></td>
+<td><p>Timeout HTTP em segundos</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">60</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TOKEN_MS_TAMANHO_LOTE</span></code></p></td>
+<td><p>Tamanho do lote por requisição</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">500</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Em ambiente local, <code class="docutils literal notranslate"><span class="pre">TOKEN_MS_API_KEY</span></code>/<code class="docutils literal notranslate"><span class="pre">TOKEN_MS_API_KEY_HEADER</span></code> devem
+ter o mesmo valor de <code class="docutils literal notranslate"><span class="pre">API_KEY</span></code>/<code class="docutils literal notranslate"><span class="pre">API_KEY_HEADER</span></code> configurado no <code class="docutils literal notranslate"><span class="pre">.env</span></code>
+do <code class="docutils literal notranslate"><span class="pre">SME-Identidade-Token-Microsservico</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="vinculos-funcionais-de-servidor-vinculos">
+<h2>Vínculos funcionais de servidor (<code class="docutils literal notranslate"><span class="pre">vinculos</span></code>)<a class="headerlink" href="#vinculos-funcionais-de-servidor-vinculos" title="Link para este cabeçalho"></a></h2>
+<p>Um servidor pode ter múltiplos vínculos funcionais vigentes e
+independentes ao mesmo tempo — cargo base, cargo sobreposto/comissionado
+e função/atividade, cada um com seu próprio cargo e sua própria
+unidade/DRE, inclusive mais de um cargo base simultâneo. Por isso esse
+dado <strong>não</strong> é um conjunto de campos escalares no payload — é uma lista
+aninhada:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"rf"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1234567"</span><span class="p">,</span>
+<span class="w">  </span><span class="err">...</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"vinculos"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"tipo_vinculo"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cargo_base"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"codigo_vinculo_origem"</span><span class="p">:</span><span class="w"> </span><span class="s2">"998877"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"cargo_codigo"</span><span class="p">:</span><span class="w"> </span><span class="s2">"101"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"cargo_nome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"PROFESSOR"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"unidade_codigo"</span><span class="p">:</span><span class="w"> </span><span class="s2">"123456"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"unidade_nome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"EMEF FULANO DE TAL"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"dre_codigo"</span><span class="p">:</span><span class="w"> </span><span class="s2">"11"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"situacao"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ativo"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"data_inicio"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"vigente"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Extraído em <code class="docutils literal notranslate"><span class="pre">_extrair_vinculos_servidor_se1426</span></code> (<code class="docutils literal notranslate"><span class="pre">apps/extracao/tasks.py</span></code>)
+a partir de <code class="docutils literal notranslate"><span class="pre">v_servidor_cotic</span></code> + <code class="docutils literal notranslate"><span class="pre">v_cargo_base_cotic</span></code> (cargo base do
+servidor, join por <code class="docutils literal notranslate"><span class="pre">cd_servidor</span></code>) + <code class="docutils literal notranslate"><span class="pre">lotacao_servidor</span></code> (unidade do cargo
+base), <code class="docutils literal notranslate"><span class="pre">cargo_sobreposto_servidor</span></code> (cargo sobreposto) e
+<code class="docutils literal notranslate"><span class="pre">funcao_atividade_cargo_servidor</span></code> (função/atividade). Cada tipo é
+extraído como vínculo independente, sem <code class="docutils literal notranslate"><span class="pre">COALESCE</span></code>/fallback sobre o
+cargo base — nenhum tipo prevalece sobre outro. Todos resolvem a DRE
+via <code class="docutils literal notranslate"><span class="pre">v_cadastro_unidade_educacao.cd_unidade_administrativa_referencia</span></code> a
+partir da UE — a DRE nunca é coluna direta do vínculo. Só vínculos
+vigentes (<code class="docutils literal notranslate"><span class="pre">dt_fim_nomeacao</span></code>/<code class="docutils literal notranslate"><span class="pre">dt_cancelamento</span></code>/<code class="docutils literal notranslate"><span class="pre">dt_fim_cargo_sobreposto</span></code>/
+<code class="docutils literal notranslate"><span class="pre">dt_fim_funcao_atividade</span></code> nulos ou futuros, conforme cada tabela) são
+extraídos neste momento; histórico completo fica fora de escopo.
+Persistido em staging como <code class="docutils literal notranslate"><span class="pre">VinculoServidorStaging</span></code> (<code class="docutils literal notranslate"><span class="pre">apps.staging.models</span></code>,
+FK para <code class="docutils literal notranslate"><span class="pre">UsuarioServidorStaging</span></code>), incluído no payload por
+<code class="docutils literal notranslate"><span class="pre">_vinculos_payload</span></code>/<code class="docutils literal notranslate"><span class="pre">_payload_token_ms_hash</span></code>
+(<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/orquestrador_kc.py</span></code>) e coberto automaticamente pelo
+hash de idempotência — mudança em qualquer vínculo já dispara reenvio.</p>
+<p>Os campos escalares <code class="docutils literal notranslate"><span class="pre">cargo</span></code>, <code class="docutils literal notranslate"><span class="pre">funcao</span></code>, <code class="docutils literal notranslate"><span class="pre">unidade</span></code>, <code class="docutils literal notranslate"><span class="pre">unidade_codigo</span></code>,
+<code class="docutils literal notranslate"><span class="pre">dre</span></code> e <code class="docutils literal notranslate"><span class="pre">ue</span></code> do payload permanecem sempre <code class="docutils literal notranslate"><span class="pre">null</span></code> para servidor (usados
+hoje só por outros tipos de usuário, ex. aluno) — não confundir com
+<code class="docutils literal notranslate"><span class="pre">vinculos</span></code>, que é a fonte real desse dado para servidor.</p>
+</section>
+<hr class="docutils" />
+<section id="sincronizacao-de-perfis-put-perfis-usuario-id">
+<h2>Sincronização de perfis (<code class="docutils literal notranslate"><span class="pre">PUT</span> <span class="pre">/perfis/{usuario_id}/</span></code>)<a class="headerlink" href="#sincronizacao-de-perfis-put-perfis-usuario-id" title="Link para este cabeçalho"></a></h2>
+<p>Além do push-batch de atributos complementares, o mesmo fluxo também
+sincroniza, por usuário, a projeção de perfis usada para compor o JWT
+(<code class="docutils literal notranslate"><span class="pre">apps/perfil</span></code> do token-ms) — extraída dos grupos CoreSSO aos quais o
+usuário está vinculado (mesma fonte já usada por
+<code class="docutils literal notranslate"><span class="pre">sincronizar_usuario_kc</span></code>).</p>
+<section id="carga-individual">
+<h3>Carga individual<a class="headerlink" href="#carga-individual" title="Link para este cabeçalho"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">task_carregar_atributo_token_individual</span></code> já recebe o resultado do
+Keycloak com <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> resolvido (não precisa buscá-lo de novo) —
+monta o payload via <code class="docutils literal notranslate"><span class="pre">construir_payload_perfil_token_ms</span></code> e envia com
+<code class="docutils literal notranslate"><span class="pre">enviar_perfil(kc_user_id,</span> <span class="pre">payload)</span></code> antes do push-batch de atributos.</p>
+</section>
+<section id="carga-em-lote-fallback">
+<h3>Carga em lote (fallback)<a class="headerlink" href="#carga-em-lote-fallback" title="Link para este cabeçalho"></a></h3>
+<p>Para cada usuário do staging da execução, <code class="docutils literal notranslate"><span class="pre">_sincronizar_perfis_execucao</span></code>
+(<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code>), usada pela task de lote:</p>
+<ol class="arabic simple">
+<li><p>Resolve o <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> no Keycloak via
+<code class="docutils literal notranslate"><span class="pre">resolver_kc_user_id_de_usuario</span></code> (busca por username exato — RF,
+CPF ou matrícula, mesma prioridade de <code class="docutils literal notranslate"><span class="pre">_resolver_username</span></code>).</p></li>
+<li><p>Monta o payload de projeção via
+<code class="docutils literal notranslate"><span class="pre">construir_payload_perfil_token_ms</span></code> (<code class="docutils literal notranslate"><span class="pre">orquestrador_kc.py</span></code>), que
+busca os vínculos usuário↔grupo no CoreSSO
+(<code class="docutils literal notranslate"><span class="pre">buscar_dados_usuario_coresso</span></code>) e converte cada grupo em um
+<code class="docutils literal notranslate"><span class="pre">PerfilUsuario</span></code> (<code class="docutils literal notranslate"><span class="pre">{&quot;id&quot;:</span> <span class="pre">&lt;uuid&gt;,</span> <span class="pre">&quot;nome&quot;:</span> <span class="pre">&lt;gru_nome&gt;,</span> <span class="pre">&quot;ativo&quot;:</span> <span class="pre">true}</span></code>
+— a query de origem já filtra apenas vínculos ativos).</p></li>
+<li><p>Envia via <code class="docutils literal notranslate"><span class="pre">enviar_perfil(kc_user_id,</span> <span class="pre">payload)</span></code>
+(<code class="docutils literal notranslate"><span class="pre">cliente_token_ms.py</span></code>) — <code class="docutils literal notranslate"><span class="pre">PUT</span> <span class="pre">{TOKEN_MS_URL}/api/v1/perfis/{kc_user_id}/</span></code>,
+mesmo retry/autenticação do push-batch.</p></li>
+</ol>
+<p>Falha ao sincronizar o perfil de um usuário é contada e logada, mas
+<strong>não</strong> interrompe os demais usuários nem afeta o resultado do
+push-batch (responsabilidade já concluída antes desta etapa).
+Métricas (<code class="docutils literal notranslate"><span class="pre">perfis_sincronizados</span></code>, <code class="docutils literal notranslate"><span class="pre">perfis_erros</span></code>) ficam em
+<code class="docutils literal notranslate"><span class="pre">LogEtapaETL.metadados</span></code> da etapa <code class="docutils literal notranslate"><span class="pre">CARREGAR_TOKEN</span></code> — só preenchida
+quando a task de lote é executada (a carga individual não abre etapa
+própria, seu progresso é rastreado via <code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code>).</p>
+</section>
+<section id="usuario-sem-identificador-ou-sem-vinculo-coresso">
+<h3>Usuário sem identificador ou sem vínculo CoreSSO<a class="headerlink" href="#usuario-sem-identificador-ou-sem-vinculo-coresso" title="Link para este cabeçalho"></a></h3>
+<p>Se o <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> não for resolvido (usuário ainda não provisionado
+no Keycloak) ou o usuário não tiver registro no CoreSSO (ex.: aluno
+puro, fonte EOL_DB), a sincronização de perfil desse usuário é
+pulada silenciosamente — não conta como erro.</p>
+</section>
+<section id="fora-do-pipeline-agendado-usuario-sincronizar-e-usuario-conceder-acesso">
+<h3>Fora do pipeline agendado: <code class="docutils literal notranslate"><span class="pre">usuario/sincronizar/</span></code> e <code class="docutils literal notranslate"><span class="pre">usuario/conceder-acesso/</span></code><a class="headerlink" href="#fora-do-pipeline-agendado-usuario-sincronizar-e-usuario-conceder-acesso" title="Link para este cabeçalho"></a></h3>
+<p>As rotas HTTP avulsas <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">usuario/sincronizar/</span></code> e
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">usuario/conceder-acesso/</span></code> (<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/views.py</span></code>) também
+mantêm o token-ms atualizado, na mesma chamada em que atualizam o
+Keycloak — não é preciso esperar a próxima execução do pipeline
+agendado para que uma sincronização/concessão avulsa se reflita em
+<code class="docutils literal notranslate"><span class="pre">permissoes</span></code> no token-ms.</p>
+<p>Diferente do fluxo de staging, essas rotas <strong>já têm</strong> <code class="docutils literal notranslate"><span class="pre">dados</span></code> (de
+<code class="docutils literal notranslate"><span class="pre">buscar_dados_usuario_coresso</span></code>) e <code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> (retornado por
+<code class="docutils literal notranslate"><span class="pre">sincronizar_usuario_kc</span></code>/<code class="docutils literal notranslate"><span class="pre">conceder_acesso_kc</span></code>) em mãos antes de tocar
+o token-ms — por isso usam <code class="docutils literal notranslate"><span class="pre">montar_payload_perfil(dados,</span> <span class="pre">...)</span></code>
+diretamente (<code class="docutils literal notranslate"><span class="pre">orquestrador_kc.py</span></code>), em vez de
+<code class="docutils literal notranslate"><span class="pre">construir_payload_perfil_token_ms</span></code>, evitando uma segunda consulta
+redundante ao CoreSSO. <code class="docutils literal notranslate"><span class="pre">construir_payload_perfil_token_ms</span></code> (staging)
+só resolve <code class="docutils literal notranslate"><span class="pre">dados</span></code>/<code class="docutils literal notranslate"><span class="pre">kc_user_id</span></code> a partir do registro de staging e
+repassa para <code class="docutils literal notranslate"><span class="pre">montar_payload_perfil</span></code>.</p>
+<p>Mesma filosofia <em>best-effort</em> do pipeline: falha ao chamar o
+token-ms é só logada (<code class="docutils literal notranslate"><span class="pre">logger.exception</span></code>), sem alterar o status HTTP
+nem o corpo da resposta — o Keycloak já foi atualizado com sucesso
+antes dessa chamada.</p>
+<p><code class="docutils literal notranslate"><span class="pre">conceder_acesso</span></code> só chama o token-ms quando <code class="docutils literal notranslate"><span class="pre">dados</span></code> (CoreSSO)
+existe. No fallback <code class="docutils literal notranslate"><span class="pre">_conceder_acesso_sem_coresso</span></code> (usuário
+materializado via <code class="docutils literal notranslate"><span class="pre">usuario/criar/</span></code>, sem vínculo prévio no CoreSSO)
+não há grupos para montar <code class="docutils literal notranslate"><span class="pre">perfis</span></code> — o token-ms não é chamado nesse
+caminho.</p>
+</section>
+<section id="permissoes-fonte-no-coresso-sys-grupopermissao-sys-modulo">
+<h3><code class="docutils literal notranslate"><span class="pre">permissoes</span></code> — fonte no CoreSSO (<code class="docutils literal notranslate"><span class="pre">SYS_GrupoPermissao</span></code>/<code class="docutils literal notranslate"><span class="pre">SYS_Modulo</span></code>)<a class="headerlink" href="#permissoes-fonte-no-coresso-sys-grupopermissao-sys-modulo" title="Link para este cabeçalho"></a></h3>
+<p>O CoreSSO tem uma fonte real de permissões: <code class="docutils literal notranslate"><span class="pre">SYS_GrupoPermissao</span></code>
+(matriz grupo×sistema×módulo) e <code class="docutils literal notranslate"><span class="pre">SYS_Modulo</span></code> (nome do módulo por
+sistema). Cada linha traz quatro flags booleanas independentes —
+<code class="docutils literal notranslate"><span class="pre">grp_consultar</span></code>, <code class="docutils literal notranslate"><span class="pre">grp_inserir</span></code>, <code class="docutils literal notranslate"><span class="pre">grp_alterar</span></code>, <code class="docutils literal notranslate"><span class="pre">grp_excluir</span></code>.</p>
+<p><strong>Importante</strong>: <code class="docutils literal notranslate"><span class="pre">mod_id</span></code> sozinho <strong>não é chave única</strong> — o mesmo
+<code class="docutils literal notranslate"><span class="pre">mod_id</span></code> é reaproveitado em módulos de sistemas diferentes (até 19
+sistemas para um único <code class="docutils literal notranslate"><span class="pre">mod_id</span></code> observados na amostra). A chave
+natural é sempre o par <code class="docutils literal notranslate"><span class="pre">(sis_id,</span> <span class="pre">mod_id)</span></code>, confirmada pela própria
+PK composta das tabelas no banco.</p>
+<p><code class="docutils literal notranslate"><span class="pre">buscar_permissoes_usuario_coresso(gru_ids)</span></code>
+(<code class="docutils literal notranslate"><span class="pre">apps/extracao/tasks.py</span></code>) busca essas permissões para os grupos do
+usuário (já obtidos por <code class="docutils literal notranslate"><span class="pre">buscar_dados_usuario_coresso</span></code>), filtrando
+apenas módulos com <strong>ao menos uma flag concedida</strong> (a maioria das
+combinações grupo×módulo vem com as quatro flags falsas e é
+descartada). <code class="docutils literal notranslate"><span class="pre">construir_payload_perfil_token_ms</span></code>
+(<code class="docutils literal notranslate"><span class="pre">orquestrador_kc.py</span></code>) deduplica por <code class="docutils literal notranslate"><span class="pre">(sistema_id,</span> <span class="pre">modulo_id)</span></code> quando
+o mesmo módulo é concedido por mais de um grupo do usuário,
+combinando as flags por OR lógico.</p>
+<p>Formato de cada item de <code class="docutils literal notranslate"><span class="pre">permissoes</span></code>:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"sistema_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">"sistema_nome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"CoreSSO"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"modulo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"modulo_nome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Usuários"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"consultar"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"inserir"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"alterar"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">"excluir"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Modelado no token-ms como <code class="docutils literal notranslate"><span class="pre">ModuloPermissaoUsuario</span></code>
+(<code class="docutils literal notranslate"><span class="pre">apps/perfil/models.py</span></code>) — a granularidade do model é sistema+módulo,
+refletindo a granularidade real da fonte. O Gateway-MS
+(<code class="docutils literal notranslate"><span class="pre">DadosAcessoView</span></code>) consome esse formato.</p>
+<p><strong>Volume por usuário</strong>: um usuário com poucos grupos pode ter
+dezenas a centenas de módulos permissionados. Acompanhar se isso se
+torna um problema de tamanho de payload para usuários com muitos
+grupos (ex.: perfis administrativos amplos).</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="keycloak.html" class="btn btn-neutral float-left" title="Provisionamento Keycloak" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="../controle/index.html" class="btn btn-neutral float-right" title="Controle e Auditoria de Execução" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

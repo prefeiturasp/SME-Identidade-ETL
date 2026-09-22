@@ -1,0 +1,203 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SME-Identidade-ETL &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=2346ddef"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="_static/translations.js?v=71a39b36"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="genindex.html" />
+    <link rel="search" title="Buscar" href="search.html" />
+    <link rel="next" title="Visão Geral da Arquitetura" href="arquitetura/visao_geral.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="#" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="#">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">SME-Identidade-ETL</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/index.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="sme-identidade-etl">
+<h1>SME-Identidade-ETL<a class="headerlink" href="#sme-identidade-etl" title="Link para este cabeçalho"></a></h1>
+<p>Microsserviço ETL responsável por ingerir, reconciliar e provisionar
+identidades da SME-SP (servidores, alunos e terceiros) a partir das bases
+legadas (SE1426, CoreSSO, EOL_DB) no Keycloak e no token-ms.</p>
+<hr class="docutils" />
+<section id="arquitetura-geral">
+<h2>Arquitetura geral<a class="headerlink" href="#arquitetura-geral" title="Link para este cabeçalho"></a></h2>
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    SE1426  [label=&quot;SE1426\n(SQL Server)&quot;];
+    CORESSO [label=&quot;CoreSSO\n(SQL Server)&quot;];
+    EOL     [label=&quot;EOL_DB\n(SQL Server)&quot;];
+
+    ETL     [label=&quot;SME-Identidade-ETL\n(Django + Celery)&quot;];
+    STG     [label=&quot;Staging DB\n(PostgreSQL)&quot;];
+    KC      [label=&quot;Keycloak&quot;];
+    TMS     [label=&quot;token-ms&quot;];
+
+    SE1426  -&gt; ETL;
+    CORESSO -&gt; ETL;
+    EOL     -&gt; ETL;
+    ETL     -&gt; STG [label=&quot;Extract/Transform&quot;];
+    STG     -&gt; ETL [label=&quot;Load&quot;];
+    ETL     -&gt; KC  [label=&quot;upsert&quot;];
+    ETL     -&gt; TMS [label=&quot;atributos&quot;];
+}</section>
+<hr class="docutils" />
+<section id="o-que-o-projeto-implementa">
+<h2>O que o projeto implementa<a class="headerlink" href="#o-que-o-projeto-implementa" title="Link para este cabeçalho"></a></h2>
+<ul class="simple">
+<li><p>extração paralela de 3 fontes via Celery chord</p></li>
+<li><p>staging intermediário em PostgreSQL (servidor, aluno, terceiro)</p></li>
+<li><p>resolução de identidade com deduplicação e crossref por CPF/RF</p></li>
+<li><p>provisionamento idempotente no Keycloak via Admin API</p></li>
+<li><p>carga de atributos complementares no token-ms</p></li>
+<li><p>controle de execução auditável (<code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code>, <code class="docutils literal notranslate"><span class="pre">LogEtapaETL</span></code>)</p></li>
+<li><p>checkpoint por etapa para retomada após falha</p></li>
+<li><p>watermark incremental por fonte</p></li>
+<li><p>API REST de controle e consulta</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="navegacao">
+<h2>Navegação<a class="headerlink" href="#navegacao" title="Link para este cabeçalho"></a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="arquitetura/visao_geral.html">Visão Geral da Arquitetura</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#bancos-configurados">Bancos configurados</a></li>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#fontes-de-origem">Fontes de origem</a></li>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#destinos-de-carga">Destinos de carga</a></li>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#fluxo-logico">Fluxo lógico</a></li>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#infraestrutura-celery">Infraestrutura Celery</a></li>
+<li class="toctree-l2"><a class="reference internal" href="arquitetura/visao_geral.html#principio-de-idempotencia">Princípio de idempotência</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline/index.html">Pipeline ETL de Identidades</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="pipeline/index.html#etapas">Etapas</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline/index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline/index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline/index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="controle/index.html">Controle e Auditoria de Execução</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="controle/modelos.html">Modelos de Controle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="controle/api.html">API REST de Controle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="controle/comandos.html">Comandos de Gestão</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="operacao/index.html">Operação</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="operacao/execucao.html">Caminhos de Execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operacao/retomada.html">Retomada após Falha</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operacao/watermark.html">Watermark Incremental</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">Referência de código</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.models">Controle ETL — Modelos</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.serializers">Controle ETL — Serializers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.views">Controle ETL — Views (API)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#controle-etl-dashboard-e-kanban-html">Controle ETL — Dashboard e Kanban (HTML)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.tasks">Controle ETL — Tasks (Celery)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.orquestrador_kc">Controle ETL — Orquestrador Keycloak</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.cliente_token_ms">Controle ETL — Cliente token-ms</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.controle_etl.autenticacao">Controle ETL — Autenticação</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.extracao.tasks">Extração</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-apps.staging.models">Staging</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="arquitetura/visao_geral.html" class="btn btn-neutral float-right" title="Visão Geral da Arquitetura" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

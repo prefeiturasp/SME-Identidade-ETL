@@ -1,0 +1,1561 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apps.extracao.tasks &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../../_static/translations.js?v=71a39b36"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../../../genindex.html" />
+    <link rel="search" title="Buscar" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Código do módulo</a></li>
+      <li class="breadcrumb-item active">apps.extracao.tasks</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Código-fonte para apps.extracao.tasks</h1><div class="highlight"><pre>
+<span></span><span class="sd">"""Tasks de extração das fontes  SE1426, CoreSSO e EOL_DB.</span>
+
+<span class="sd">Extrai dados para memória (dataclasses RegistroIdentidade) e devolve</span>
+<span class="sd">a lista para o chamador. A persistência no staging (apps.staging)</span>
+<span class="sd">é responsabilidade de quem consome o retorno — ver</span>
+<span class="sd">``apps.staging.tasks.persistir_extracao_staging``.</span>
+
+<span class="sd">Controle incremental por watermark é persistido no SYNC_REC_DB</span>
+<span class="sd">via MarcaDaguaExtracao.</span>
+<span class="sd">"""</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Iterator</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.conf</span><span class="w"> </span><span class="kn">import</span> <span class="n">settings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">timezone</span>
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">"etl_identidade"</span><span class="p">)</span>
+
+<span class="n">_TAMANHO_LOTE</span> <span class="o">=</span> <span class="mi">500</span>
+
+<span class="n">_CPF_TAMANHO</span> <span class="o">=</span> <span class="mi">11</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_sanitizar_cpf</span><span class="p">(</span><span class="n">valor</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Normaliza CPF vindo de fontes legadas para 11 dígitos numéricos.</span>
+
+<span class="sd">    Fontes como o CoreSSO podem armazenar o CPF com máscara</span>
+<span class="sd">    (``000.000.000-00``) ou outros caracteres não numéricos, o que</span>
+<span class="sd">    estoura o ``max_length=11`` da coluna de staging. Remove tudo que</span>
+<span class="sd">    não for dígito antes de persistir.</span>
+<span class="sd">    """</span>
+    <span class="n">digitos</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">"\D"</span><span class="p">,</span> <span class="s2">""</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">valor</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">digitos</span><span class="p">[:</span><span class="n">_CPF_TAMANHO</span><span class="p">]</span> <span class="ow">or</span> <span class="kc">None</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_sanitizar_email</span><span class="p">(</span><span class="n">valor</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Descarta e-mails sem domínio válido vindos de fontes legadas.</span>
+
+<span class="sd">    O CoreSSO armazena, para uma fração dos usuários, um valor sem</span>
+<span class="sd">    domínio (ex.: ``8bde384cd48ce311b1fe782bcb3d2d76@``, aparentando</span>
+<span class="sd">    ser um GUID/hash truncado) no lugar do e-mail — o Keycloak rejeita</span>
+<span class="sd">    esse formato com 400 ``error-invalid-email`` e o registro nunca é</span>
+<span class="sd">    provisionado. Como não é um erro transitório (retry não resolve),</span>
+<span class="sd">    descarta o valor aqui: o usuário segue sendo criado/atualizado no</span>
+<span class="sd">    Keycloak, só sem e-mail, até a origem corrigir o dado.</span>
+<span class="sd">    """</span>
+    <span class="n">email</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">valor</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+    <span class="n">usuario</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">dominio</span> <span class="o">=</span> <span class="n">email</span><span class="o">.</span><span class="n">partition</span><span class="p">(</span><span class="s2">"@"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">usuario</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">dominio</span> <span class="ow">or</span> <span class="s2">"."</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">dominio</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="s2">" "</span> <span class="ow">in</span> <span class="n">email</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="k">return</span> <span class="n">email</span>
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Dataclass de identidade em memória</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">VinculoServidor</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Um vínculo funcional vigente de um servidor no SE1426.</span>
+
+<span class="sd">    Um servidor pode ter múltiplos vínculos simultâneos e independentes</span>
+<span class="sd">    (cargo base, cargo sobreposto/comissionado e função/atividade —</span>
+<span class="sd">    inclusive mais de um cargo base ao mesmo tempo), cada um com sua</span>
+<span class="sd">    própria unidade e DRE — não há prevalência entre tipos, todos são</span>
+<span class="sd">    fatos distintos do domínio.</span>
+<span class="sd">    """</span>
+
+    <span class="n">tipo_vinculo</span><span class="p">:</span> <span class="nb">str</span>  <span class="c1"># cargo_base | cargo_sobreposto | funcao_atividade</span>
+    <span class="n">codigo_vinculo_origem</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">cargo_codigo</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">cargo_nome</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">unidade_codigo</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">unidade_nome</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">dre_codigo</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">situacao</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">data_inicio</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">vigente</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+
+
+<div class="viewcode-block" id="RegistroIdentidade">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.RegistroIdentidade">[documentos]</a>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RegistroIdentidade</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Representa um registro de identidade extraído de uma fonte legada.</span>
+
+<span class="sd">    Trafega em memória pelo pipeline sem ser persistido.</span>
+<span class="sd">    """</span>
+
+    <span class="n">fonte</span><span class="p">:</span> <span class="nb">str</span>  <span class="c1"># se1426 | coresso | eol_alunos</span>
+    <span class="n">tipo</span><span class="p">:</span> <span class="nb">str</span>  <span class="c1"># servidor | aluno | terceiro</span>
+    <span class="n">rf</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">cpf</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">nome</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">email</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">situacao</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">cargo</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">funcao</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">lotacao</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">lotacao_nome</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">dre</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">ue</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">matricula</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">cod_escola</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">turma</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">tipo_acesso</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">vinculos</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">VinculoServidor</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+    <span class="n">dados_extras</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span></div>
+
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Helpers de conexão SQL Server</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_string_conexao_se1426</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta a string de conexão FreeTDS para SE1426.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        String de conexão no formato ODBC/FreeTDS.</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"DRIVER=</span><span class="se">{{</span><span class="s2">FreeTDS</span><span class="se">}}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"SERVER=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_SERVIDOR</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PORT=1433;"</span>
+        <span class="sa">f</span><span class="s2">"DATABASE=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_NOME</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"UID=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_USUARIO</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PWD=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_SENHA</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"TDS_Version=7.4;ClientCharset=UTF-8;"</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_string_conexao_coresso</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta a string de conexão FreeTDS para CoreSSO.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        String de conexão no formato ODBC/FreeTDS.</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"DRIVER=</span><span class="se">{{</span><span class="s2">FreeTDS</span><span class="se">}}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"SERVER=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PORT=1433;"</span>
+        <span class="sa">f</span><span class="s2">"DATABASE=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_NOME</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"UID=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_USUARIO</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PWD=</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SENHA</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"TDS_Version=7.4;ClientCharset=UTF-8;"</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_string_conexao_eol_db</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta a string de conexão FreeTDS para EOL_DB a partir da URL.</span>
+
+<span class="sd">    EOL_DB roda no mesmo servidor SQL Server do SE1426. A URL em</span>
+<span class="sd">    ``EOL_DB_STRING_CONEXAO`` segue o formato</span>
+<span class="sd">    ``mssql+pyodbc://usuario:senha@host:porta/banco?...`` — aqui ela</span>
+<span class="sd">    é parseada e convertida para a string de conexão FreeTDS usada</span>
+<span class="sd">    pelo pyodbc (mesmo driver das demais fontes SQL Server).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        String de conexão no formato ODBC/FreeTDS.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">urllib.parse</span><span class="w"> </span><span class="kn">import</span> <span class="n">unquote</span><span class="p">,</span> <span class="n">urlparse</span>  <span class="c1"># noqa: PLC0415</span>
+
+    <span class="n">url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">EOL_DB_STRING_CONEXAO</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"DRIVER=</span><span class="se">{{</span><span class="s2">FreeTDS</span><span class="se">}}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"SERVER=</span><span class="si">{</span><span class="n">url</span><span class="o">.</span><span class="n">hostname</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PORT=</span><span class="si">{</span><span class="n">url</span><span class="o">.</span><span class="n">port</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="mi">1433</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"DATABASE=</span><span class="si">{</span><span class="n">url</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">lstrip</span><span class="p">(</span><span class="s1">'/'</span><span class="p">)</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"UID=</span><span class="si">{</span><span class="n">url</span><span class="o">.</span><span class="n">username</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"PWD=</span><span class="si">{</span><span class="n">unquote</span><span class="p">(</span><span class="n">url</span><span class="o">.</span><span class="n">password</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="s1">''</span><span class="p">)</span><span class="si">}</span><span class="s2">;"</span>
+        <span class="sa">f</span><span class="s2">"TDS_Version=7.4;ClientCharset=UTF-8;"</span>
+    <span class="p">)</span>
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Controle de watermark (persistido no SYNC_REC_DB)</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_obter_watermark</span><span class="p">(</span><span class="n">fonte</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Retorna o último timestamp processado para a fonte.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        fonte: Identificador da fonte (se1426, coresso, eol_alunos).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        datetime ou None se nunca processado.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.controle_etl.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">MarcaDaguaExtracao</span>
+
+    <span class="n">marca</span> <span class="o">=</span> <span class="n">MarcaDaguaExtracao</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">fonte</span><span class="o">=</span><span class="n">fonte</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">marca</span><span class="o">.</span><span class="n">ultimo_processado_em</span> <span class="k">if</span> <span class="n">marca</span> <span class="k">else</span> <span class="kc">None</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_atualizar_watermark</span><span class="p">(</span>
+    <span class="n">fonte</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">ultimo_processado_em</span><span class="p">:</span> <span class="n">datetime</span><span class="p">,</span>
+    <span class="n">total_processado</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">ultima_pagina</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Atualiza o watermark após extração bem-sucedida.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        fonte: Identificador da fonte.</span>
+<span class="sd">        ultimo_processado_em: Timestamp do último registro processado.</span>
+<span class="sd">        total_processado: Total de registros processados na execução.</span>
+<span class="sd">        ultima_pagina: Número da última página processada.</span>
+<span class="sd">    """</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.controle_etl.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">MarcaDaguaExtracao</span>
+
+    <span class="n">marca</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">MarcaDaguaExtracao</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">get_or_create</span><span class="p">(</span><span class="n">fonte</span><span class="o">=</span><span class="n">fonte</span><span class="p">)</span>
+    <span class="n">marca</span><span class="o">.</span><span class="n">ultimo_processado_em</span> <span class="o">=</span> <span class="n">ultimo_processado_em</span>
+    <span class="n">marca</span><span class="o">.</span><span class="n">ultima_pagina</span> <span class="o">=</span> <span class="n">ultima_pagina</span>
+    <span class="n">marca</span><span class="o">.</span><span class="n">total_processado</span> <span class="o">=</span> <span class="p">(</span><span class="n">marca</span><span class="o">.</span><span class="n">total_processado</span> <span class="ow">or</span> <span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="n">total_processado</span>
+    <span class="n">marca</span><span class="o">.</span><span class="n">save</span><span class="p">(</span>
+        <span class="n">update_fields</span><span class="o">=</span><span class="p">[</span>
+            <span class="s2">"ultimo_processado_em"</span><span class="p">,</span>
+            <span class="s2">"ultima_pagina"</span><span class="p">,</span>
+            <span class="s2">"total_processado"</span><span class="p">,</span>
+            <span class="s2">"atualizado_em"</span><span class="p">,</span>
+        <span class="p">]</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_iterar_com_watermark</span><span class="p">(</span>
+    <span class="n">fonte</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fonte_iter</span><span class="p">:</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Repassa os registros do iterador, atualizando o watermark ao fim.</span>
+
+<span class="sd">    Mantém a extração em streaming (sem acumular tudo em memória)</span>
+<span class="sd">    enquanto preserva o controle incremental: o watermark só é</span>
+<span class="sd">    atualizado depois que o iterador é totalmente consumido pelo</span>
+<span class="sd">    chamador, contabilizando o total de registros repassados.</span>
+
+<span class="sd">    Respeita ``settings.ETL_LOTE_MAXIMO`` (0 = sem limite) como teto</span>
+<span class="sd">    de registros entregues nesta execução — interrompe o consumo de</span>
+<span class="sd">    ``fonte_iter`` assim que o teto é atingido, útil para testar o</span>
+<span class="sd">    pipeline com volume reduzido.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        fonte: Identificador da fonte (se1426, coresso, eol_alunos).</span>
+<span class="sd">        fonte_iter: Iterador de RegistroIdentidade da extração.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        Cada RegistroIdentidade recebido de ``fonte_iter``.</span>
+<span class="sd">    """</span>
+    <span class="n">lote_maximo</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">ETL_LOTE_MAXIMO</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">registro</span> <span class="ow">in</span> <span class="n">fonte_iter</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">lote_maximo</span> <span class="ow">and</span> <span class="n">total</span> <span class="o">&gt;=</span> <span class="n">lote_maximo</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                <span class="s2">"</span><span class="si">%s</span><span class="s2">: limite ETL_LOTE_MAXIMO=</span><span class="si">%d</span><span class="s2"> atingido"</span>
+                <span class="o">+</span> <span class="s2">" — interrompendo extração"</span><span class="p">,</span>
+                <span class="n">fonte</span><span class="p">,</span>
+                <span class="n">lote_maximo</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="k">break</span>
+        <span class="n">total</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">yield</span> <span class="n">registro</span>
+    <span class="k">if</span> <span class="n">total</span><span class="p">:</span>
+        <span class="n">_atualizar_watermark</span><span class="p">(</span>
+            <span class="n">fonte</span><span class="p">,</span>
+            <span class="n">timezone</span><span class="o">.</span><span class="n">now</span><span class="p">(),</span>
+            <span class="n">total</span><span class="p">,</span>
+            <span class="n">ultima_pagina</span><span class="o">=</span><span class="n">total</span> <span class="o">//</span> <span class="n">_TAMANHO_LOTE</span><span class="p">,</span>
+        <span class="p">)</span>
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Extração SE1426</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="c1"># Consultas de vínculo funcional, uma por tipo — cada uma empilhada como</span>
+<span class="c1"># um vínculo independente, sem COALESCE/fallback sobre o cargo base: o</span>
+<span class="c1"># domínio permite múltiplos vínculos simultâneos por servidor (inclusive</span>
+<span class="c1"># mais de um cargo base ao mesmo tempo), então nenhum tipo prevalece</span>
+<span class="c1"># sobre outro.</span>
+<span class="c1">#</span>
+<span class="c1">#   - v_servidor_cotic: RF -&gt; cd_servidor.</span>
+<span class="c1">#   - v_cargo_base_cotic: cargo base do servidor (join por cd_servidor),</span>
+<span class="c1">#     vigente quando dt_fim_nomeacao IS NULL AND dt_cancelamento IS NULL.</span>
+<span class="c1">#   - lotacao_servidor / cargo_sobreposto_servidor /</span>
+<span class="c1">#     funcao_atividade_cargo_servidor: unidade de cada tipo de vínculo.</span>
+<span class="c1">#   - v_cadastro_unidade_educacao: resolve nome/DRE a partir da UE — a</span>
+<span class="c1">#     DRE responsável nunca é coluna direta do vínculo, sempre se resolve</span>
+<span class="c1">#     via cd_unidade_administrativa_referencia da UE de lotação.</span>
+<span class="n">_CONSULTAS_VINCULO_SE1426</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"cargo_base"</span><span class="p">:</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            sev.cd_registro_funcional     AS rf,</span>
+<span class="s2">            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))</span>
+<span class="s2">                                           AS codigo_vinculo_origem,</span>
+<span class="s2">            CAST(cba.cd_cargo AS VARCHAR(50)) AS cargo_codigo,</span>
+<span class="s2">            NULL                           AS cargo_nome,</span>
+<span class="s2">            ls.cd_unidade_educacao        AS unidade_codigo,</span>
+<span class="s2">            ue.nm_unidade_educacao        AS unidade_nome,</span>
+<span class="s2">            ue.cd_unidade_administrativa_referencia AS dre_codigo,</span>
+<span class="s2">            NULL                           AS situacao</span>
+<span class="s2">        FROM v_servidor_cotic sev</span>
+<span class="s2">        INNER JOIN v_cargo_base_cotic cba</span>
+<span class="s2">            ON sev.cd_servidor = cba.cd_servidor</span>
+<span class="s2">        INNER JOIN lotacao_servidor ls</span>
+<span class="s2">            ON ls.cd_cargo_base_servidor = cba.cd_cargo_base_servidor</span>
+<span class="s2">            AND ls.dt_fim IS NULL</span>
+<span class="s2">        LEFT JOIN v_cadastro_unidade_educacao ue</span>
+<span class="s2">            ON ue.cd_unidade_educacao = ls.cd_unidade_educacao</span>
+<span class="s2">        WHERE cba.dt_fim_nomeacao IS NULL</span>
+<span class="s2">            AND cba.dt_cancelamento IS NULL</span>
+<span class="s2">    """</span><span class="p">,</span>
+    <span class="s2">"cargo_sobreposto"</span><span class="p">:</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            sev.cd_registro_funcional     AS rf,</span>
+<span class="s2">            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))</span>
+<span class="s2">                                           AS codigo_vinculo_origem,</span>
+<span class="s2">            CAST(css.cd_cargo AS VARCHAR(50)) AS cargo_codigo,</span>
+<span class="s2">            NULL                           AS cargo_nome,</span>
+<span class="s2">            css.cd_unidade_local_servico   AS unidade_codigo,</span>
+<span class="s2">            ue.nm_unidade_educacao         AS unidade_nome,</span>
+<span class="s2">            ue.cd_unidade_administrativa_referencia AS dre_codigo,</span>
+<span class="s2">            NULL                           AS situacao</span>
+<span class="s2">        FROM v_servidor_cotic sev</span>
+<span class="s2">        INNER JOIN v_cargo_base_cotic cba</span>
+<span class="s2">            ON sev.cd_servidor = cba.cd_servidor</span>
+<span class="s2">        INNER JOIN cargo_sobreposto_servidor css</span>
+<span class="s2">            ON css.cd_cargo_base_servidor = cba.cd_cargo_base_servidor</span>
+<span class="s2">            AND (css.dt_fim_cargo_sobreposto IS NULL</span>
+<span class="s2">                 OR css.dt_fim_cargo_sobreposto &gt; getdate())</span>
+<span class="s2">        LEFT JOIN v_cadastro_unidade_educacao ue</span>
+<span class="s2">            ON ue.cd_unidade_educacao = css.cd_unidade_local_servico</span>
+<span class="s2">        WHERE cba.dt_fim_nomeacao IS NULL</span>
+<span class="s2">            AND cba.dt_cancelamento IS NULL</span>
+<span class="s2">    """</span><span class="p">,</span>
+    <span class="s2">"funcao_atividade"</span><span class="p">:</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            sev.cd_registro_funcional     AS rf,</span>
+<span class="s2">            CONCAT(</span>
+<span class="s2">                fat.cd_cargo_base_servidor, '-', fat.cd_tipo_funcao, '-',</span>
+<span class="s2">                fat.cd_unidade_local_servico</span>
+<span class="s2">            )                              AS codigo_vinculo_origem,</span>
+<span class="s2">            CAST(fat.cd_tipo_funcao AS VARCHAR(50)) AS cargo_codigo,</span>
+<span class="s2">            NULL                           AS cargo_nome,</span>
+<span class="s2">            fat.cd_unidade_local_servico   AS unidade_codigo,</span>
+<span class="s2">            ue.nm_unidade_educacao         AS unidade_nome,</span>
+<span class="s2">            ue.cd_unidade_administrativa_referencia AS dre_codigo,</span>
+<span class="s2">            NULL                           AS situacao</span>
+<span class="s2">        FROM v_servidor_cotic sev</span>
+<span class="s2">        INNER JOIN v_cargo_base_cotic cba</span>
+<span class="s2">            ON sev.cd_servidor = cba.cd_servidor</span>
+<span class="s2">        INNER JOIN funcao_atividade_cargo_servidor fat</span>
+<span class="s2">            ON fat.cd_cargo_base_servidor = cba.cd_cargo_base_servidor</span>
+<span class="s2">            AND (fat.dt_cancelamento IS NULL</span>
+<span class="s2">                 OR fat.dt_fim_funcao_atividade &gt; getdate())</span>
+<span class="s2">            AND (fat.dt_fim_funcao_atividade IS NULL</span>
+<span class="s2">                 OR fat.dt_fim_funcao_atividade &gt; getdate())</span>
+<span class="s2">        LEFT JOIN v_cadastro_unidade_educacao ue</span>
+<span class="s2">            ON ue.cd_unidade_educacao = fat.cd_unidade_local_servico</span>
+<span class="s2">        WHERE cba.dt_fim_nomeacao IS NULL</span>
+<span class="s2">            AND cba.dt_cancelamento IS NULL</span>
+<span class="s2">    """</span><span class="p">,</span>
+<span class="p">}</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_vinculos_servidor_se1426</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">VinculoServidor</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""Extrai os vínculos funcionais vigentes de todos os servidores.</span>
+
+<span class="sd">    Roda uma consulta por tipo de vínculo (cargo base, cargo sobreposto</span>
+<span class="sd">    e função/atividade) trazendo todos os servidores de uma vez, em vez</span>
+<span class="sd">    de uma consulta por RF — evita repetir a consulta para cada</span>
+<span class="sd">    servidor durante a extração de identidade.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Vínculos agrupados por RF, para anexar a cada</span>
+<span class="sd">        ``RegistroIdentidade`` correspondente durante a extração de</span>
+<span class="sd">        identidade.</span>
+<span class="sd">    """</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">vinculos_por_rf</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">VinculoServidor</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_se1426</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_TIMEOUT</span>
+    <span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">tipo_vinculo</span><span class="p">,</span> <span class="n">consulta</span> <span class="ow">in</span> <span class="n">_CONSULTAS_VINCULO_SE1426</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+            <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+            <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+                <span class="n">linhas</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchmany</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">linhas</span><span class="p">:</span>
+                    <span class="k">break</span>
+                <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">linhas</span><span class="p">:</span>
+                    <span class="n">item</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+                    <span class="n">rf</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"rf"</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">rf</span><span class="p">:</span>
+                        <span class="k">continue</span>
+                    <span class="n">vinculos_por_rf</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">rf</span><span class="p">),</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                        <span class="n">VinculoServidor</span><span class="p">(</span>
+                            <span class="n">tipo_vinculo</span><span class="o">=</span><span class="n">tipo_vinculo</span><span class="p">,</span>
+                            <span class="n">codigo_vinculo_origem</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span>
+                                <span class="n">item</span><span class="p">[</span><span class="s2">"codigo_vinculo_origem"</span><span class="p">]</span>
+                            <span class="p">),</span>
+                            <span class="n">cargo_codigo</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cargo_codigo"</span><span class="p">),</span>
+                            <span class="n">cargo_nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cargo_nome"</span><span class="p">),</span>
+                            <span class="n">unidade_codigo</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"unidade_codigo"</span><span class="p">),</span>
+                            <span class="n">unidade_nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"unidade_nome"</span><span class="p">),</span>
+                            <span class="n">dre_codigo</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"dre_codigo"</span><span class="p">),</span>
+                            <span class="n">situacao</span><span class="o">=</span><span class="p">(</span>
+                                <span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">or</span> <span class="kc">None</span>
+                            <span class="p">),</span>
+                            <span class="n">vigente</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                        <span class="p">)</span>
+                    <span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">vinculos_por_rf</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_se1426_sql</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai servidores do SE1426 via SQL Server (read-only).</span>
+
+<span class="sd">    A view ``v_servidor_sme_serap`` não expõe coluna de data de</span>
+<span class="sd">    atualização — sem suporte a filtro incremental por enquanto;</span>
+<span class="sd">    a extração sempre traz a base completa.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada servidor encontrado, com os</span>
+<span class="sd">        vínculos funcionais vigentes (cargo base, sobreposto e</span>
+<span class="sd">        função/atividade) já anexados em ``vinculos``.</span>
+<span class="sd">    """</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="c1"># v_servidor_sme_serap traz 2 linhas para ~16% dos RFs (Ativo +</span>
+    <span class="c1"># Inativo, mesmo cadastro repetido só com a situação diferente —</span>
+    <span class="c1"># confirmado por inspeção direta contra o SE1426; não é efeito do</span>
+    <span class="c1"># LEFT JOIN abaixo). ROW_NUMBER() prioriza Ativo, para extrair uma</span>
+    <span class="c1"># única linha por RF — sem isso, cada RF duplicado geraria dois</span>
+    <span class="c1"># RegistroIdentidade recebendo a mesma lista de vínculos, dobrando</span>
+    <span class="c1"># staging/payload sem necessidade.</span>
+    <span class="n">consulta</span> <span class="o">=</span> <span class="s2">"""</span>
+<span class="s2">        SELECT rf, nome, cpf, situacao, email</span>
+<span class="s2">        FROM (</span>
+<span class="s2">            SELECT</span>
+<span class="s2">                s.cd_registro_funcional  AS rf,</span>
+<span class="s2">                s.nm_pessoa              AS nome,</span>
+<span class="s2">                s.cd_cpf_pessoa          AS cpf,</span>
+<span class="s2">                s.situacao               AS situacao,</span>
+<span class="s2">                e.dc_dispositivo         AS email,</span>
+<span class="s2">                ROW_NUMBER() OVER (</span>
+<span class="s2">                    PARTITION BY s.cd_registro_funcional</span>
+<span class="s2">                    ORDER BY CASE WHEN s.situacao = 'Ativo' THEN 0 ELSE 1 END</span>
+<span class="s2">                ) AS rn</span>
+<span class="s2">            FROM v_servidor_sme_serap s</span>
+<span class="s2">            LEFT JOIN v_servidor_cotic sc</span>
+<span class="s2">                ON sc.cd_registro_funcional = s.cd_registro_funcional</span>
+<span class="s2">            LEFT JOIN v_servidor_email_cotic e</span>
+<span class="s2">                ON e.cd_servidor = sc.cd_servidor</span>
+<span class="s2">                AND e.dt_fim IS NULL</span>
+<span class="s2">        ) dedup</span>
+<span class="s2">        WHERE rn = 1</span>
+<span class="s2">    """</span>
+
+    <span class="n">vinculos_por_rf</span> <span class="o">=</span> <span class="n">_extrair_vinculos_servidor_se1426</span><span class="p">()</span>
+
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_se1426</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_TIMEOUT</span>
+    <span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">linhas</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchmany</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="n">item</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+                <span class="n">rf</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"rf"</span><span class="p">)</span>
+                <span class="k">yield</span> <span class="n">RegistroIdentidade</span><span class="p">(</span>
+                    <span class="n">fonte</span><span class="o">=</span><span class="s2">"se1426"</span><span class="p">,</span>
+                    <span class="n">tipo</span><span class="o">=</span><span class="s2">"servidor"</span><span class="p">,</span>
+                    <span class="n">rf</span><span class="o">=</span><span class="n">rf</span><span class="p">,</span>
+                    <span class="n">nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nome"</span><span class="p">),</span>
+                    <span class="n">cpf</span><span class="o">=</span><span class="n">_sanitizar_cpf</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)),</span>
+                    <span class="n">email</span><span class="o">=</span><span class="n">_sanitizar_email</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">)),</span>
+                    <span class="n">situacao</span><span class="o">=</span><span class="p">((</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">or</span> <span class="kc">None</span><span class="p">),</span>
+                    <span class="n">vinculos</span><span class="o">=</span><span class="p">(</span><span class="n">vinculos_por_rf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">rf</span><span class="p">),</span> <span class="p">[])</span> <span class="k">if</span> <span class="n">rf</span> <span class="k">else</span> <span class="p">[]),</span>
+                    <span class="n">dados_extras</span><span class="o">=</span><span class="p">{</span>
+                        <span class="n">k</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">v</span><span class="p">)</span> <span class="k">if</span> <span class="n">v</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+                        <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">item</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="p">},</span>
+                <span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_paginar_api</span><span class="p">(</span>
+    <span class="n">url</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">cabecalhos</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">rotulo</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">httpx</span>
+
+    <span class="n">pagina</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">"page"</span><span class="p">:</span> <span class="n">pagina</span><span class="p">,</span>
+            <span class="s2">"page_size"</span><span class="p">:</span> <span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="n">desde</span><span class="p">:</span>
+            <span class="n">params</span><span class="p">[</span><span class="s2">"data_alteracao_apos"</span><span class="p">]</span> <span class="o">=</span> <span class="n">desde</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">"%Y-%m-</span><span class="si">%d</span><span class="s2">"</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span> <span class="k">as</span> <span class="n">cliente</span><span class="p">:</span>
+                <span class="n">resposta</span> <span class="o">=</span> <span class="n">cliente</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">cabecalhos</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
+            <span class="n">resposta</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">"</span><span class="si">%s</span><span class="s2"> API: erro na página </span><span class="si">%d</span><span class="s2">: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">rotulo</span><span class="p">,</span> <span class="n">pagina</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+            <span class="k">break</span>
+
+        <span class="n">dados</span> <span class="o">=</span> <span class="n">resposta</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
+        <span class="n">itens</span> <span class="o">=</span> <span class="n">dados</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"results"</span><span class="p">)</span> <span class="ow">or</span> <span class="p">(</span>
+            <span class="n">dados</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dados</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="k">else</span> <span class="p">[]</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">itens</span><span class="p">:</span>
+            <span class="k">break</span>
+
+        <span class="k">yield from</span> <span class="n">itens</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">dados</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"next"</span><span class="p">):</span>
+            <span class="k">break</span>
+        <span class="n">pagina</span> <span class="o">+=</span> <span class="mi">1</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_se1426_api</span><span class="p">(</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai servidores do SE1426 via API REST (fallback).</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada servidor encontrado.</span>
+<span class="sd">    """</span>
+    <span class="n">url_base</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">SE1426_API_URL</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">"/"</span><span class="p">)</span>
+    <span class="n">cabecalhos</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"Authorization"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"Bearer </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_API_TOKEN</span><span class="si">}</span><span class="s2">"</span><span class="p">}</span>
+
+    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">_paginar_api</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">url_base</span><span class="si">}</span><span class="s2">/servidores/"</span><span class="p">,</span>
+        <span class="n">cabecalhos</span><span class="p">,</span>
+        <span class="n">settings</span><span class="o">.</span><span class="n">SE1426_API_TIMEOUT</span><span class="p">,</span>
+        <span class="n">desde</span><span class="p">,</span>
+        <span class="s2">"SE1426"</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="k">yield</span> <span class="n">RegistroIdentidade</span><span class="p">(</span>
+            <span class="n">fonte</span><span class="o">=</span><span class="s2">"se1426"</span><span class="p">,</span>
+            <span class="n">tipo</span><span class="o">=</span><span class="s2">"servidor"</span><span class="p">,</span>
+            <span class="n">rf</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"rf"</span><span class="p">)</span> <span class="ow">or</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cd_registro_funcional"</span><span class="p">),</span>
+            <span class="n">nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nome"</span><span class="p">)</span> <span class="ow">or</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nm_pessoa"</span><span class="p">),</span>
+            <span class="n">cpf</span><span class="o">=</span><span class="n">_sanitizar_cpf</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)</span> <span class="ow">or</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cd_cpf_pessoa"</span><span class="p">)),</span>
+            <span class="n">email</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">),</span>
+            <span class="n">situacao</span><span class="o">=</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">or</span> <span class="kc">None</span><span class="p">,</span>
+            <span class="n">dados_extras</span><span class="o">=</span><span class="n">item</span><span class="p">,</span>
+        <span class="p">)</span>
+
+
+<div class="viewcode-block" id="extrair_se1426">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.extrair_se1426">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_se1426</span><span class="p">(</span>
+    <span class="n">data_referencia</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai dados institucionais da fonte SE1426 em streaming.</span>
+
+<span class="sd">    Usa SQL direto quando configurado, com fallback para API REST.</span>
+<span class="sd">    Aplica watermark para extração incremental (delta d-1). Os</span>
+<span class="sd">    registros são entregues conforme extraídos, sem acumular a</span>
+<span class="sd">    fonte inteira em memória — essencial para volumes grandes</span>
+<span class="sd">    (centenas de milhares de registros).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        data_referencia: Data ISO para replay</span>
+<span class="sd">            (sobrepõe o watermark persistido).</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade conforme extraído da fonte.</span>
+<span class="sd">    """</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">data_referencia</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">fromisoformat</span><span class="p">(</span><span class="n">data_referencia</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">_obter_watermark</span><span class="p">(</span><span class="s2">"se1426"</span><span class="p">)</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"extrair_se1426 — desde=</span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">desde</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">fonte_iter</span> <span class="o">=</span> <span class="n">_extrair_se1426_sql</span><span class="p">()</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">fonte_iter</span> <span class="o">=</span> <span class="n">_extrair_se1426_api</span><span class="p">(</span><span class="n">desde</span><span class="o">=</span><span class="n">desde</span><span class="p">)</span>
+
+    <span class="k">yield from</span> <span class="n">_iterar_com_watermark</span><span class="p">(</span><span class="s2">"se1426"</span><span class="p">,</span> <span class="n">fonte_iter</span><span class="p">)</span></div>
+
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Extração CoreSSO</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="c1"># tdo_id fixo de SYS_TipoDocumentacao para o tipo "CPF" (sigla CPF).</span>
+<span class="n">_TDO_ID_CPF</span> <span class="o">=</span> <span class="s2">"2CEEED03-63EB-E011-9B36-00155D033206"</span>
+
+<span class="c1"># Tamanho de sublote para IN (...) na busca por identificadores — evita</span>
+<span class="c1"># estourar o limite de parâmetros do driver/SQL Server numa lista</span>
+<span class="c1"># grande de CPFs/RFs.</span>
+<span class="n">_TAMANHO_LOTE_IDENTIFICADORES</span> <span class="o">=</span> <span class="mi">200</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_registro_coresso_de_linha</span><span class="p">(</span><span class="n">item</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RegistroIdentidade</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta um RegistroIdentidade a partir de uma linha da consulta SQL.</span>
+
+<span class="sd">    Compartilhado entre a extração incremental (`_extrair_coresso_sql`)</span>
+<span class="sd">    e a extração pontual por identificadores (usada para reprocessar</span>
+<span class="sd">    clientes com `token_ms_pendente=True` cujo staging já foi limpo).</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="n">RegistroIdentidade</span><span class="p">(</span>
+        <span class="n">fonte</span><span class="o">=</span><span class="s2">"coresso"</span><span class="p">,</span>
+        <span class="n">tipo</span><span class="o">=</span><span class="s2">"terceiro"</span><span class="p">,</span>
+        <span class="n">cpf</span><span class="o">=</span><span class="n">_sanitizar_cpf</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)),</span>
+        <span class="n">nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nome"</span><span class="p">),</span>
+        <span class="n">email</span><span class="o">=</span><span class="n">_sanitizar_email</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">)),</span>
+        <span class="n">situacao</span><span class="o">=</span><span class="p">(</span>
+            <span class="s2">"ativo"</span>
+            <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">,</span> <span class="s2">""</span><span class="p">))</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span> <span class="o">==</span> <span class="s2">"1"</span>
+            <span class="k">else</span> <span class="s2">"inativo"</span>
+        <span class="p">),</span>
+        <span class="n">tipo_acesso</span><span class="o">=</span><span class="s2">"legado-coresso"</span><span class="p">,</span>
+        <span class="n">dados_extras</span><span class="o">=</span><span class="p">{</span>
+            <span class="n">k</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">v</span><span class="p">)</span> <span class="k">if</span> <span class="n">v</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+            <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">item</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">k</span> <span class="o">!=</span> <span class="s2">"dt_atualizacao"</span>
+        <span class="p">},</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_consultar_coresso_sql</span><span class="p">(</span><span class="n">filtro_where</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Executa a consulta base do CoreSSO com um filtro WHERE customizado.</span>
+
+<span class="sd">    Compartilha a mesma CTE com ``ROW_NUMBER`` (proteção contra CPF</span>
+<span class="sd">    duplicado em ``PES_PessoaDocumento``) entre a extração incremental</span>
+<span class="sd">    e a extração pontual por identificadores.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        filtro_where: Cláusula ``WHERE`` completa (ou string vazia).</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        Dict por linha, com as colunas ``login``, ``cpf``, ``nome``,</span>
+<span class="sd">        ``email``, ``situacao``, ``dt_atualizacao``.</span>
+<span class="sd">    """</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT login, cpf, nome, email, situacao, dt_atualizacao</span>
+<span class="s2">        FROM (</span>
+<span class="s2">            SELECT</span>
+<span class="s2">                u.usu_login          AS login,</span>
+<span class="s2">                doc.psd_numero        AS cpf,</span>
+<span class="s2">                pes.pes_nome          AS nome,</span>
+<span class="s2">                u.usu_email           AS email,</span>
+<span class="s2">                u.usu_situacao        AS situacao,</span>
+<span class="s2">                u.usu_dataAlteracao   AS dt_atualizacao,</span>
+<span class="s2">                ROW_NUMBER() OVER (</span>
+<span class="s2">                    PARTITION BY pes.pes_id</span>
+<span class="s2">                    ORDER BY doc.psd_numero</span>
+<span class="s2">                ) AS rn</span>
+<span class="s2">            FROM SYS_Usuario u</span>
+<span class="s2">            INNER JOIN PES_Pessoa pes ON pes.pes_id = u.pes_id</span>
+<span class="s2">            LEFT JOIN PES_PessoaDocumento doc</span>
+<span class="s2">                ON doc.pes_id = pes.pes_id</span>
+<span class="s2">                AND doc.tdo_id = '</span><span class="si">{</span><span class="n">_TDO_ID_CPF</span><span class="si">}</span><span class="s2">'</span>
+<span class="s2">            </span><span class="si">{</span><span class="n">filtro_where</span><span class="si">}</span>
+<span class="s2">        ) sub</span>
+<span class="s2">        WHERE rn = 1</span>
+<span class="s2">    """</span>
+
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">conn</span><span class="o">.</span><span class="n">timeout</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">linhas</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchmany</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">yield</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_coresso_sql</span><span class="p">(</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai usuários legados do CoreSSO via SQL Server (read-only).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        desde: Data mínima de alteração para extração incremental</span>
+<span class="sd">            (filtra por ``usu_dataAlteracao``); None extrai tudo.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada usuário encontrado.</span>
+<span class="sd">    """</span>
+    <span class="n">filtro_data</span> <span class="o">=</span> <span class="s2">""</span>
+    <span class="k">if</span> <span class="n">desde</span><span class="p">:</span>
+        <span class="n">dt</span> <span class="o">=</span> <span class="n">desde</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">"%Y-%m-</span><span class="si">%d</span><span class="s2">"</span><span class="p">)</span>
+        <span class="n">filtro_data</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"WHERE u.usu_dataAlteracao &gt;= '</span><span class="si">{</span><span class="n">dt</span><span class="si">}</span><span class="s2">'"</span>
+
+    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">_consultar_coresso_sql</span><span class="p">(</span><span class="n">filtro_data</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">_registro_coresso_de_linha</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_coresso_por_identificadores</span><span class="p">(</span>
+    <span class="n">identificadores</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Reextrai pontualmente usuários do CoreSSO por CPF ou login/RF.</span>
+
+<span class="sd">    Usada quando um cliente está pendente de reprocessamento</span>
+<span class="sd">    (``ControleProvisionamento.token_ms_pendente=True`` ou hash</span>
+<span class="sd">    desatualizado) mas seu staging já foi removido pela limpeza</span>
+<span class="sd">    periódica (``task_identidade_limpar_staging``) — busca em LOTE</span>
+<span class="sd">    (não um SELECT por pessoa) para não sobrecarregar o CoreSSO nem</span>
+<span class="sd">    o pipeline com uma consulta por cliente.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        identificadores: Lista de CPFs (só dígitos) ou logins/RF.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada usuário encontrado — clientes sem</span>
+<span class="sd">        correspondência no CoreSSO simplesmente não aparecem no</span>
+<span class="sd">        resultado (não é erro; o chamador decide o que fazer com os</span>
+<span class="sd">        que sobraram sem retorno).</span>
+<span class="sd">    """</span>
+    <span class="n">identificadores_validos</span> <span class="o">=</span> <span class="p">[</span><span class="n">i</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">identificadores</span> <span class="k">if</span> <span class="n">i</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">inicio</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span>
+        <span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">identificadores_validos</span><span class="p">),</span> <span class="n">_TAMANHO_LOTE_IDENTIFICADORES</span>
+    <span class="p">):</span>
+        <span class="n">sublote</span> <span class="o">=</span> <span class="n">identificadores_validos</span><span class="p">[</span>
+            <span class="n">inicio</span> <span class="p">:</span> <span class="n">inicio</span> <span class="o">+</span> <span class="n">_TAMANHO_LOTE_IDENTIFICADORES</span>
+        <span class="p">]</span>
+        <span class="c1"># Identificadores vêm de ControleProvisionamento.id_origem (dado</span>
+        <span class="c1"># interno, nunca input de usuário) — ainda assim, escapa aspas</span>
+        <span class="c1"># simples para evitar quebrar a query caso algum valor legado</span>
+        <span class="c1"># contenha caracteres inesperados.</span>
+        <span class="n">valores</span> <span class="o">=</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
+            <span class="s2">"'"</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">ident</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">"'"</span><span class="p">,</span> <span class="s2">"''"</span><span class="p">)</span> <span class="o">+</span> <span class="s2">"'"</span> <span class="k">for</span> <span class="n">ident</span> <span class="ow">in</span> <span class="n">sublote</span>
+        <span class="p">)</span>
+        <span class="n">filtro</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"WHERE doc.psd_numero IN (</span><span class="si">{</span><span class="n">valores</span><span class="si">}</span><span class="s2">) OR u.usu_login IN (</span><span class="si">{</span><span class="n">valores</span><span class="si">}</span><span class="s2">)"</span>
+        <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">_consultar_coresso_sql</span><span class="p">(</span><span class="n">filtro</span><span class="p">):</span>
+            <span class="k">yield</span> <span class="n">_registro_coresso_de_linha</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_coresso_api</span><span class="p">(</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai usuários do CoreSSO via API REST (fallback).</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada usuário encontrado.</span>
+<span class="sd">    """</span>
+    <span class="n">url_base</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_API_URL</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">"/"</span><span class="p">)</span>
+    <span class="n">cabecalhos</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"Authorization"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"Bearer </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_API_TOKEN</span><span class="si">}</span><span class="s2">"</span><span class="p">}</span>
+
+    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">_paginar_api</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">url_base</span><span class="si">}</span><span class="s2">/usuarios/"</span><span class="p">,</span>
+        <span class="n">cabecalhos</span><span class="p">,</span>
+        <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+        <span class="n">desde</span><span class="p">,</span>
+        <span class="s2">"CoreSSO"</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="k">yield</span> <span class="n">RegistroIdentidade</span><span class="p">(</span>
+            <span class="n">fonte</span><span class="o">=</span><span class="s2">"coresso"</span><span class="p">,</span>
+            <span class="n">tipo</span><span class="o">=</span><span class="s2">"terceiro"</span><span class="p">,</span>
+            <span class="n">cpf</span><span class="o">=</span><span class="n">_sanitizar_cpf</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)),</span>
+            <span class="n">nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nome"</span><span class="p">)</span> <span class="ow">or</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"pes_nome"</span><span class="p">),</span>
+            <span class="n">email</span><span class="o">=</span><span class="n">_sanitizar_email</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">)</span> <span class="ow">or</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"pes_email"</span><span class="p">)),</span>
+            <span class="n">situacao</span><span class="o">=</span><span class="p">(</span>
+                <span class="s2">"ativo"</span>
+                <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">,</span> <span class="s2">""</span><span class="p">))</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"1"</span><span class="p">,</span> <span class="s2">"ativo"</span><span class="p">)</span>
+                <span class="k">else</span> <span class="s2">"inativo"</span>
+            <span class="p">),</span>
+            <span class="n">tipo_acesso</span><span class="o">=</span><span class="s2">"legado-coresso"</span><span class="p">,</span>
+            <span class="n">dados_extras</span><span class="o">=</span><span class="n">item</span><span class="p">,</span>
+        <span class="p">)</span>
+
+
+<div class="viewcode-block" id="extrair_coresso">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.extrair_coresso">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_coresso</span><span class="p">(</span>
+    <span class="n">data_referencia</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai usuários e perfis legados da fonte CoreSSO em streaming.</span>
+
+<span class="sd">    Usa SQL direto quando configurado, com fallback para API REST.</span>
+<span class="sd">    Os registros são entregues conforme extraídos, sem acumular a</span>
+<span class="sd">    fonte inteira em memória.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        data_referencia: Data ISO para replay.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade conforme extraído da fonte.</span>
+<span class="sd">    """</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">data_referencia</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">fromisoformat</span><span class="p">(</span><span class="n">data_referencia</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">_obter_watermark</span><span class="p">(</span><span class="s2">"coresso"</span><span class="p">)</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"extrair_coresso — desde=</span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">desde</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">fonte_iter</span> <span class="o">=</span> <span class="n">_extrair_coresso_sql</span><span class="p">(</span><span class="n">desde</span><span class="o">=</span><span class="n">desde</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_API_URL</span><span class="p">:</span>
+        <span class="n">fonte_iter</span> <span class="o">=</span> <span class="n">_extrair_coresso_api</span><span class="p">(</span><span class="n">desde</span><span class="o">=</span><span class="n">desde</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"CoreSSO: sem configuração de banco ou API."</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="k">yield from</span> <span class="n">_iterar_com_watermark</span><span class="p">(</span><span class="s2">"coresso"</span><span class="p">,</span> <span class="n">fonte_iter</span><span class="p">)</span></div>
+
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Extração EOL_DB — Alunos</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_extrair_eol_alunos_sql</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai alunos do EOL_DB via SQL Server (read-only).</span>
+
+<span class="sd">    As tabelas aluno/v_matricula_cotic/matricula_turma_escola não</span>
+<span class="sd">    expõem uma coluna de data de atualização utilizável para filtro</span>
+<span class="sd">    incremental — sem suporte a watermark por enquanto; a extração</span>
+<span class="sd">    sempre traz a base completa.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade para cada aluno encontrado.</span>
+<span class="sd">    """</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">consulta</span> <span class="o">=</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            a.cd_aluno                                  AS matricula,</span>
+<span class="s2">            a.nm_aluno                                  AS nome,</span>
+<span class="s2">            a.cd_cpf_aluno                               AS cpf,</span>
+<span class="s2">            mat.st_matricula                             AS situacao,</span>
+<span class="s2">            CAST(mt.cd_turma_escola AS VARCHAR(20))      AS cod_escola,</span>
+<span class="s2">            CAST(mat.cd_serie_ensino AS VARCHAR(20))     AS turma,</span>
+<span class="s2">            CAST(ue.cd_unidade_educacao AS VARCHAR(20))  AS cod_ue,</span>
+<span class="s2">            CAST(ue.cd_unidade_administrativa_referencia</span>
+<span class="s2">                AS VARCHAR(20))                          AS cod_dre</span>
+<span class="s2">        FROM aluno a</span>
+<span class="s2">        INNER JOIN v_matricula_cotic mat ON mat.cd_aluno = a.cd_aluno</span>
+<span class="s2">        INNER JOIN matricula_turma_escola mt</span>
+<span class="s2">            ON mt.cd_matricula = mat.cd_matricula</span>
+<span class="s2">        INNER JOIN v_cadastro_unidade_educacao ue</span>
+<span class="s2">            ON ue.cd_unidade_educacao = mat.cd_escola</span>
+<span class="s2">    """</span>
+
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_eol_db</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_TIMEOUT</span>
+    <span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">linhas</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchmany</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="n">item</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+                <span class="k">yield</span> <span class="n">RegistroIdentidade</span><span class="p">(</span>
+                    <span class="n">fonte</span><span class="o">=</span><span class="s2">"eol_alunos"</span><span class="p">,</span>
+                    <span class="n">tipo</span><span class="o">=</span><span class="s2">"aluno"</span><span class="p">,</span>
+                    <span class="n">matricula</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"matricula"</span><span class="p">),</span>
+                    <span class="n">nome</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"nome"</span><span class="p">),</span>
+                    <span class="n">cpf</span><span class="o">=</span><span class="n">_sanitizar_cpf</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)),</span>
+                    <span class="n">situacao</span><span class="o">=</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"situacao"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">or</span> <span class="kc">None</span><span class="p">,</span>
+                    <span class="n">cod_escola</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cod_ue"</span><span class="p">),</span>
+                    <span class="n">turma</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"turma"</span><span class="p">),</span>
+                    <span class="n">dre</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cod_dre"</span><span class="p">),</span>
+                    <span class="n">ue</span><span class="o">=</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cod_ue"</span><span class="p">),</span>
+                    <span class="n">dados_extras</span><span class="o">=</span><span class="p">{</span>
+                        <span class="n">k</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">v</span><span class="p">)</span> <span class="k">if</span> <span class="n">v</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+                        <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">item</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="p">},</span>
+                <span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<div class="viewcode-block" id="extrair_eol_alunos">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.extrair_eol_alunos">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_eol_alunos</span><span class="p">(</span>
+    <span class="n">data_referencia</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">RegistroIdentidade</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai alunos da fonte EOL_DB em streaming.</span>
+
+<span class="sd">    Os registros são entregues conforme extraídos, sem acumular a</span>
+<span class="sd">    fonte inteira em memória.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        data_referencia: Data ISO para replay.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        RegistroIdentidade conforme extraído da fonte.</span>
+<span class="sd">    """</span>
+    <span class="n">desde</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">data_referencia</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">fromisoformat</span><span class="p">(</span><span class="n">data_referencia</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">desde</span> <span class="o">=</span> <span class="n">_obter_watermark</span><span class="p">(</span><span class="s2">"eol_alunos"</span><span class="p">)</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"extrair_eol_alunos — desde=</span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">desde</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">EOL_DB_STRING_CONEXAO</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"EOL_DB: sem configuração de conexão — skipping."</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="k">yield from</span> <span class="n">_iterar_com_watermark</span><span class="p">(</span><span class="s2">"eol_alunos"</span><span class="p">,</span> <span class="n">_extrair_eol_alunos_sql</span><span class="p">())</span></div>
+
+
+
+<span class="c1"># ---------------------------------------------------------------------------</span>
+<span class="c1"># Extração de sistemas e perfis CoreSSO (para provisionamento de clients)</span>
+<span class="c1"># ---------------------------------------------------------------------------</span>
+
+
+<div class="viewcode-block" id="buscar_grupos_coresso_por_login">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.buscar_grupos_coresso_por_login">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">buscar_grupos_coresso_por_login</span><span class="p">(</span><span class="n">login</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Busca os grupos CoreSSO de um usuário pelo login.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        login: RF ou CPF do usuário.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Lista de dicionários com ``gru_id`` e ``nome``.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">login</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[]</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">consulta</span> <span class="o">=</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            g.gru_id    AS gru_id,</span>
+<span class="s2">            g.gru_nome  AS nome</span>
+<span class="s2">        FROM SYS_Grupo g</span>
+<span class="s2">        INNER JOIN SYS_UsuarioGrupo ug ON ug.gru_id = g.gru_id</span>
+<span class="s2">        INNER JOIN SYS_Usuario u ON u.usu_id = ug.usu_id</span>
+<span class="s2">        WHERE u.usu_login = ?</span>
+<span class="s2">          AND g.gru_situacao = 1</span>
+<span class="s2">    """</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+            <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+            <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+            <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">,</span> <span class="p">(</span><span class="n">login</span><span class="p">,))</span>
+            <span class="k">return</span> <span class="p">[</span>
+                <span class="p">{</span><span class="s2">"gru_id"</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s2">"nome"</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="mi">1</span><span class="p">]}</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchall</span><span class="p">()</span>
+            <span class="p">]</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+            <span class="s2">"Falha ao buscar grupos CoreSSO para '</span><span class="si">%s</span><span class="s2">': </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">login</span><span class="p">,</span> <span class="n">exc</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="p">[]</span></div>
+
+
+
+<div class="viewcode-block" id="extrair_sistemas_coresso">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.extrair_sistemas_coresso">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_sistemas_coresso</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Extrai sistemas (SYS_Sistema) do CoreSSO.</span>
+
+<span class="sd">    Persiste no SYNC_REC_DB apenas os metadados de provisionamento</span>
+<span class="sd">    (client IDs Keycloak), não dados de negócio.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Total de sistemas processados.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"CoreSSO SQL não configurado — skipping sistemas."</span><span class="p">)</span>
+        <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.staging.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">SistemaStaging</span>
+
+    <span class="n">excluidos</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_EXCLUDE_SISTEMA_IDS</span>
+    <span class="n">filtro_exclusao</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"WHERE sis_id NOT IN (</span><span class="si">{</span><span class="s1">','</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">excluidos</span><span class="p">)</span><span class="si">}</span><span class="s2">)"</span>
+        <span class="k">if</span> <span class="n">excluidos</span>
+        <span class="k">else</span> <span class="s2">""</span>
+    <span class="p">)</span>
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            sis_id, sis_nome, sis_descricao,</span>
+<span class="s2">            sis_tipoAutenticacao, sis_urlIntegracao,</span>
+<span class="s2">            sis_caminhoLogout, sis_situacao</span>
+<span class="s2">        FROM SYS_Sistema </span><span class="si">{</span><span class="n">filtro_exclusao</span><span class="si">}</span><span class="s2"> ORDER BY sis_id</span>
+<span class="s2">    """</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchall</span><span class="p">():</span>
+            <span class="n">item</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+            <span class="n">SistemaStaging</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">update_or_create</span><span class="p">(</span>
+                <span class="n">coresso_sis_id</span><span class="o">=</span><span class="n">item</span><span class="p">[</span><span class="s2">"sis_id"</span><span class="p">],</span>
+                <span class="n">defaults</span><span class="o">=</span><span class="p">{</span>
+                    <span class="s2">"nome"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sis_nome"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">,</span>
+                    <span class="s2">"url_callback"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sis_urlIntegracao"</span><span class="p">),</span>
+                    <span class="s2">"url_logout"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sis_caminhoLogout"</span><span class="p">),</span>
+                    <span class="s2">"situacao"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"sis_situacao"</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+                <span class="p">},</span>
+            <span class="p">)</span>
+            <span class="n">total</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"extrair_sistemas_coresso — </span><span class="si">%d</span><span class="s2"> sistemas"</span><span class="p">,</span> <span class="n">total</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">total</span></div>
+
+
+
+<div class="viewcode-block" id="extrair_perfis_coresso">
+<a class="viewcode-back" href="../../../api.html#apps.extracao.tasks.extrair_perfis_coresso">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_perfis_coresso</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Extrai perfis/grupos (SYS_Grupo) do CoreSSO.</span>
+
+<span class="sd">    Persiste no SYNC_REC_DB apenas os metadados de mapeamento</span>
+<span class="sd">    para roles Keycloak.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Total de perfis processados.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"CoreSSO SQL não configurado — skipping perfis."</span><span class="p">)</span>
+        <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="kn">from</span><span class="w"> </span><span class="nn">apps.staging.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">PerfilCoressoStaging</span><span class="p">,</span> <span class="n">SistemaStaging</span>
+
+    <span class="n">excluidos</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_EXCLUDE_SISTEMA_IDS</span>
+    <span class="n">filtro_exclusao</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"WHERE sis_id NOT IN (</span><span class="si">{</span><span class="s1">','</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">excluidos</span><span class="p">)</span><span class="si">}</span><span class="s2">)"</span>
+        <span class="k">if</span> <span class="n">excluidos</span>
+        <span class="k">else</span> <span class="s2">""</span>
+    <span class="p">)</span>
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT gru_id, gru_nome, sis_id, vis_id, gru_situacao</span>
+<span class="s2">        FROM SYS_Grupo </span><span class="si">{</span><span class="n">filtro_exclusao</span><span class="si">}</span><span class="s2"> ORDER BY sis_id, gru_id</span>
+<span class="s2">    """</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchall</span><span class="p">():</span>
+            <span class="n">item</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+            <span class="n">sistema</span> <span class="o">=</span> <span class="n">SistemaStaging</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span>
+                <span class="n">coresso_sis_id</span><span class="o">=</span><span class="n">item</span><span class="p">[</span><span class="s2">"sis_id"</span><span class="p">]</span>
+            <span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+            <span class="n">PerfilCoressoStaging</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">update_or_create</span><span class="p">(</span>
+                <span class="n">coresso_gru_id</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">"gru_id"</span><span class="p">]),</span>
+                <span class="n">defaults</span><span class="o">=</span><span class="p">{</span>
+                    <span class="s2">"nome"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gru_nome"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">,</span>
+                    <span class="s2">"coresso_sis_id"</span><span class="p">:</span> <span class="n">item</span><span class="p">[</span><span class="s2">"sis_id"</span><span class="p">],</span>
+                    <span class="s2">"sistema"</span><span class="p">:</span> <span class="n">sistema</span><span class="p">,</span>
+                    <span class="s2">"kc_role_nome"</span><span class="p">:</span> <span class="n">_slugificar_role</span><span class="p">(</span>
+                        <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gru_nome"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">""</span>
+                    <span class="p">),</span>
+                    <span class="s2">"situacao"</span><span class="p">:</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gru_situacao"</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+                <span class="p">},</span>
+            <span class="p">)</span>
+            <span class="n">total</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"extrair_perfis_coresso — </span><span class="si">%d</span><span class="s2"> perfis"</span><span class="p">,</span> <span class="n">total</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">total</span></div>
+
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">extrair_vinculos_usuario_grupo_coresso</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">sis_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">gru_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Extrai vínculos usuário↔grupo ativos do CoreSSO.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        sis_id: Filtra por sistema (``SYS_Grupo.sis_id``).</span>
+<span class="sd">            None = todos os sistemas.</span>
+<span class="sd">        gru_id: Filtra por grupo (``SYS_Grupo.gru_id``).</span>
+<span class="sd">            None = todos os grupos.</span>
+
+<span class="sd">    Yields:</span>
+<span class="sd">        Dicionário com ``login``, ``cpf``, ``gru_id``,</span>
+<span class="sd">        ``gru_nome`` e ``sis_id``.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"CoreSSO SQL não configurado"</span> <span class="o">+</span> <span class="s2">" — skipping vínculos."</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">filtros_extra</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">excluidos</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_EXCLUDE_SISTEMA_IDS</span>
+    <span class="k">if</span> <span class="n">excluidos</span><span class="p">:</span>
+        <span class="n">filtros_extra</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+            <span class="s2">"AND g.sis_id NOT IN"</span> <span class="o">+</span> <span class="sa">f</span><span class="s2">" (</span><span class="si">{</span><span class="s1">','</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">excluidos</span><span class="p">)</span><span class="si">}</span><span class="s2">)"</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">sis_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">filtros_extra</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"AND g.sis_id = </span><span class="si">{</span><span class="nb">int</span><span class="p">(</span><span class="n">sis_id</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">gru_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">filtros_extra</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">"AND g.gru_id = '</span><span class="si">{</span><span class="n">gru_id</span><span class="si">}</span><span class="s2">'"</span><span class="p">)</span>
+    <span class="n">clausulas</span> <span class="o">=</span> <span class="s2">"</span><span class="se">\n</span><span class="s2">          "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">filtros_extra</span><span class="p">)</span>
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            u.usu_login     AS login,</span>
+<span class="s2">            doc.psd_numero  AS cpf,</span>
+<span class="s2">            pes.pes_nome    AS nome,</span>
+<span class="s2">            u.usu_email     AS email,</span>
+<span class="s2">            g.gru_id        AS gru_id,</span>
+<span class="s2">            g.gru_nome      AS gru_nome,</span>
+<span class="s2">            g.sis_id        AS sis_id</span>
+<span class="s2">        FROM SYS_Usuario u</span>
+<span class="s2">        INNER JOIN PES_Pessoa pes</span>
+<span class="s2">            ON pes.pes_id = u.pes_id</span>
+<span class="s2">        LEFT JOIN PES_PessoaDocumento doc</span>
+<span class="s2">            ON doc.pes_id = pes.pes_id</span>
+<span class="s2">            AND doc.tdo_id = (</span>
+<span class="s2">                SELECT TOP 1 tdo_id</span>
+<span class="s2">                FROM SYS_TipoDocumentacao</span>
+<span class="s2">                WHERE tdo_nome LIKE '%CPF%'</span>
+<span class="s2">            )</span>
+<span class="s2">        INNER JOIN SYS_UsuarioGrupo ug</span>
+<span class="s2">            ON ug.usu_id = u.usu_id</span>
+<span class="s2">        INNER JOIN SYS_Grupo g</span>
+<span class="s2">            ON g.gru_id = ug.gru_id</span>
+<span class="s2">        WHERE g.gru_situacao = 1</span>
+<span class="s2">          AND u.usu_situacao = 1</span>
+<span class="s2">          </span><span class="si">{</span><span class="n">clausulas</span><span class="si">}</span>
+<span class="s2">        ORDER BY u.usu_login, g.sis_id</span>
+<span class="s2">    """</span>
+    <span class="n">lote_maximo</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">ETL_LOTE_MAXIMO</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">)</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">linhas</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchmany</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">ETL_CHUNK_SIZE</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="k">for</span> <span class="n">linha</span> <span class="ow">in</span> <span class="n">linhas</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">lote_maximo</span> <span class="ow">and</span> <span class="n">total</span> <span class="o">&gt;=</span> <span class="n">lote_maximo</span><span class="p">:</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                        <span class="s2">"vinculos: limite"</span> <span class="o">+</span> <span class="s2">" ETL_LOTE_MAXIMO=</span><span class="si">%d</span><span class="s2"> atingido"</span><span class="p">,</span>
+                        <span class="n">lote_maximo</span><span class="p">,</span>
+                    <span class="p">)</span>
+                    <span class="k">return</span>
+                <span class="n">total</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="k">yield</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">linha</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">buscar_dados_usuario_coresso</span><span class="p">(</span>
+    <span class="n">identificador</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Busca dados completos de um usuário no CoreSSO.</span>
+
+<span class="sd">    Busca por login (RF), CPF ou email. Retorna dados</span>
+<span class="sd">    pessoais e todos os vínculos sistema↔grupo.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        identificador: RF, CPF ou email do usuário.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Dict com dados do usuário ou None se não encontrado.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">ident</span> <span class="o">=</span> <span class="n">identificador</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+    <span class="k">if</span> <span class="s2">"@"</span> <span class="ow">in</span> <span class="n">ident</span><span class="p">:</span>
+        <span class="n">filtro</span> <span class="o">=</span> <span class="s2">"u.usu_email = ?"</span>
+    <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="n">ident</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">7</span><span class="p">:</span>
+        <span class="n">filtro</span> <span class="o">=</span> <span class="s2">"doc.psd_numero = ?"</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">filtro</span> <span class="o">=</span> <span class="s2">"u.usu_login = ?"</span>
+
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            u.usu_login     AS login,</span>
+<span class="s2">            doc.psd_numero  AS cpf,</span>
+<span class="s2">            pes.pes_nome    AS nome,</span>
+<span class="s2">            u.usu_email     AS email,</span>
+<span class="s2">            u.usu_situacao  AS situacao,</span>
+<span class="s2">            g.gru_id        AS gru_id,</span>
+<span class="s2">            g.gru_nome      AS gru_nome,</span>
+<span class="s2">            g.sis_id        AS sis_id,</span>
+<span class="s2">            s.sis_nome      AS sis_nome</span>
+<span class="s2">        FROM SYS_Usuario u</span>
+<span class="s2">        INNER JOIN PES_Pessoa pes</span>
+<span class="s2">            ON pes.pes_id = u.pes_id</span>
+<span class="s2">        LEFT JOIN PES_PessoaDocumento doc</span>
+<span class="s2">            ON doc.pes_id = pes.pes_id</span>
+<span class="s2">            AND doc.tdo_id = (</span>
+<span class="s2">                SELECT TOP 1 tdo_id</span>
+<span class="s2">                FROM SYS_TipoDocumentacao</span>
+<span class="s2">                WHERE tdo_nome LIKE '%CPF%'</span>
+<span class="s2">            )</span>
+<span class="s2">        LEFT JOIN SYS_UsuarioGrupo ug</span>
+<span class="s2">            ON ug.usu_id = u.usu_id</span>
+<span class="s2">        LEFT JOIN SYS_Grupo g</span>
+<span class="s2">            ON g.gru_id = ug.gru_id</span>
+<span class="s2">            AND g.gru_situacao = 1</span>
+<span class="s2">        LEFT JOIN SYS_Sistema s</span>
+<span class="s2">            ON s.sis_id = g.sis_id</span>
+<span class="s2">        WHERE </span><span class="si">{</span><span class="n">filtro</span><span class="si">}</span>
+<span class="s2">        ORDER BY s.sis_nome, g.gru_nome</span>
+<span class="s2">    """</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">,</span> <span class="p">(</span><span class="n">ident</span><span class="p">,))</span>
+        <span class="n">rows</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchall</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">rows</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="n">resultado</span> <span class="o">=</span> <span class="n">_montar_resultado_usuario</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">resultado</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">resultado</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">):</span>
+        <span class="n">complemento</span> <span class="o">=</span> <span class="n">buscar_complemento_se1426</span><span class="p">(</span><span class="n">resultado</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"login"</span><span class="p">,</span> <span class="s2">""</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">complemento</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">resultado</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">):</span>
+                <span class="n">resultado</span><span class="p">[</span><span class="s2">"email"</span><span class="p">]</span> <span class="o">=</span> <span class="n">complemento</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"email"</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">resultado</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">):</span>
+                <span class="n">resultado</span><span class="p">[</span><span class="s2">"cpf"</span><span class="p">]</span> <span class="o">=</span> <span class="n">complemento</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">resultado</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">buscar_permissoes_usuario_coresso</span><span class="p">(</span><span class="n">gru_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Busca as permissões CRUD por módulo para os grupos informados.</span>
+
+<span class="sd">    Fonte real: ``SYS_GrupoPermissao``/``SYS_Modulo`` do CoreSSO —</span>
+<span class="sd">    uma matriz grupo×sistema×módulo com quatro flags booleanas</span>
+<span class="sd">    (consultar/inserir/alterar/excluir). Chamada em cadeia, com os</span>
+<span class="sd">    ``gru_id`` já obtidos de ``buscar_dados_usuario_coresso``, e não</span>
+<span class="sd">    numa única query com ``JOIN`` direto, para evitar a explosão</span>
+<span class="sd">    cartesiana de repetir os dados de perfil por módulo — um usuário</span>
+<span class="sd">    com poucos grupos pode ter centenas de módulos permissionados.</span>
+<span class="sd">    Só retorna módulos com ao menos uma permissão concedida (descarta</span>
+<span class="sd">    a maioria das combinações grupo×módulo, que vêm todas com as</span>
+<span class="sd">    quatro flags falsas).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        gru_ids: IDs dos grupos CoreSSO do usuário (``gru_id``).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Lista de dicts com ``sis_id``, ``sis_nome``, ``mod_id``,</span>
+<span class="sd">        ``mod_nome`` e as quatro flags CRUD.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_SERVIDOR</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">gru_ids</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[]</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">marcadores</span> <span class="o">=</span> <span class="s2">","</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">"?"</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">gru_ids</span><span class="p">)</span>
+    <span class="n">consulta</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            gp.sis_id          AS sis_id,</span>
+<span class="s2">            s.sis_nome         AS sis_nome,</span>
+<span class="s2">            gp.mod_id          AS mod_id,</span>
+<span class="s2">            m.mod_nome         AS mod_nome,</span>
+<span class="s2">            gp.grp_consultar   AS consultar,</span>
+<span class="s2">            gp.grp_inserir     AS inserir,</span>
+<span class="s2">            gp.grp_alterar     AS alterar,</span>
+<span class="s2">            gp.grp_excluir     AS excluir</span>
+<span class="s2">        FROM SYS_GrupoPermissao gp</span>
+<span class="s2">        LEFT JOIN SYS_Sistema s</span>
+<span class="s2">            ON s.sis_id = gp.sis_id</span>
+<span class="s2">        LEFT JOIN SYS_Modulo m</span>
+<span class="s2">            ON m.sis_id = gp.sis_id AND m.mod_id = gp.mod_id</span>
+<span class="s2">        WHERE gp.gru_id IN (</span><span class="si">{</span><span class="n">marcadores</span><span class="si">}</span><span class="s2">)</span>
+<span class="s2">          AND (</span>
+<span class="s2">              gp.grp_consultar = 1 OR gp.grp_inserir = 1</span>
+<span class="s2">              OR gp.grp_alterar = 1 OR gp.grp_excluir = 1</span>
+<span class="s2">          )</span>
+<span class="s2">    """</span>
+    <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="n">_string_conexao_coresso</span><span class="p">(),</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">CORESSO_DB_TIMEOUT</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+        <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">gru_ids</span><span class="p">))</span>
+        <span class="n">colunas</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">description</span><span class="p">]</span>
+        <span class="k">return</span> <span class="p">[</span>
+            <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">colunas</span><span class="p">,</span> <span class="n">row</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchall</span><span class="p">()</span>
+        <span class="p">]</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_montar_resultado_usuario</span><span class="p">(</span><span class="n">rows</span><span class="p">:</span> <span class="nb">list</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Monta o dict de resultado a partir das linhas SQL."""</span>
+    <span class="n">r0</span> <span class="o">=</span> <span class="n">rows</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">resultado</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">"login"</span><span class="p">:</span> <span class="p">(</span><span class="n">r0</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+        <span class="s2">"cpf"</span><span class="p">:</span> <span class="p">(</span><span class="n">r0</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+        <span class="s2">"nome"</span><span class="p">:</span> <span class="p">(</span><span class="n">r0</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+        <span class="s2">"email"</span><span class="p">:</span> <span class="n">_sanitizar_email</span><span class="p">(</span><span class="n">r0</span><span class="p">[</span><span class="mi">3</span><span class="p">])</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">,</span>
+        <span class="s2">"situacao"</span><span class="p">:</span> <span class="s2">"ativo"</span> <span class="k">if</span> <span class="n">r0</span><span class="p">[</span><span class="mi">4</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="s2">"inativo"</span><span class="p">,</span>
+        <span class="s2">"sistemas"</span><span class="p">:</span> <span class="p">{},</span>
+    <span class="p">}</span>
+    <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">rows</span><span class="p">:</span>
+        <span class="n">sis_id</span> <span class="o">=</span> <span class="n">r</span><span class="p">[</span><span class="mi">7</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">sis_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="n">sis_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">resultado</span><span class="p">[</span><span class="s2">"sistemas"</span><span class="p">]:</span>
+            <span class="n">resultado</span><span class="p">[</span><span class="s2">"sistemas"</span><span class="p">][</span><span class="n">sis_id</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s2">"sis_id"</span><span class="p">:</span> <span class="n">sis_id</span><span class="p">,</span>
+                <span class="s2">"nome"</span><span class="p">:</span> <span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="mi">8</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+                <span class="s2">"grupos"</span><span class="p">:</span> <span class="p">[],</span>
+            <span class="p">}</span>
+        <span class="n">resultado</span><span class="p">[</span><span class="s2">"sistemas"</span><span class="p">][</span><span class="n">sis_id</span><span class="p">][</span><span class="s2">"grupos"</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+            <span class="p">{</span><span class="s2">"gru_id"</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="mi">5</span><span class="p">]),</span> <span class="s2">"nome"</span><span class="p">:</span> <span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="mi">6</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()}</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">resultado</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">buscar_complemento_se1426</span><span class="p">(</span><span class="n">rf</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Busca dados complementares de um servidor no SE1426.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        rf: Registro Funcional do servidor.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Dict com ``email``, ``cpf``, ``nome`` ou None.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_SERVIDOR</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">rf</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">pyodbc</span>
+
+    <span class="n">consulta</span> <span class="o">=</span> <span class="s2">"""</span>
+<span class="s2">        SELECT</span>
+<span class="s2">            s.cd_registro_funcional  AS rf,</span>
+<span class="s2">            s.nm_pessoa              AS nome,</span>
+<span class="s2">            s.cd_cpf_pessoa          AS cpf,</span>
+<span class="s2">            e.dc_dispositivo         AS email</span>
+<span class="s2">        FROM v_servidor_sme_serap s</span>
+<span class="s2">        LEFT JOIN v_servidor_cotic sc</span>
+<span class="s2">            ON sc.cd_registro_funcional</span>
+<span class="s2">               = s.cd_registro_funcional</span>
+<span class="s2">        LEFT JOIN v_servidor_email_cotic e</span>
+<span class="s2">            ON e.cd_servidor = sc.cd_servidor</span>
+<span class="s2">            AND e.dt_fim IS NULL</span>
+<span class="s2">        WHERE s.cd_registro_funcional = ?</span>
+<span class="s2">    """</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">conn</span> <span class="o">=</span> <span class="n">pyodbc</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+            <span class="n">_string_conexao_se1426</span><span class="p">(),</span>
+            <span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">SE1426_DB_TIMEOUT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+            <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">consulta</span><span class="p">,</span> <span class="p">(</span><span class="n">rf</span><span class="o">.</span><span class="n">strip</span><span class="p">(),))</span>
+            <span class="n">row</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                <span class="k">return</span> <span class="kc">None</span>
+            <span class="k">return</span> <span class="p">{</span>
+                <span class="s2">"rf"</span><span class="p">:</span> <span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+                <span class="s2">"nome"</span><span class="p">:</span> <span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+                <span class="s2">"cpf"</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+                <span class="s2">"email"</span><span class="p">:</span> <span class="n">_sanitizar_email</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="mi">3</span><span class="p">])</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">,</span>
+            <span class="p">}</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+            <span class="s2">"SE1426: falha ao buscar RF '</span><span class="si">%s</span><span class="s2">': </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+            <span class="n">rf</span><span class="p">,</span>
+            <span class="n">exc</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_slugificar_role</span><span class="p">(</span><span class="n">nome</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">unicodedata</span>
+
+    <span class="n">s</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">unicodedata</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="s2">"NFKD"</span><span class="p">,</span> <span class="n">nome</span> <span class="ow">or</span> <span class="s2">""</span><span class="p">)</span>
+        <span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">,</span> <span class="s2">"ignore"</span><span class="p">)</span>
+        <span class="o">.</span><span class="n">decode</span><span class="p">()</span>
+    <span class="p">)</span>
+    <span class="n">s</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">"[^a-zA-Z0-9]+"</span><span class="p">,</span> <span class="s2">"_"</span><span class="p">,</span> <span class="n">s</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s2">"_"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">s</span> <span class="ow">or</span> <span class="s2">"perfil_sem_nome"</span>
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

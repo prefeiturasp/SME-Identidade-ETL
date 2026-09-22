@@ -1,0 +1,233 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Staging &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Resolução de Identidade" href="resolucao.html" />
+    <link rel="prev" title="Extração" href="extracao.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Pipeline ETL de Identidades</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html#etapas">Etapas</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="extracao.html">Extração</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Staging</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#modelos-de-staging">Modelos de staging</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#tasks-de-staging">Tasks de staging</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ciclo-de-vida-de-um-registro">Ciclo de vida de um registro</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#limpeza-de-staging">Limpeza de staging</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a></li>
+<li class="toctree-l3"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a></li>
+<li class="toctree-l3"><a class="reference internal" href="token_ms.html">Carga no token-ms</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Pipeline ETL de Identidades</a></li>
+      <li class="breadcrumb-item active">Staging</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/staging.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="staging">
+<h1>Staging<a class="headerlink" href="#staging" title="Link para este cabeçalho"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link para este cabeçalho"></a></h2>
+<p>Persistir os <code class="docutils literal notranslate"><span class="pre">RegistroIdentidade</span></code> extraídos em tabelas PostgreSQL intermediárias
+antes da resolução de identidade. O staging isola a extração da carga e
+permite retomada sem re-extrair das fontes.</p>
+</section>
+<hr class="docutils" />
+<section id="modelos-de-staging">
+<h2>Modelos de staging<a class="headerlink" href="#modelos-de-staging" title="Link para este cabeçalho"></a></h2>
+<p>Definidos em <code class="docutils literal notranslate"><span class="pre">apps/staging/models.py</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Modelo</p></th>
+<th class="head"><p>Tipo de usuário</p></th>
+<th class="head"><p>Tabela</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UsuarioServidorStaging</span></code></p></td>
+<td><p>Servidores (SE1426 / CoreSSO)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging_usuario_servidor</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UsuarioAlunoStaging</span></code></p></td>
+<td><p>Alunos (EOL_DB)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging_usuario_aluno</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UsuarioTerceiroStaging</span></code></p></td>
+<td><p>Terceiros / externos (CoreSSO)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging_usuario_terceiro</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SistemaStaging</span></code></p></td>
+<td><p>Sistemas CoreSSO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging_sistema</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PerfilCoressoStaging</span></code></p></td>
+<td><p>Grupos/perfis CoreSSO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging_perfil_coresso</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Todos os modelos de usuário herdam de <code class="docutils literal notranslate"><span class="pre">_UsuarioStagingBase</span></code>, que define:
+<code class="docutils literal notranslate"><span class="pre">id_execucao</span></code>, <code class="docutils literal notranslate"><span class="pre">fonte</span></code>, <code class="docutils literal notranslate"><span class="pre">id_origem</span></code>, <code class="docutils literal notranslate"><span class="pre">cpf</span></code>, <code class="docutils literal notranslate"><span class="pre">rf</span></code>, <code class="docutils literal notranslate"><span class="pre">nome</span></code>, <code class="docutils literal notranslate"><span class="pre">email</span></code>,
+<code class="docutils literal notranslate"><span class="pre">situacao</span></code>, <code class="docutils literal notranslate"><span class="pre">situacao</span></code> (ETL: <code class="docutils literal notranslate"><span class="pre">extraido</span></code> → <code class="docutils literal notranslate"><span class="pre">pronto</span></code> / <code class="docutils literal notranslate"><span class="pre">erro</span></code>), <code class="docutils literal notranslate"><span class="pre">detalhe_erro</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">fonte</span></code> normalmente reflete a origem da extração (<code class="docutils literal notranslate"><span class="pre">se1426</span></code>, <code class="docutils literal notranslate"><span class="pre">coresso</span></code>,
+<code class="docutils literal notranslate"><span class="pre">eol_alunos</span></code>), mas o endpoint <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/etl/usuario/criar/</span></code> também
+materializa registros diretamente com <code class="docutils literal notranslate"><span class="pre">fonte=&quot;api_manual&quot;</span></code> — usuários sem
+vínculo prévio no CoreSSO, criados a partir de dados informados na
+requisição em vez de um pipeline de extração. Ver
+<a class="reference internal" href="../controle/api.html"><span class="std std-doc">API REST de Controle</span></a>.</p>
+</section>
+<hr class="docutils" />
+<section id="tasks-de-staging">
+<h2>Tasks de staging<a class="headerlink" href="#tasks-de-staging" title="Link para este cabeçalho"></a></h2>
+<p>Definidas em <code class="docutils literal notranslate"><span class="pre">apps/staging/tasks.py</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Task</p></th>
+<th class="head"><p>Função</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">persistir_extracao_staging</span></code></p></td>
+<td><p>Salva <code class="docutils literal notranslate"><span class="pre">RegistroIdentidade</span></code> nos modelos corretos via <code class="docutils literal notranslate"><span class="pre">bulk_create</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">transformar_staging</span></code></p></td>
+<td><p>Valida e normaliza os registros; muda <code class="docutils literal notranslate"><span class="pre">situacao</span></code> para <code class="docutils literal notranslate"><span class="pre">pronto</span></code> ou <code class="docutils literal notranslate"><span class="pre">erro</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">deduplicar_identidades</span></code></p></td>
+<td><p>Elege um registro vencedor por CPF e por RF; marca os demais como <code class="docutils literal notranslate"><span class="pre">duplicado</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="ciclo-de-vida-de-um-registro">
+<h2>Ciclo de vida de um registro<a class="headerlink" href="#ciclo-de-vida-de-um-registro" title="Link para este cabeçalho"></a></h2>
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    EXT  [label=&quot;extraido&quot;];
+    PRNT [label=&quot;pronto&quot;];
+    ERR  [label=&quot;erro&quot;];
+    DUP  [label=&quot;duplicado&quot;];
+    CARR [label=&quot;carregado&quot;];
+
+    EXT  -&gt; PRNT [label=&quot;transformar_staging\n(validacao OK)&quot;];
+    EXT  -&gt; ERR  [label=&quot;transformar_staging\n(CPF e nome ausentes)&quot;];
+    PRNT -&gt; DUP  [label=&quot;deduplicar_identidades\n(perdedor)&quot;];
+    PRNT -&gt; CARR [label=&quot;provisionar_usuario_kc\n(sucesso)&quot;];
+}</section>
+<hr class="docutils" />
+<section id="limpeza-de-staging">
+<h2>Limpeza de staging<a class="headerlink" href="#limpeza-de-staging" title="Link para este cabeçalho"></a></h2>
+<p>Após a execução, <code class="docutils literal notranslate"><span class="pre">task_identidade_limpar_staging</span></code> remove registros de
+execuções antigas, mantendo as <code class="docutils literal notranslate"><span class="pre">ETL_MANTER_ULTIMAS_EXECUCOES</span></code> (padrão 3)
+mais recentes com sucesso.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="extracao.html" class="btn btn-neutral float-left" title="Extração" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="resolucao.html" class="btn btn-neutral float-right" title="Resolução de Identidade" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

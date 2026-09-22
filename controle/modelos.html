@@ -1,0 +1,427 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Modelos de Controle &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="API REST de Controle" href="api.html" />
+    <link rel="prev" title="Controle e Auditoria de Execução" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Controle e Auditoria de Execução</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Modelos de Controle</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#execucaoetl">ExecucaoETL</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#logetapaetl">LogEtapaETL</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#controleprovisionamento">ControleProvisionamento</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#checkpointetl">CheckpointEtl</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#marcadaguaextracao">MarcaDaguaExtracao</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#rastreiotentativa">RastreioTentativa</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API REST de Controle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="comandos.html">Comandos de Gestão</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Controle e Auditoria de Execução</a></li>
+      <li class="breadcrumb-item active">Modelos de Controle</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/controle/modelos.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="modelos-de-controle">
+<h1>Modelos de Controle<a class="headerlink" href="#modelos-de-controle" title="Link para este cabeçalho"></a></h1>
+<p>Definidos em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/models.py</span></code>.</p>
+<hr class="docutils" />
+<section id="execucaoetl">
+<h2>ExecucaoETL<a class="headerlink" href="#execucaoetl" title="Link para este cabeçalho"></a></h2>
+<p>Registro central de cada disparo do pipeline.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id_execucao</span></code></p></td>
+<td><p>UUID (PK)</p></td>
+<td><p>Identificador único da execução</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fonte</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;se1426&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;coresso&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;eol_alunos&quot;</span></code> ou <code class="docutils literal notranslate"><span class="pre">&quot;todos&quot;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">realm_destino</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Realm Keycloak de destino</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">situacao</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pendente</span></code> / <code class="docutils literal notranslate"><span class="pre">executando</span></code> / <code class="docutils literal notranslate"><span class="pre">sucesso</span></code> / <code class="docutils literal notranslate"><span class="pre">parcial</span></code> / <code class="docutils literal notranslate"><span class="pre">falha</span></code> / <code class="docutils literal notranslate"><span class="pre">cancelado</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tipo_disparo</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;agendado&quot;</span></code> (Beat) / <code class="docutils literal notranslate"><span class="pre">&quot;manual&quot;</span></code> (API)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">iniciado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamp de início</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">finalizado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamp de conclusão</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_extraido</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Total de registros extraídos</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_transformado</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Total após transformação</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_carregado</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Total provisionado no Keycloak</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_erros</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Total de erros de provisionamento</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">id_tarefa_celery</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>ID da task Celery associada</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="logetapaetl">
+<h2>LogEtapaETL<a class="headerlink" href="#logetapaetl" title="Link para este cabeçalho"></a></h2>
+<p>Rastreio de cada etapa dentro de uma execução.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">execucao</span></code></p></td>
+<td><p>FK → ExecucaoETL</p></td>
+<td><p>Execução pai</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nome_etapa</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Nome da task Celery (ver <code class="docutils literal notranslate"><span class="pre">LogEtapaETL.NomeEtapa</span></code>, 1 a 6)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ordem_etapa</span></code></p></td>
+<td><p>PositiveSmallIntegerField</p></td>
+<td><p>Ordem de execução</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">situacao</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">executando</span></code> / <code class="docutils literal notranslate"><span class="pre">sucesso</span></code> / <code class="docutils literal notranslate"><span class="pre">falha</span></code> / <code class="docutils literal notranslate"><span class="pre">ignorado</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">iniciado_em</span></code> / <code class="docutils literal notranslate"><span class="pre">finalizado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamps</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">registros_entrada</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Registros recebidos pela etapa</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">registros_saida</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Registros processados com sucesso</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">registros_erro</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Registros com erro</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">metadados</span></code></p></td>
+<td><p>JSONField</p></td>
+<td><p>Dados extras (ex.: <code class="docutils literal notranslate"><span class="pre">{&quot;ignorados&quot;:</span> <span class="pre">12}</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="controleprovisionamento">
+<h2>ControleProvisionamento<a class="headerlink" href="#controleprovisionamento" title="Link para este cabeçalho"></a></h2>
+<p>Histórico de provisionamento por entidade — chave
+<code class="docutils literal notranslate"><span class="pre">(tipo_entidade,</span> <span class="pre">sistema_origem,</span> <span class="pre">id_origem,</span> <span class="pre">realm_destino)</span></code>, persistente
+entre execuções (sobrevive à limpeza de staging). Guarda <strong>3 hashes
+independentes</strong>, um por estágio do pipeline — cada estágio decide, sem
+depender dos outros, se precisa reexecutar. Os 3 hashes precisam bater
+para o registro inteiro ser ignorado; onde um não bate, aquele estágio
+(e os que dependem dele) reexecuta, mesmo que os outros já estejam
+confirmados. Ver <a class="reference internal" href="../pipeline/keycloak.html"><span class="std std-doc">Provisionamento Keycloak</span></a> e
+<a class="reference internal" href="../pipeline/token_ms.html"><span class="std std-doc">Carga no token-ms</span></a> para o fluxo de decisão.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tipo_entidade</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;usuario&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;grupo&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;role&quot;</span></code> ou <code class="docutils literal notranslate"><span class="pre">&quot;client&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sistema_origem</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Fonte de origem</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id_origem</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>CPF (prioridade), senão RF, senão PK do staging</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">id_destino</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>ID da entidade no Keycloak</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">realm_destino</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Realm Keycloak de destino</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash_extracao</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>SHA-256 dos campos do staging pós-extração/resolução — muda quando o dado da fonte muda</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hash_keycloak</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>SHA-256 do payload enviado ao Keycloak (antigo <code class="docutils literal notranslate"><span class="pre">hash_conteudo</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>SHA-256 do payload enviado ao token-ms</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">token_ms_pendente</span></code></p></td>
+<td><p>BooleanField</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">True</span></code> quando <code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code> está desatualizado — localiza pendências de envio sem depender do staging (limpo periodicamente)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">versao</span></code></p></td>
+<td><p>PositiveIntegerField</p></td>
+<td><p>Incrementada a cada atualização real no Keycloak</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ativo</span></code></p></td>
+<td><p>BooleanField</p></td>
+<td><p>Situação ativa/inativa do registro</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">erro_sincronizacao</span></code></p></td>
+<td><p>TextField</p></td>
+<td><p>Último erro de sincronização, se houver</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ultima_execucao</span></code></p></td>
+<td><p>FK → ExecucaoETL</p></td>
+<td><p>Última execução que processou esta entidade</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="checkpointetl">
+<h2>CheckpointEtl<a class="headerlink" href="#checkpointetl" title="Link para este cabeçalho"></a></h2>
+<p>Permite retomada da execução por etapa após falha.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id_execucao</span></code></p></td>
+<td><p>UUID</p></td>
+<td><p>Execução associada</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">etapa</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Nome da task interrompida</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pagina_atual</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Último lote processado</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ultimo_id_processado</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Último ID de registro processado</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">estado_json</span></code></p></td>
+<td><p>JSONField</p></td>
+<td><p>Estado adicional para retomada</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="marcadaguaextracao">
+<h2>MarcaDaguaExtracao<a class="headerlink" href="#marcadaguaextracao" title="Link para este cabeçalho"></a></h2>
+<p>Watermark incremental por fonte — evita re-extração completa.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fonte</span></code></p></td>
+<td><p>CharField (PK)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;se1426&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;coresso&quot;</span></code> ou <code class="docutils literal notranslate"><span class="pre">&quot;eol_alunos&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ultimo_processado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamp do último registro processado com sucesso</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ultima_pagina</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Última página paginada</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_processado</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Total acumulado de registros processados</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">atualizado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamp da última atualização</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="rastreiotentativa">
+<h2>RastreioTentativa<a class="headerlink" href="#rastreiotentativa" title="Link para este cabeçalho"></a></h2>
+<p>Registrado em <code class="docutils literal notranslate"><span class="pre">sync_rec_db</span></code> a cada tentativa de execução de uma task.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Tipo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id_execucao</span></code></p></td>
+<td><p>UUID</p></td>
+<td><p>Execução associada</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nome_tarefa</span></code></p></td>
+<td><p>CharField</p></td>
+<td><p>Nome da task Celery</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">numero_tentativa</span></code></p></td>
+<td><p>IntegerField</p></td>
+<td><p>Número da tentativa (base 1)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">erro</span></code></p></td>
+<td><p>TextField</p></td>
+<td><p>Mensagem de erro (se houver)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">duracao_segundos</span></code></p></td>
+<td><p>FloatField</p></td>
+<td><p>Duração da tentativa</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">registrado_em</span></code></p></td>
+<td><p>DateTimeField</p></td>
+<td><p>Timestamp</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="index.html" class="btn btn-neutral float-left" title="Controle e Auditoria de Execução" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="api.html" class="btn btn-neutral float-right" title="API REST de Controle" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,197 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resolução de Identidade &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Provisionamento Keycloak" href="keycloak.html" />
+    <link rel="prev" title="Staging" href="staging.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Pipeline ETL de Identidades</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html#etapas">Etapas</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="extracao.html">Extração</a></li>
+<li class="toctree-l3"><a class="reference internal" href="staging.html">Staging</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Resolução de Identidade</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#task">Task</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#regra-de-deduplicacao">Regra de deduplicação</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#regra-de-username-no-keycloak">Regra de username no Keycloak</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#crossref-entre-execucoes">Crossref entre execuções</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a></li>
+<li class="toctree-l3"><a class="reference internal" href="token_ms.html">Carga no token-ms</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Pipeline ETL de Identidades</a></li>
+      <li class="breadcrumb-item active">Resolução de Identidade</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/resolucao.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="resolucao-de-identidade">
+<h1>Resolução de Identidade<a class="headerlink" href="#resolucao-de-identidade" title="Link para este cabeçalho"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link para este cabeçalho"></a></h2>
+<p>Consolidar os registros de staging em identidades únicas, eliminando
+duplicatas entre fontes e dentro da mesma fonte, antes do provisionamento.</p>
+</section>
+<hr class="docutils" />
+<section id="task">
+<h2>Task<a class="headerlink" href="#task" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">task_identidade_resolver_identidade</span></code> em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code>.</p>
+<p>Chama em sequência:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">transformar_staging</span></code> — normaliza e valida cada registro</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">deduplicar_identidades</span></code> — elege vencedores por CPF e por RF</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="regra-de-deduplicacao">
+<h2>Regra de deduplicação<a class="headerlink" href="#regra-de-deduplicacao" title="Link para este cabeçalho"></a></h2>
+<p>Definida em <code class="docutils literal notranslate"><span class="pre">apps/staging/tasks.py</span></code> (<code class="docutils literal notranslate"><span class="pre">deduplicar_identidades</span></code>):</p>
+<p><strong>Prioridade de fonte (menor = mais confiável):</strong></p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Fonte</p></th>
+<th class="head"><p>Prioridade</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">se1426</span></code></p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">eol_db</span></code></p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">coresso</span></code></p></td>
+<td><p>3</p></td>
+</tr>
+</tbody>
+</table>
+<p>Para registros com o mesmo CPF, vence o de menor prioridade (fonte mais
+confiável). Em caso de empate, vence o de maior <code class="docutils literal notranslate"><span class="pre">id</span></code>.</p>
+<p>O mesmo critério se aplica para deduplicação por RF.</p>
+<p>Registros perdedores têm <code class="docutils literal notranslate"><span class="pre">situacao</span></code> alterada para <code class="docutils literal notranslate"><span class="pre">duplicado</span></code> e não são
+enviados ao Keycloak.</p>
+</section>
+<hr class="docutils" />
+<section id="regra-de-username-no-keycloak">
+<h2>Regra de username no Keycloak<a class="headerlink" href="#regra-de-username-no-keycloak" title="Link para este cabeçalho"></a></h2>
+<p>Definida em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/orquestrador_kc._resolver_username</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>RF  →  CPF  →  matricula  →  "{fonte}-{id}"
+</pre></div>
+</div>
+<p>Servidores com RF preferem RF; alunos e terceiros preferem CPF.
+Se nenhum identificador estiver disponível, o fallback é <code class="docutils literal notranslate"><span class="pre">&quot;{fonte}-{id}&quot;</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="crossref-entre-execucoes">
+<h2>Crossref entre execuções<a class="headerlink" href="#crossref-entre-execucoes" title="Link para este cabeçalho"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ControleProvisionamento</span></code> em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/models.py</span></code> registra a última
+situação de cada entidade por <code class="docutils literal notranslate"><span class="pre">(tipo_entidade,</span> <span class="pre">sistema_origem,</span> <span class="pre">id_origem)</span></code>.
+Isso permite que o provisionamento detecte atualizações e ignore registros
+sem alteração de conteúdo (via hash SHA-256).</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="staging.html" class="btn btn-neutral float-left" title="Staging" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="keycloak.html" class="btn btn-neutral float-right" title="Provisionamento Keycloak" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

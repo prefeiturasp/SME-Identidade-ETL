@@ -1,0 +1,608 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apps.controle_etl.serializers &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../../_static/translations.js?v=71a39b36"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../../../genindex.html" />
+    <link rel="search" title="Buscar" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Código do módulo</a></li>
+      <li class="breadcrumb-item active">apps.controle_etl.serializers</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Código-fonte para apps.controle_etl.serializers</h1><div class="highlight"><pre>
+<span></span><span class="sd">"""Serializadores DRF da app controle_etl."""</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.conf</span><span class="w"> </span><span class="kn">import</span> <span class="n">settings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework</span><span class="w"> </span><span class="kn">import</span> <span class="n">serializers</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.models</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">CheckpointEtl</span><span class="p">,</span>
+    <span class="n">ControleProvisionamento</span><span class="p">,</span>
+    <span class="n">ExecucaoETL</span><span class="p">,</span>
+    <span class="n">LogEtapaETL</span><span class="p">,</span>
+    <span class="n">MarcaDaguaExtracao</span><span class="p">,</span>
+    <span class="n">RastreioTentativa</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">_HT_REALM</span> <span class="o">=</span> <span class="s2">"Realm Keycloak."</span>
+<span class="n">_HT_FILTRAR_SIS_ID</span> <span class="o">=</span> <span class="s2">"Filtrar por coresso_sis_id."</span>
+<span class="n">_HT_FILTRAR_GRU_ID</span> <span class="o">=</span> <span class="s2">"Filtrar por coresso_gru_id."</span>
+
+
+<div class="viewcode-block" id="LogEtapaETLSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.LogEtapaETLSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">LogEtapaETLSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa o log de uma etapa do pipeline ETL."""</span>
+
+<div class="viewcode-block" id="LogEtapaETLSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.LogEtapaETLSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">LogEtapaETL</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"nome_etapa"</span><span class="p">,</span>
+            <span class="s2">"ordem_etapa"</span><span class="p">,</span>
+            <span class="s2">"situacao"</span><span class="p">,</span>
+            <span class="s2">"registros_entrada"</span><span class="p">,</span>
+            <span class="s2">"registros_saida"</span><span class="p">,</span>
+            <span class="s2">"registros_erro"</span><span class="p">,</span>
+            <span class="s2">"iniciado_em"</span><span class="p">,</span>
+            <span class="s2">"finalizado_em"</span><span class="p">,</span>
+            <span class="s2">"detalhe_erro"</span><span class="p">,</span>
+            <span class="s2">"metadados"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="ExecucaoETLSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ExecucaoETLSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ExecucaoETLSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa uma execução ETL com suas etapas."""</span>
+
+    <span class="n">etapas</span> <span class="o">=</span> <span class="n">LogEtapaETLSerializer</span><span class="p">(</span><span class="n">many</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">read_only</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">duracao_segundos</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">FloatField</span><span class="p">(</span><span class="n">read_only</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ExecucaoETLSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ExecucaoETLSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">ExecucaoETL</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"id_execucao"</span><span class="p">,</span>
+            <span class="s2">"fonte"</span><span class="p">,</span>
+            <span class="s2">"realm_destino"</span><span class="p">,</span>
+            <span class="s2">"tipo_disparo"</span><span class="p">,</span>
+            <span class="s2">"situacao"</span><span class="p">,</span>
+            <span class="s2">"total_extraido"</span><span class="p">,</span>
+            <span class="s2">"total_transformado"</span><span class="p">,</span>
+            <span class="s2">"total_carregado"</span><span class="p">,</span>
+            <span class="s2">"total_erros"</span><span class="p">,</span>
+            <span class="s2">"total_ignorados"</span><span class="p">,</span>
+            <span class="s2">"iniciado_em"</span><span class="p">,</span>
+            <span class="s2">"finalizado_em"</span><span class="p">,</span>
+            <span class="s2">"criado_em"</span><span class="p">,</span>
+            <span class="s2">"atualizado_em"</span><span class="p">,</span>
+            <span class="s2">"id_tarefa_celery"</span><span class="p">,</span>
+            <span class="s2">"observacao"</span><span class="p">,</span>
+            <span class="s2">"disparado_por"</span><span class="p">,</span>
+            <span class="s2">"duracao_segundos"</span><span class="p">,</span>
+            <span class="s2">"etapas"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"id_execucao"</span><span class="p">,</span>
+            <span class="s2">"situacao"</span><span class="p">,</span>
+            <span class="s2">"total_extraido"</span><span class="p">,</span>
+            <span class="s2">"total_transformado"</span><span class="p">,</span>
+            <span class="s2">"total_carregado"</span><span class="p">,</span>
+            <span class="s2">"total_erros"</span><span class="p">,</span>
+            <span class="s2">"total_ignorados"</span><span class="p">,</span>
+            <span class="s2">"iniciado_em"</span><span class="p">,</span>
+            <span class="s2">"finalizado_em"</span><span class="p">,</span>
+            <span class="s2">"criado_em"</span><span class="p">,</span>
+            <span class="s2">"atualizado_em"</span><span class="p">,</span>
+            <span class="s2">"id_tarefa_celery"</span><span class="p">,</span>
+            <span class="s2">"duracao_segundos"</span><span class="p">,</span>
+            <span class="s2">"etapas"</span><span class="p">,</span>
+        <span class="p">]</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="CriarExecucaoETLSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.CriarExecucaoETLSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">CriarExecucaoETLSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa a criação de uma execução ETL via API."""</span>
+
+    <span class="n">fonte</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ChoiceField</span><span class="p">(</span>
+        <span class="n">choices</span><span class="o">=</span><span class="p">[</span><span class="s2">"todos"</span><span class="p">,</span> <span class="s2">"se1426"</span><span class="p">,</span> <span class="s2">"coresso"</span><span class="p">,</span> <span class="s2">"eol_alunos"</span><span class="p">],</span>
+        <span class="n">default</span><span class="o">=</span><span class="s2">"todos"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm_destino</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">observacao</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ListarExecucaoETLSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ListarExecucaoETLSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ListarExecucaoETLSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa listagem resumida de execuções ETL."""</span>
+
+<div class="viewcode-block" id="ListarExecucaoETLSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ListarExecucaoETLSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">ExecucaoETL</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"id_execucao"</span><span class="p">,</span>
+            <span class="s2">"fonte"</span><span class="p">,</span>
+            <span class="s2">"situacao"</span><span class="p">,</span>
+            <span class="s2">"total_extraido"</span><span class="p">,</span>
+            <span class="s2">"total_carregado"</span><span class="p">,</span>
+            <span class="s2">"total_erros"</span><span class="p">,</span>
+            <span class="s2">"criado_em"</span><span class="p">,</span>
+            <span class="s2">"iniciado_em"</span><span class="p">,</span>
+            <span class="s2">"finalizado_em"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="ControleProvisionamentoSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ControleProvisionamentoSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ControleProvisionamentoSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa o controle de provisionamento de entidades.</span>
+
+<span class="sd">    ``keycloak_confirmado``/``token_ms_confirmado`` são campos</span>
+<span class="sd">    derivados dos hashes por estágio — permitem consultar, por</span>
+<span class="sd">    usuário, se cada sistema de destino já confirmou o dado atual,</span>
+<span class="sd">    sem expor os hashes brutos.</span>
+<span class="sd">    """</span>
+
+    <span class="n">keycloak_confirmado</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">SerializerMethodField</span><span class="p">()</span>
+    <span class="n">token_ms_confirmado</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">SerializerMethodField</span><span class="p">()</span>
+
+<div class="viewcode-block" id="ControleProvisionamentoSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ControleProvisionamentoSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">ControleProvisionamento</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"tipo_entidade"</span><span class="p">,</span>
+            <span class="s2">"sistema_origem"</span><span class="p">,</span>
+            <span class="s2">"id_origem"</span><span class="p">,</span>
+            <span class="s2">"id_destino"</span><span class="p">,</span>
+            <span class="s2">"realm_destino"</span><span class="p">,</span>
+            <span class="s2">"hash_extracao"</span><span class="p">,</span>
+            <span class="s2">"hash_keycloak"</span><span class="p">,</span>
+            <span class="s2">"hash_token_ms"</span><span class="p">,</span>
+            <span class="s2">"keycloak_confirmado"</span><span class="p">,</span>
+            <span class="s2">"token_ms_confirmado"</span><span class="p">,</span>
+            <span class="s2">"versao"</span><span class="p">,</span>
+            <span class="s2">"ativo"</span><span class="p">,</span>
+            <span class="s2">"erro_sincronizacao"</span><span class="p">,</span>
+            <span class="s2">"sincronizado_em"</span><span class="p">,</span>
+            <span class="s2">"criado_em"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+
+
+<div class="viewcode-block" id="ControleProvisionamentoSerializer.get_keycloak_confirmado">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ControleProvisionamentoSerializer.get_keycloak_confirmado">[documentos]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_keycloak_confirmado</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obj</span><span class="p">:</span> <span class="n">ControleProvisionamento</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Indica se o Keycloak já confirmou o dado atual do registro."""</span>
+        <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">id_destino</span> <span class="ow">and</span> <span class="n">obj</span><span class="o">.</span><span class="n">hash_keycloak</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ControleProvisionamentoSerializer.get_token_ms_confirmado">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ControleProvisionamentoSerializer.get_token_ms_confirmado">[documentos]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_token_ms_confirmado</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obj</span><span class="p">:</span> <span class="n">ControleProvisionamento</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Indica se o token-ms já confirmou o dado atual do registro."""</span>
+        <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">hash_token_ms</span><span class="p">)</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="IdentidadeKeycloakSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.IdentidadeKeycloakSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">IdentidadeKeycloakSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa uma conta de usuário consultada diretamente no Keycloak."""</span>
+
+    <span class="n">kc_user_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span>
+    <span class="n">nome</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span>
+    <span class="n">email</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">allow_null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">ativo</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">BooleanField</span><span class="p">()</span>
+    <span class="n">cpf</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">allow_null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">rf</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">allow_null</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">kc_url</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span></div>
+
+
+
+<div class="viewcode-block" id="MarcaDaguaExtracaoSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.MarcaDaguaExtracaoSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MarcaDaguaExtracaoSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa o watermark de extração por fonte."""</span>
+
+<div class="viewcode-block" id="MarcaDaguaExtracaoSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.MarcaDaguaExtracaoSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">MarcaDaguaExtracao</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"fonte"</span><span class="p">,</span>
+            <span class="s2">"ultimo_processado_em"</span><span class="p">,</span>
+            <span class="s2">"ultima_pagina"</span><span class="p">,</span>
+            <span class="s2">"total_processado"</span><span class="p">,</span>
+            <span class="s2">"atualizado_em"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="CheckpointEtlSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.CheckpointEtlSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">CheckpointEtlSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa um checkpoint de retomada de execução."""</span>
+
+<div class="viewcode-block" id="CheckpointEtlSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.CheckpointEtlSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">CheckpointEtl</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id_execucao"</span><span class="p">,</span>
+            <span class="s2">"etapa"</span><span class="p">,</span>
+            <span class="s2">"pagina_atual"</span><span class="p">,</span>
+            <span class="s2">"ultimo_id_processado"</span><span class="p">,</span>
+            <span class="s2">"estado_json"</span><span class="p">,</span>
+            <span class="s2">"atualizado_em"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="RastreioTentativaSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.RastreioTentativaSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">RastreioTentativaSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa o rastreio de tentativas de uma tarefa."""</span>
+
+<div class="viewcode-block" id="RastreioTentativaSerializer.Meta">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.RastreioTentativaSerializer.Meta">[documentos]</a>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">RastreioTentativa</span>
+        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">"id"</span><span class="p">,</span>
+            <span class="s2">"id_execucao"</span><span class="p">,</span>
+            <span class="s2">"nome_tarefa"</span><span class="p">,</span>
+            <span class="s2">"numero_tentativa"</span><span class="p">,</span>
+            <span class="s2">"iniciado_em"</span><span class="p">,</span>
+            <span class="s2">"erro"</span><span class="p">,</span>
+            <span class="s2">"duracao_segundos"</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="n">read_only_fields</span> <span class="o">=</span> <span class="n">fields</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="SincronizarUsuarioSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.SincronizarUsuarioSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SincronizarUsuarioSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de sincronização de usuário."""</span>
+
+    <span class="n">identificador</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"RF, CPF ou email do usuário."</span>
+    <span class="p">)</span>
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="CriarUsuarioManualSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.CriarUsuarioManualSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">CriarUsuarioManualSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de criação de usuário sem vínculo no CoreSSO.</span>
+
+<span class="sd">    Usado quando o usuário ainda não existe em nenhuma fonte legada</span>
+<span class="sd">    (SE1426/CoreSSO/EOL) — os dados vêm diretamente da requisição,</span>
+<span class="sd">    não de uma extração. É materializado como registro de staging</span>
+<span class="sd">    com ``fonte="api_manual"`` e provisionado no Keycloak pelo mesmo</span>
+<span class="sd">    caminho (``provisionar_usuario_kc``) usado pelo pipeline.</span>
+
+<span class="sd">    ``sistema``/``roles`` são opcionais: quando informados, o</span>
+<span class="sd">    permissionamento é concedido na mesma chamada (reaproveitando o</span>
+<span class="sd">    núcleo de ``conceder_acesso_kc``), evitando uma segunda</span>
+<span class="sd">    requisição só para conceder acesso a um usuário recém-criado.</span>
+<span class="sd">    """</span>
+
+    <span class="n">nome</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span>
+    <span class="n">cpf</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">email</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">EmailField</span><span class="p">()</span>
+    <span class="n">rf</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span><span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">tipo_usuario</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ChoiceField</span><span class="p">(</span>
+        <span class="n">choices</span><span class="o">=</span><span class="p">[</span><span class="s2">"servidor"</span><span class="p">,</span> <span class="s2">"aluno"</span><span class="p">,</span> <span class="s2">"terceiro"</span><span class="p">],</span>
+        <span class="n">default</span><span class="o">=</span><span class="s2">"terceiro"</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">sistema</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"coresso_sis_id do sistema alvo (opcional)."</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">roles</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ListField</span><span class="p">(</span>
+        <span class="n">child</span><span class="o">=</span><span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(),</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Nomes dos roles/perfis a conceder (opcional)."</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+
+<div class="viewcode-block" id="CriarUsuarioManualSerializer.validate">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.CriarUsuarioManualSerializer.validate">[documentos]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dados</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Exige identificador e, se houver roles, também o sistema.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            dados: Campos já validados individualmente.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Os mesmos dados, se a validação cruzada passar.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            ValidationError: Se nem CPF nem RF forem informados, ou</span>
+<span class="sd">                se ``roles`` vier sem ``sistema`` (ou vice-versa).</span>
+<span class="sd">        """</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">dados</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cpf"</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">dados</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"rf"</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ValidationError</span><span class="p">(</span><span class="s2">"Informe ao menos cpf ou rf."</span><span class="p">)</span>
+        <span class="n">tem_sistema</span> <span class="o">=</span> <span class="s2">"sistema"</span> <span class="ow">in</span> <span class="n">dados</span>
+        <span class="n">tem_roles</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">dados</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"roles"</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">tem_roles</span> <span class="o">!=</span> <span class="n">tem_sistema</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ValidationError</span><span class="p">(</span>
+                <span class="s2">"Informe sistema e roles juntos, ou nenhum dos dois."</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">dados</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="ConcederAcessoSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ConcederAcessoSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ConcederAcessoSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de concessão de acesso a sistema."""</span>
+
+    <span class="n">identificador</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"RF, CPF ou email do usuário."</span>
+    <span class="p">)</span>
+    <span class="n">sistema</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"coresso_sis_id do sistema alvo."</span>
+    <span class="p">)</span>
+    <span class="n">roles</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ListField</span><span class="p">(</span>
+        <span class="n">child</span><span class="o">=</span><span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(),</span>
+        <span class="n">min_length</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Nomes dos roles/perfis a conceder."</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">KEYCLOAK_REALM</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ProvisionarSistemasSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ProvisionarSistemasSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ProvisionarSistemasSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de provisionamento de sistemas."""</span>
+
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">sigla</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Filtrar por sigla do sistema."</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_sis_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_SIS_ID</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ProvisionarPerfisSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ProvisionarPerfisSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ProvisionarPerfisSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de provisionamento de perfis."""</span>
+
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_sis_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_SIS_ID</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_gru_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_GRU_ID</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ExtrairVinculosSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ExtrairVinculosSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ExtrairVinculosSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de extração de vínculos."""</span>
+
+    <span class="n">coresso_sis_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_SIS_ID</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_gru_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_GRU_ID</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="ProvisionarVinculosSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.ProvisionarVinculosSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ProvisionarVinculosSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload de provisionamento de vínculos."""</span>
+
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_sis_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_SIS_ID</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">coresso_gru_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_FILTRAR_GRU_ID</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="PipelineSistemaSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.PipelineSistemaSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">PipelineSistemaSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Valida payload do pipeline completo por sistema."""</span>
+
+    <span class="n">coresso_sis_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">IntegerField</span><span class="p">(</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"ID do sistema no CoreSSO (obrigatório)."</span>
+    <span class="p">)</span>
+    <span class="n">coresso_gru_id</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Filtrar por grupo específico."</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">realm</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">CharField</span><span class="p">(</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">allow_blank</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="n">_HT_REALM</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">forcar_atualizacao</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">BooleanField</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">help_text</span><span class="o">=</span><span class="s2">"Forçar atualização mesmo sem mudanças."</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="HealthStatusSerializer">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.serializers.HealthStatusSerializer">[documentos]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">HealthStatusSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">Serializer</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">"""Serializa o status de saúde do serviço."""</span>
+
+    <span class="n">status</span> <span class="o">=</span> <span class="n">serializers</span><span class="o">.</span><span class="n">ChoiceField</span><span class="p">(</span><span class="n">choices</span><span class="o">=</span><span class="p">[</span><span class="s2">"healthy"</span><span class="p">,</span> <span class="s2">"unhealthy"</span><span class="p">])</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,306 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visão Geral da Arquitetura &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Pipeline ETL de Identidades" href="../pipeline/index.html" />
+    <link rel="prev" title="SME-Identidade-ETL" href="../index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Visão Geral da Arquitetura</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#bancos-configurados">Bancos configurados</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#fontes-de-origem">Fontes de origem</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#destinos-de-carga">Destinos de carga</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#fluxo-logico">Fluxo lógico</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#infraestrutura-celery">Infraestrutura Celery</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#principio-de-idempotencia">Princípio de idempotência</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Visão Geral da Arquitetura</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/arquitetura/visao_geral.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="visao-geral-da-arquitetura">
+<h1>Visão Geral da Arquitetura<a class="headerlink" href="#visao-geral-da-arquitetura" title="Link para este cabeçalho"></a></h1>
+<section id="bancos-configurados">
+<h2>Bancos configurados<a class="headerlink" href="#bancos-configurados" title="Link para este cabeçalho"></a></h2>
+<p>O projeto usa dois bancos PostgreSQL distintos:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Alias Django</p></th>
+<th class="head"><p>Variável de ambiente</p></th>
+<th class="head"><p>Finalidade</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">default</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DATABASE_URL</span></code></p></td>
+<td><p>Controle ETL (<code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code>, <code class="docutils literal notranslate"><span class="pre">LogEtapaETL</span></code>, checkpoints, watermarks)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sync_rec_db</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SYNC_REC_DB_URL</span></code></p></td>
+<td><p>Rastreio operacional (<code class="docutils literal notranslate"><span class="pre">RastreioTentativa</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+<p>O staging (tabelas <code class="docutils literal notranslate"><span class="pre">UsuarioServidorStaging</span></code>, <code class="docutils literal notranslate"><span class="pre">UsuarioAlunoStaging</span></code>, <code class="docutils literal notranslate"><span class="pre">UsuarioTerceiroStaging</span></code>,
+<code class="docutils literal notranslate"><span class="pre">SistemaStaging</span></code>, <code class="docutils literal notranslate"><span class="pre">PerfilCoressoStaging</span></code>) também reside no <code class="docutils literal notranslate"><span class="pre">default</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="fontes-de-origem">
+<h2>Fontes de origem<a class="headerlink" href="#fontes-de-origem" title="Link para este cabeçalho"></a></h2>
+<p>Todos os bancos de origem são SQL Server, acessados via <code class="docutils literal notranslate"><span class="pre">pyodbc</span></code>, somente-leitura:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Fonte</p></th>
+<th class="head"><p>Variável de ambiente</p></th>
+<th class="head"><p>Entidades extraídas</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SE1426</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SE1426_DB_*</span></code></p></td>
+<td><p>servidores ativos</p></td>
+</tr>
+<tr class="row-odd"><td><p>CoreSSO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CORESSO_DB_*</span></code></p></td>
+<td><p>usuários externos, sistemas, perfis/grupos</p></td>
+</tr>
+<tr class="row-even"><td><p>EOL_DB</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">EOL_DB_*</span></code></p></td>
+<td><p>alunos matriculados</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="destinos-de-carga">
+<h2>Destinos de carga<a class="headerlink" href="#destinos-de-carga" title="Link para este cabeçalho"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Destino</p></th>
+<th class="head"><p>Protocolo</p></th>
+<th class="head"><p>Finalidade</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Keycloak</p></td>
+<td><p>Admin REST API (<code class="docutils literal notranslate"><span class="pre">python-keycloak</span></code>)</p></td>
+<td><p>upsert de usuários, roles, grupos</p></td>
+</tr>
+<tr class="row-odd"><td><p>token-ms</p></td>
+<td><p>HTTP REST (<code class="docutils literal notranslate"><span class="pre">httpx</span></code>)</p></td>
+<td><p>atributos complementares em lote</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="fluxo-logico">
+<h2>Fluxo lógico<a class="headerlink" href="#fluxo-logico" title="Link para este cabeçalho"></a></h2>
+digraph G {
+    rankdir=TB;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    subgraph cluster_src {
+        label=&quot;Origens (SQL Server, read-only)&quot;;
+        SE1426; CORESSO [label=&quot;CoreSSO&quot;]; EOL;
+    }
+
+    subgraph cluster_etl {
+        label=&quot;SME-Identidade-ETL&quot;;
+        EXT  [label=&quot;Extracao\n(chord paralelo)&quot;];
+        STG  [label=&quot;Staging DB\n(PostgreSQL)&quot;];
+        RES  [label=&quot;Resolucao /\nDeduplicacao&quot;];
+        KC   [label=&quot;Provisionamento\nKeycloak&quot;];
+        TMS  [label=&quot;Carga\ntoken-ms&quot;];
+        CTL  [label=&quot;Controle ETL\n(ExecucaoETL)&quot;];
+    }
+
+    SE1426  -&gt; EXT;
+    CORESSO -&gt; EXT;
+    EOL     -&gt; EXT;
+    EXT     -&gt; STG;
+    STG     -&gt; RES;
+    RES     -&gt; KC;
+    RES     -&gt; TMS;
+    KC      -&gt; CTL [style=dashed, label=&quot;metricas&quot;];
+    TMS     -&gt; CTL [style=dashed, label=&quot;metricas&quot;];
+}</section>
+<hr class="docutils" />
+<section id="infraestrutura-celery">
+<h2>Infraestrutura Celery<a class="headerlink" href="#infraestrutura-celery" title="Link para este cabeçalho"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Componente</p></th>
+<th class="head"><p>Localização</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>App Celery</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">config/celery.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Tasks do pipeline</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Tasks de staging</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/staging/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Tasks de extração</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/extracao/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Worker com hot-reload</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">scripts/watch_celery.py</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Configuração:</strong></p>
+<ul class="simple">
+<li><p>Broker: KeyDB/Redis (<code class="docutils literal notranslate"><span class="pre">CELERY_BROKER_URL</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_retries=5</span></code>, backoff exponencial (base 60s, máx 600s)</p></li>
+<li><p>Extração em paralelo via <code class="docutils literal notranslate"><span class="pre">chord</span></code> — as 3 tasks de extração disparam
+simultaneamente e o callback de resolução só executa após todas concluírem</p></li>
+</ul>
+<p><strong>Workers (dev — <code class="docutils literal notranslate"><span class="pre">docker-compose-dev.yml</span></code>):</strong> divididos por fila, réplica
+local dos 3 deployments separados do Rancher — uma etapa longa (ex.:
+Keycloak com volume grande) não bloqueia as demais filas atrás dela:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Serviço</p></th>
+<th class="head"><p>Filas</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">ETL_WORKER_FILAS</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">etl_worker_celery</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">celery</span></code>, <code class="docutils literal notranslate"><span class="pre">etl_extracao</span></code>, <code class="docutils literal notranslate"><span class="pre">etl_transformacao</span></code></p></td>
+<td><p>herda o padrão</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">etl_worker_keycloak</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_carga_keycloak</span></code></p></td>
+<td><p>explícito</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">etl_worker_token_ms</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code></p></td>
+<td><p>explícito</p></td>
+</tr>
+</tbody>
+</table>
+<p>Em produção (<code class="docutils literal notranslate"><span class="pre">docker-compose.yml</span></code>), um único <code class="docutils literal notranslate"><span class="pre">etl_worker</span></code> escuta todas as
+filas. Monitoramento via Celery Flower — serviço <code class="docutils literal notranslate"><span class="pre">etl_flower</span></code>, <code class="docutils literal notranslate"><span class="pre">:5555</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="principio-de-idempotencia">
+<h2>Princípio de idempotência<a class="headerlink" href="#principio-de-idempotencia" title="Link para este cabeçalho"></a></h2>
+<p>Toda operação de carga é idempotente:</p>
+<ul class="simple">
+<li><p><strong>Staging</strong> — <code class="docutils literal notranslate"><span class="pre">update_or_create</span></code> por <code class="docutils literal notranslate"><span class="pre">(id_execucao,</span> <span class="pre">fonte,</span> <span class="pre">id_origem)</span></code></p></li>
+<li><p><strong>Keycloak</strong> — busca o usuário pelo username antes de criar; atualiza se
+<code class="docutils literal notranslate"><span class="pre">hash_extracao</span></code> (dado da fonte) ou <code class="docutils literal notranslate"><span class="pre">hash_keycloak</span></code> (payload) mudaram</p></li>
+<li><p><strong>token-ms</strong> — upsert por identificador externo; reenvia só se
+<code class="docutils literal notranslate"><span class="pre">hash_token_ms</span></code> mudou desde a última confirmação</p></li>
+<li><p><strong>ControleProvisionamento</strong> — registra 3 hashes independentes por
+entidade em <code class="docutils literal notranslate"><span class="pre">(tipo_entidade,</span> <span class="pre">sistema_origem,</span> <span class="pre">id_origem,</span> <span class="pre">realm_destino)</span></code>,
+um por estágio do pipeline (extração, Keycloak, token-ms) — cada
+estágio decide, sem depender dos outros, se precisa reexecutar; ver
+<a class="reference internal" href="../controle/modelos.html"><span class="std std-doc">Modelos de Controle</span></a></p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="../index.html" class="btn btn-neutral float-left" title="SME-Identidade-ETL" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="../pipeline/index.html" class="btn btn-neutral float-right" title="Pipeline ETL de Identidades" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

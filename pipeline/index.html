@@ -1,0 +1,308 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipeline ETL de Identidades &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Extração" href="extracao.html" />
+    <link rel="prev" title="Visão Geral da Arquitetura" href="../arquitetura/visao_geral.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Pipeline ETL de Identidades</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#etapas">Etapas</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="extracao.html">Extração</a></li>
+<li class="toctree-l3"><a class="reference internal" href="staging.html">Staging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a></li>
+<li class="toctree-l3"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a></li>
+<li class="toctree-l3"><a class="reference internal" href="token_ms.html">Carga no token-ms</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Pipeline ETL de Identidades</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/index.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="pipeline-etl-de-identidades">
+<h1>Pipeline ETL de Identidades<a class="headerlink" href="#pipeline-etl-de-identidades" title="Link para este cabeçalho"></a></h1>
+<p>O pipeline é disparado via API REST (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/etl/execucoes/</span></code>) ou pelo
+comando <code class="docutils literal notranslate"><span class="pre">executar_etl</span></code>. A orquestração é feita pela task
+<code class="docutils literal notranslate"><span class="pre">task_identidade_executar_pipeline</span></code> em <code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code>.</p>
+<hr class="docutils" />
+<section id="etapas">
+<h2>Etapas<a class="headerlink" href="#etapas" title="Link para este cabeçalho"></a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="extracao.html">Extração</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="extracao.html#objetivo">Objetivo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extracao.html#fontes-e-tasks">Fontes e tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extracao.html#registroidentidade">RegistroIdentidade</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extracao.html#watermark-incremental">Watermark incremental</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extracao.html#paginacao">Paginação</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="staging.html">Staging</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="staging.html#objetivo">Objetivo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="staging.html#modelos-de-staging">Modelos de staging</a></li>
+<li class="toctree-l2"><a class="reference internal" href="staging.html#tasks-de-staging">Tasks de staging</a></li>
+<li class="toctree-l2"><a class="reference internal" href="staging.html#ciclo-de-vida-de-um-registro">Ciclo de vida de um registro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="staging.html#limpeza-de-staging">Limpeza de staging</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="resolucao.html#objetivo">Objetivo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="resolucao.html#task">Task</a></li>
+<li class="toctree-l2"><a class="reference internal" href="resolucao.html#regra-de-deduplicacao">Regra de deduplicação</a></li>
+<li class="toctree-l2"><a class="reference internal" href="resolucao.html#regra-de-username-no-keycloak">Regra de username no Keycloak</a></li>
+<li class="toctree-l2"><a class="reference internal" href="resolucao.html#crossref-entre-execucoes">Crossref entre execuções</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#objetivo">Objetivo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#hierarquia-no-keycloak">Hierarquia no Keycloak</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#orquestrador">Orquestrador</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#mapeamento-coresso-keycloak">Mapeamento CoreSSO → Keycloak</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#fluxo-de-upsert-por-usuario">Fluxo de upsert por usuário</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#provisionamento-de-vinculos-client-roles">Provisionamento de vínculos (client roles)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#sincronizacao-individual">Sincronização individual</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#concessao-de-acesso-a-sistema">Concessão de acesso a sistema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#roles-e-grupos-derivados">Roles e grupos derivados</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#reconexao-entre-lotes">Reconexão entre lotes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="keycloak.html#retry-seletivo-por-status-http">Retry seletivo por status HTTP</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="token_ms.html">Carga no token-ms</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#objetivo">Objetivo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#carga-individual-caminho-principal">Carga individual (caminho principal)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#carga-em-lote-fallback-reprocessamento-manual">Carga em lote (fallback / reprocessamento manual)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#cliente-http">Cliente HTTP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#endpoint-no-token-ms">Endpoint no token-ms</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#payload">Payload</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#autenticacao">Autenticação</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#variaveis-de-ambiente-relevantes">Variáveis de ambiente relevantes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#vinculos-funcionais-de-servidor-vinculos">Vínculos funcionais de servidor (<code class="docutils literal notranslate"><span class="pre">vinculos</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="token_ms.html#sincronizacao-de-perfis-put-perfis-usuario-id">Sincronização de perfis (<code class="docutils literal notranslate"><span class="pre">PUT</span> <span class="pre">/perfis/{usuario_id}/</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+<hr class="docutils" />
+<section id="fluxo-de-execucao">
+<h2>Fluxo de execução<a class="headerlink" href="#fluxo-de-execucao" title="Link para este cabeçalho"></a></h2>
+<p>A <code class="docutils literal notranslate"><span class="pre">chain</span></code> síncrona do pipeline termina no Keycloak — a carga no
+token-ms é disparada <strong>fire-and-forget</strong>, por usuário, a partir do
+sucesso individual no Keycloak, numa fila própria
+(<code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code>), sem bloquear o fechamento da <code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code>. Se
+todas as tasks de extração de um chord falham (esgotam os retries),
+<code class="docutils literal notranslate"><span class="pre">task_identidade_tratar_erro_pipeline</span></code> (<code class="docutils literal notranslate"><span class="pre">link_error</span></code> do Celery) marca
+a execução como <code class="docutils literal notranslate"><span class="pre">falha</span></code> — evita que ela fique presa em <code class="docutils literal notranslate"><span class="pre">executando</span></code>
+indefinidamente.</p>
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=&quot;rounded&quot;];
+
+    DISP [label=&quot;Disparo\n(API / CLI)&quot;];
+    EXT  [label=&quot;Extracao\n(chord paralelo)\nEtapas 1-2b&quot;];
+    STG  [label=&quot;Persistir\nStaging&quot;];
+    RES  [label=&quot;Resolver\nIdentidade\nEtapa 3&quot;];
+    KC   [label=&quot;Provisionar\nKeycloak\nEtapa 4&quot;];
+    FIM  [label=&quot;Registro\nOperacional\nEtapa 6&quot;];
+    TMS  [label=&quot;Carregar\ntoken-ms\nEtapa 5\n(por usuario,\nfila separada)&quot;];
+    ERR  [label=&quot;Falha no chord\nde extracao&quot;];
+
+    DISP -&gt; EXT;
+    EXT  -&gt; STG [label=&quot;chord\ncallback&quot;];
+    STG  -&gt; RES;
+    RES  -&gt; KC;
+    KC   -&gt; FIM;
+    KC   -&gt; TMS [style=dashed, label=&quot;fire-and-forget\npor usuario confirmado&quot;];
+    EXT  -&gt; ERR [style=dashed, label=&quot;link_error&quot;];
+    ERR  -&gt; FIM [style=dashed, label=&quot;marca falha&quot;];
+}</section>
+<hr class="docutils" />
+<section id="mapeamento-de-tasks-por-etapa">
+<h2>Mapeamento de tasks por etapa<a class="headerlink" href="#mapeamento-de-tasks-por-etapa" title="Link para este cabeçalho"></a></h2>
+<p>Numeração conforme <code class="docutils literal notranslate"><span class="pre">LogEtapaETL.NomeEtapa</span></code> (<code class="docutils literal notranslate"><span class="pre">apps/controle_etl/models.py</span></code>):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Etapa</p></th>
+<th class="head"><p>Task Celery</p></th>
+<th class="head"><p>Fila</p></th>
+<th class="head"><p>Arquivo</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 — Extrair SE1426</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_se1426</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_extracao</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>2 — Extrair CoreSSO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_coresso</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_extracao</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>2b — Extrair EOL Alunos</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_eol_alunos</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_extracao</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>3 — Resolver identidade</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_resolver_identidade</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_transformacao</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>4 — Provisionar Keycloak</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_provisionar_identidade_keycloak</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_carga_keycloak</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>5 — Carregar atributos token (individual, fora da chain)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_carregar_atributo_token_individual</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>5 — Carregar atributos token (lote, fallback manual)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_carregar_atributos_token</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">etl_carga_token_ms</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>6 — Registro operacional</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_sync_rec_etl</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">celery</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>— Limpar staging (agendada por <code class="docutils literal notranslate"><span class="pre">task_sync_rec_etl</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_limpar_staging</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">celery</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>— Tratar erro do chord de extração</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_tratar_erro_pipeline</span></code></p></td>
+<td><p>— (<code class="docutils literal notranslate"><span class="pre">link_error</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps/controle_etl/tasks.py</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="retry-e-tolerancia-a-falha">
+<h2>Retry e tolerância a falha<a class="headerlink" href="#retry-e-tolerancia-a-falha" title="Link para este cabeçalho"></a></h2>
+<p>Todas as tasks de carga usam:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">max_retries=5</span></code></p></li>
+<li><p>backoff exponencial: <code class="docutils literal notranslate"><span class="pre">min(60</span> <span class="pre">*</span> <span class="pre">2^(tentativa-1),</span> <span class="pre">600)</span></code> segundos</p></li>
+<li><p>cada tentativa registra um <code class="docutils literal notranslate"><span class="pre">RastreioTentativa</span></code> em <code class="docutils literal notranslate"><span class="pre">sync_rec_db</span></code></p></li>
+<li><p>em caso de falha numa etapa da chain, <code class="docutils literal notranslate"><span class="pre">LogEtapaETL</span></code> marca a etapa
+como <code class="docutils literal notranslate"><span class="pre">FALHA</span></code> e a task reagenda via <code class="docutils literal notranslate"><span class="pre">self.retry(...)</span></code> até esgotar as
+tentativas</p></li>
+<li><p>se <strong>todas</strong> as tasks de extração de um chord esgotarem os retries,
+<code class="docutils literal notranslate"><span class="pre">task_identidade_tratar_erro_pipeline</span></code> marca a <code class="docutils literal notranslate"><span class="pre">ExecucaoETL</span></code> como
+<code class="docutils literal notranslate"><span class="pre">falha</span></code> (só se ainda estiver <code class="docutils literal notranslate"><span class="pre">executando</span></code>) — sem esse handler, a
+execução ficaria presa indefinidamente</p></li>
+<li><p>retries do Keycloak (<code class="docutils literal notranslate"><span class="pre">_com_reintento</span></code>) e do token-ms (<code class="docutils literal notranslate"><span class="pre">_e_retriavel</span></code>)
+checam o status HTTP antes de retentar — erros de validação (400)
+propagam na 1ª tentativa, sem esperar backoff</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="../arquitetura/visao_geral.html" class="btn btn-neutral float-left" title="Visão Geral da Arquitetura" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="extracao.html" class="btn btn-neutral float-right" title="Extração" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

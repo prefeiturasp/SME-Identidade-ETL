@@ -1,0 +1,334 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apps.controle_etl.cliente_token_ms &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../../_static/translations.js?v=71a39b36"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../../../genindex.html" />
+    <link rel="search" title="Buscar" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../pipeline/index.html">Pipeline ETL de Identidades</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Código do módulo</a></li>
+      <li class="breadcrumb-item active">apps.controle_etl.cliente_token_ms</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Código-fonte para apps.controle_etl.cliente_token_ms</h1><div class="highlight"><pre>
+<span></span><span class="sd">"""Cliente HTTP para publicação de atributos no token-ms."""</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Iterable</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">httpx</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.conf</span><span class="w"> </span><span class="kn">import</span> <span class="n">settings</span>
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">"etl_identidade"</span><span class="p">)</span>
+
+<span class="n">_STATUS_RETRIAVEIS</span> <span class="o">=</span> <span class="p">{</span><span class="mi">408</span><span class="p">,</span> <span class="mi">425</span><span class="p">,</span> <span class="mi">429</span><span class="p">,</span> <span class="mi">500</span><span class="p">,</span> <span class="mi">502</span><span class="p">,</span> <span class="mi">503</span><span class="p">,</span> <span class="mi">504</span><span class="p">}</span>
+<span class="n">_MAX_TENTATIVAS</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">_ATRASO_BASE</span> <span class="o">=</span> <span class="mf">1.0</span>
+<span class="n">_ATRASO_MAXIMO</span> <span class="o">=</span> <span class="mf">60.0</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_cabecalhos</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Monta os cabeçalhos de autenticação para o token-ms.</span>
+
+<span class="sd">    O token-ms autentica requisições comparando o header configurável</span>
+<span class="sd">    em ``API_KEY_HEADER`` (padrão ``X-API-Key``) contra ``API_KEY`` —</span>
+<span class="sd">    mesmo padrão usado pelo próprio ETL para autenticar requisições</span>
+<span class="sd">    que recebe. O ETL precisa enviar exatamente esse header ao chamar</span>
+<span class="sd">    o token-ms.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Cabeçalhos com Content-Type e a API Key quando disponível.</span>
+<span class="sd">    """</span>
+    <span class="n">cabecalhos</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">"Content-Type"</span><span class="p">:</span> <span class="s2">"application/json"</span><span class="p">,</span>
+        <span class="s2">"Accept"</span><span class="p">:</span> <span class="s2">"application/json"</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_API_KEY</span><span class="p">:</span>
+        <span class="n">cabecalhos</span><span class="p">[</span><span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_API_KEY_HEADER</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_API_KEY</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">cabecalhos</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_e_retriavel</span><span class="p">(</span><span class="n">exc</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Indica se o erro justifica uma nova tentativa.</span>
+
+<span class="sd">    Erros de transporte/timeout são sempre retentáveis. Erros HTTP só</span>
+<span class="sd">    são retentáveis quando o status indica falha transitória do</span>
+<span class="sd">    servidor (ex.: 503) — status como 400/404 são erro de payload ou</span>
+<span class="sd">    de rota e nunca vão se resolver sozinhos com retry.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        exc: Exceção capturada na chamada ao token-ms.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``True`` se a chamada deve ser repetida.</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">httpx</span><span class="o">.</span><span class="n">HTTPStatusError</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">exc</span><span class="o">.</span><span class="n">response</span><span class="o">.</span><span class="n">status_code</span> <span class="ow">in</span> <span class="n">_STATUS_RETRIAVEIS</span>
+    <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="p">(</span><span class="n">httpx</span><span class="o">.</span><span class="n">TransportError</span><span class="p">,</span> <span class="n">httpx</span><span class="o">.</span><span class="n">TimeoutException</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_aguardar_nova_tentativa</span><span class="p">(</span><span class="n">exc</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">,</span> <span class="n">tentativa</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Registra o erro e aguarda o backoff antes da próxima tentativa.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        exc: Exceção que motivou a nova tentativa.</span>
+<span class="sd">        tentativa: Número da tentativa que acabou de falhar (1-based).</span>
+<span class="sd">    """</span>
+    <span class="n">atraso</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">_ATRASO_BASE</span> <span class="o">*</span> <span class="p">(</span><span class="mi">2</span> <span class="o">**</span> <span class="p">(</span><span class="n">tentativa</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span> <span class="n">_ATRASO_MAXIMO</span><span class="p">)</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+        <span class="s2">"token-ms: erro transitório (tentativa </span><span class="si">%d</span><span class="s2">/</span><span class="si">%d</span><span class="s2">) — aguardando </span><span class="si">%.1f</span><span class="s2">s: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+        <span class="n">tentativa</span><span class="p">,</span>
+        <span class="n">_MAX_TENTATIVAS</span><span class="p">,</span>
+        <span class="n">atraso</span><span class="p">,</span>
+        <span class="n">exc</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">atraso</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="enviar_lote">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.cliente_token_ms.enviar_lote">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">enviar_lote</span><span class="p">(</span>
+    <span class="n">usuarios</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Envia um lote de usuários para o token-ms com reintento exponencial.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        usuarios: Lista de payloads de atributos de usuário.</span>
+<span class="sd">        id_execucao: ID da execução ETL associada.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Resposta JSON do token-ms ou ``{"situacao": "ok"}`` se sem corpo.</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        httpx.HTTPStatusError: Erro do token-ms — imediatamente se não</span>
+<span class="sd">            for retentável (ex.: 400/404), ou após esgotar as</span>
+<span class="sd">            tentativas em caso de falha transitória (ex.: 503).</span>
+<span class="sd">        httpx.TransportError: Após esgotar as tentativas por falha de</span>
+<span class="sd">            conexão.</span>
+<span class="sd">        httpx.TimeoutException: Após esgotar as tentativas por timeout.</span>
+<span class="sd">    """</span>
+    <span class="n">url</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_URL</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s1">'/'</span><span class="p">)</span><span class="si">}</span><span class="s2">/api/v1/etl/push-batch"</span>
+    <span class="n">corpo</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"id_execucao"</span><span class="p">:</span> <span class="n">id_execucao</span><span class="p">,</span> <span class="s2">"usuarios"</span><span class="p">:</span> <span class="n">usuarios</span><span class="p">}</span>
+
+    <span class="n">tentativa</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_TIMEOUT</span><span class="p">)</span> <span class="k">as</span> <span class="n">cliente</span><span class="p">:</span>
+                <span class="n">resposta</span> <span class="o">=</span> <span class="n">cliente</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">json</span><span class="o">=</span><span class="n">corpo</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">_cabecalhos</span><span class="p">())</span>
+            <span class="n">resposta</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">resposta</span><span class="o">.</span><span class="n">json</span><span class="p">()</span> <span class="k">if</span> <span class="n">resposta</span><span class="o">.</span><span class="n">content</span> <span class="k">else</span> <span class="p">{</span><span class="s2">"situacao"</span><span class="p">:</span> <span class="s2">"ok"</span><span class="p">}</span>
+        <span class="k">except</span> <span class="p">(</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">TransportError</span><span class="p">,</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">HTTPStatusError</span><span class="p">,</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">TimeoutException</span><span class="p">,</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">tentativa</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">_e_retriavel</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="ow">or</span> <span class="n">tentativa</span> <span class="o">&gt;=</span> <span class="n">_MAX_TENTATIVAS</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
+                    <span class="s2">"token-ms: lote falhou após </span><span class="si">%d</span><span class="s2"> tentativa(s): </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+                    <span class="n">tentativa</span><span class="p">,</span>
+                    <span class="n">exc</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="k">raise</span>
+            <span class="n">_aguardar_nova_tentativa</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">tentativa</span><span class="p">)</span></div>
+
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">enviar_perfil</span><span class="p">(</span>
+    <span class="n">usuario_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">payload</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Sincroniza a projeção de perfis de um usuário no token-ms.</span>
+
+<span class="sd">    Diferente de ``enviar_lote``, que publica atributos complementares</span>
+<span class="sd">    em lote e sem alvo individual, esta função faz o upsert da</span>
+<span class="sd">    projeção de autorização de UM usuário por vez — o token-ms</span>
+<span class="sd">    substitui integralmente a lista de perfis a cada chamada</span>
+<span class="sd">    (``PUT /perfis/{usuario_id}/``), então o payload deve trazer o</span>
+<span class="sd">    conjunto completo e atual de perfis, nunca parcial.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        usuario_id: UUID do usuário no Keycloak (``kc_user_id``).</span>
+<span class="sd">        payload: Corpo da projeção (``login``, ``nome``, ``situacao``,</span>
+<span class="sd">            ``perfis``, ``permissoes`` etc. — ver</span>
+<span class="sd">            ``ProjecaoUsuarioSerializer`` do token-ms).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``{"situacao": "ok"}`` após sincronização bem-sucedida.</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        httpx.HTTPStatusError: Erro do token-ms — imediatamente se não</span>
+<span class="sd">            for retentável (ex.: 400), ou após esgotar as tentativas</span>
+<span class="sd">            em caso de falha transitória (ex.: 503).</span>
+<span class="sd">        httpx.TransportError: Após esgotar as tentativas por falha de</span>
+<span class="sd">            conexão.</span>
+<span class="sd">        httpx.TimeoutException: Após esgotar as tentativas por timeout.</span>
+<span class="sd">    """</span>
+    <span class="n">url</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_URL</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s1">'/'</span><span class="p">)</span><span class="si">}</span><span class="s2">/api/v1/perfis/</span><span class="si">{</span><span class="n">usuario_id</span><span class="si">}</span><span class="s2">/"</span>
+
+    <span class="n">tentativa</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_TIMEOUT</span><span class="p">)</span> <span class="k">as</span> <span class="n">cliente</span><span class="p">:</span>
+                <span class="n">resposta</span> <span class="o">=</span> <span class="n">cliente</span><span class="o">.</span><span class="n">put</span><span class="p">(</span>
+                    <span class="n">url</span><span class="p">,</span> <span class="n">json</span><span class="o">=</span><span class="n">payload</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">_cabecalhos</span><span class="p">()</span>
+                <span class="p">)</span>
+            <span class="n">resposta</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+            <span class="k">return</span> <span class="p">{</span><span class="s2">"situacao"</span><span class="p">:</span> <span class="s2">"ok"</span><span class="p">}</span>
+        <span class="k">except</span> <span class="p">(</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">TransportError</span><span class="p">,</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">HTTPStatusError</span><span class="p">,</span>
+            <span class="n">httpx</span><span class="o">.</span><span class="n">TimeoutException</span><span class="p">,</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">tentativa</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">_e_retriavel</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span> <span class="ow">or</span> <span class="n">tentativa</span> <span class="o">&gt;=</span> <span class="n">_MAX_TENTATIVAS</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
+                    <span class="s2">"token-ms: sincronização de perfil de </span><span class="si">%s</span><span class="s2">"</span>
+                    <span class="s2">" falhou após </span><span class="si">%d</span><span class="s2"> tentativa(s): </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+                    <span class="n">usuario_id</span><span class="p">,</span>
+                    <span class="n">tentativa</span><span class="p">,</span>
+                    <span class="n">exc</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="k">raise</span>
+            <span class="n">_aguardar_nova_tentativa</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">tentativa</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="enviar_todos">
+<a class="viewcode-back" href="../../../api.html#apps.controle_etl.cliente_token_ms.enviar_todos">[documentos]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">enviar_todos</span><span class="p">(</span>
+    <span class="n">usuarios</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">id_execucao</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">tamanho_lote</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Envia todos os usuários em lotes para o token-ms.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        usuarios: Iterável de payloads de atributos.</span>
+<span class="sd">        id_execucao: ID da execução ETL associada.</span>
+<span class="sd">        tamanho_lote: Tamanho de cada lote</span>
+<span class="sd">            (usa TOKEN_MS_TAMANHO_LOTE se None).</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Dicionário com ``enviados`` e ``lotes``.</span>
+<span class="sd">    """</span>
+    <span class="n">tamanho</span> <span class="o">=</span> <span class="n">tamanho_lote</span> <span class="ow">or</span> <span class="n">settings</span><span class="o">.</span><span class="n">TOKEN_MS_TAMANHO_LOTE</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">lotes</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">lote</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">for</span> <span class="n">usuario</span> <span class="ow">in</span> <span class="n">usuarios</span><span class="p">:</span>
+        <span class="n">lote</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">usuario</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">lote</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">tamanho</span><span class="p">:</span>
+            <span class="n">enviar_lote</span><span class="p">(</span><span class="n">lote</span><span class="p">,</span> <span class="n">id_execucao</span><span class="o">=</span><span class="n">id_execucao</span><span class="p">)</span>
+            <span class="n">total</span> <span class="o">+=</span> <span class="nb">len</span><span class="p">(</span><span class="n">lote</span><span class="p">)</span>
+            <span class="n">lotes</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">lote</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">if</span> <span class="n">lote</span><span class="p">:</span>
+        <span class="n">enviar_lote</span><span class="p">(</span><span class="n">lote</span><span class="p">,</span> <span class="n">id_execucao</span><span class="o">=</span><span class="n">id_execucao</span><span class="p">)</span>
+        <span class="n">total</span> <span class="o">+=</span> <span class="nb">len</span><span class="p">(</span><span class="n">lote</span><span class="p">)</span>
+        <span class="n">lotes</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="k">return</span> <span class="p">{</span><span class="s2">"enviados"</span><span class="p">:</span> <span class="n">total</span><span class="p">,</span> <span class="s2">"lotes"</span><span class="p">:</span> <span class="n">lotes</span><span class="p">}</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

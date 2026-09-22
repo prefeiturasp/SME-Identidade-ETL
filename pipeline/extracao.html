@@ -1,0 +1,230 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="pt-BR" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extração &mdash; SME-Identidade ETL</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2346ddef"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/translations.js?v=71a39b36"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Buscar" href="../search.html" />
+    <link rel="next" title="Staging" href="staging.html" />
+    <link rel="prev" title="Pipeline ETL de Identidades" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            SME-Identidade-ETL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Pesquisar documentos" aria-label="Pesquisar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Menu de navegação">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../arquitetura/visao_geral.html">Visão Geral da Arquitetura</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Pipeline ETL de Identidades</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html#etapas">Etapas</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Extração</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#fontes-e-tasks">Fontes e tasks</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#registroidentidade">RegistroIdentidade</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#watermark-incremental">Watermark incremental</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#paginacao">Paginação</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="staging.html">Staging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resolucao.html">Resolução de Identidade</a></li>
+<li class="toctree-l3"><a class="reference internal" href="keycloak.html">Provisionamento Keycloak</a></li>
+<li class="toctree-l3"><a class="reference internal" href="token_ms.html">Carga no token-ms</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#fluxo-de-execucao">Fluxo de execução</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#mapeamento-de-tasks-por-etapa">Mapeamento de tasks por etapa</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#retry-e-tolerancia-a-falha">Retry e tolerância a falha</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../controle/index.html">Controle e Auditoria de Execução</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operacao/index.html">Operação</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api.html">Referência de código</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Menu de navegação móvel" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">SME-Identidade-ETL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Navegação da página">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Pipeline ETL de Identidades</a></li>
+      <li class="breadcrumb-item active">Extração</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/pipeline/extracao.md.txt" rel="nofollow"> Ver código-fonte da página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="extracao">
+<h1>Extração<a class="headerlink" href="#extracao" title="Link para este cabeçalho"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link para este cabeçalho"></a></h2>
+<p>Ler dados brutos das três fontes SQL Server e persistir como registros
+<code class="docutils literal notranslate"><span class="pre">RegistroIdentidade</span></code> no staging do PostgreSQL.</p>
+</section>
+<hr class="docutils" />
+<section id="fontes-e-tasks">
+<h2>Fontes e tasks<a class="headerlink" href="#fontes-e-tasks" title="Link para este cabeçalho"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Fonte</p></th>
+<th class="head"><p>Task</p></th>
+<th class="head"><p>Módulo de extração</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SE1426</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_se1426</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps.extracao.tasks.extrair_se1426</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>CoreSSO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_coresso</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps.extracao.tasks.extrair_coresso</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>EOL_DB (alunos)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">task_identidade_extrair_eol_alunos</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">apps.extracao.tasks.extrair_eol_alunos</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>As três tasks disparam em paralelo via <code class="docutils literal notranslate"><span class="pre">chord</span></code> do Celery. O callback de
+resolução só executa após todas concluírem.</p>
+</section>
+<hr class="docutils" />
+<section id="registroidentidade">
+<h2>RegistroIdentidade<a class="headerlink" href="#registroidentidade" title="Link para este cabeçalho"></a></h2>
+<p>Dataclass intermediária definida em <code class="docutils literal notranslate"><span class="pre">apps/extracao/tasks.py</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Campo</p></th>
+<th class="head"><p>Descrição</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fonte</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;se1426&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;coresso&quot;</span></code> ou <code class="docutils literal notranslate"><span class="pre">&quot;eol_alunos&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tipo</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;servidor&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;aluno&quot;</span></code> ou <code class="docutils literal notranslate"><span class="pre">&quot;terceiro&quot;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id_origem</span></code></p></td>
+<td><p>ID primário na fonte</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cpf</span></code></p></td>
+<td><p>CPF normalizado (somente dígitos)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rf</span></code></p></td>
+<td><p>Registro Funcional (servidores)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nome</span></code></p></td>
+<td><p>Nome completo</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">email</span></code></p></td>
+<td><p>E-mail institucional</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">situacao</span></code></p></td>
+<td><p>Situação na fonte</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">matricula</span></code></p></td>
+<td><p>Matrícula (alunos/terceiros)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cod_escola</span></code></p></td>
+<td><p>Código da escola (alunos)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="watermark-incremental">
+<h2>Watermark incremental<a class="headerlink" href="#watermark-incremental" title="Link para este cabeçalho"></a></h2>
+<p>Cada extração consulta <code class="docutils literal notranslate"><span class="pre">_obter_watermark(fonte)</span></code> antes de executar e chama
+<code class="docutils literal notranslate"><span class="pre">_atualizar_watermark(fonte,</span> <span class="pre">ultima_data,</span> <span class="pre">total_processado)</span></code> ao concluir.</p>
+<p>O watermark é persistido em <code class="docutils literal notranslate"><span class="pre">MarcaDaguaExtracao</span></code> (app <code class="docutils literal notranslate"><span class="pre">controle_etl</span></code>) e
+permite que extrações subsequentes busquem apenas registros alterados após a
+última execução bem-sucedida.</p>
+<p>Para forçar extração completa, passe <code class="docutils literal notranslate"><span class="pre">data_referencia=None</span></code> ou resete via
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/etl/watermark/{fonte}/resetar/</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="paginacao">
+<h2>Paginação<a class="headerlink" href="#paginacao" title="Link para este cabeçalho"></a></h2>
+<p>As queries SQL Server usam <code class="docutils literal notranslate"><span class="pre">fetchmany(chunk_size)</span></code> em loop, controlado por
+<code class="docutils literal notranslate"><span class="pre">ETL_CHUNK_SIZE</span></code> (padrão 500). O watermark salva <code class="docutils literal notranslate"><span class="pre">ultima_pagina</span></code> para
+retomada em caso de interrupção.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Rodapé">
+        <a href="index.html" class="btn btn-neutral float-left" title="Pipeline ETL de Identidades" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="staging.html" class="btn btn-neutral float-right" title="Staging" accesskey="n" rel="next">Próximo <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Direitos autorais .</p>
+  </div>
+
+  Compilado com <a href="https://www.sphinx-doc.org/">Sphinx</a> usando um
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    fornecido por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
