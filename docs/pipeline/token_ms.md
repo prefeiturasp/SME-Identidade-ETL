@@ -151,7 +151,7 @@ aninhada:
 ```json
 {
   "rf": "1234567",
-  ...,
+  "...": "outras propriedades do servidor",
   "vinculos": [
     {
       "tipo_vinculo": "cargo_base",
