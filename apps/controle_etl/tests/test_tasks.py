@@ -79,7 +79,10 @@ class TestTaskIdentidadeExtrairSe1426:
             resultado = task_identidade_extrair_se1426(id_execucao)
 
         assert resultado == {"total_extraido": 2}
-        mock_extrair.assert_called_once_with(data_referencia=None)
+        mock_extrair.assert_called_once_with(
+            data_referencia=None,
+            apenas_ativos=False,
+        )
         mock_persistir.assert_called_once_with(
             registros, id_execucao=id_execucao
         )
@@ -103,7 +106,10 @@ class TestTaskIdentidadeExtrairSe1426:
                 id_execucao, data_referencia="2026-01-01"
             )
 
-        mock_extrair.assert_called_once_with(data_referencia="2026-01-01")
+        mock_extrair.assert_called_once_with(
+            data_referencia="2026-01-01",
+            apenas_ativos=False,
+        )
 
     def test_erro_registra_tentativa_e_reagenda(self) -> None:
         """Verifica que erro registra a tentativa com falha e chama retry."""
@@ -1786,7 +1792,9 @@ class TestTaskIdentidadeExecutarPipeline:
             )
 
         mock_s.assert_called_once_with(
-            id_execucao=id_execucao, data_referencia="2026-01-01"
+            id_execucao=id_execucao,
+            apenas_ativos=False,
+            data_referencia="2026-01-01",
         )
 
     def test_fonte_unica_dispara_apenas_a_tarefa_correspondente(self) -> None:

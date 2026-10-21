@@ -29,7 +29,7 @@ class TestTransformarStaging:
             id_execucao=id_execucao,
             fonte="se1426",
             nome="Ana Lima",
-            cpf="12345678901",
+            cpf="52998224725",
             situacao="extraido",
         )
 
@@ -64,21 +64,21 @@ class TestTransformarStaging:
             id_execucao=id_execucao,
             fonte="se1426",
             nome="Servidor",
-            cpf="11111111111",
+            cpf="52998224725",
             situacao="extraido",
         )
         UsuarioAlunoStaging.objects.create(
             id_execucao=id_execucao,
             fonte="eol_db",
             nome="Aluno",
-            cpf="22222222222",
+            cpf="11144477735",
             situacao="extraido",
         )
         UsuarioTerceiroStaging.objects.create(
             id_execucao=id_execucao,
             fonte="coresso",
             nome="Terceiro",
-            cpf="33333333333",
+            cpf="93541134780",
             situacao="extraido",
         )
 
