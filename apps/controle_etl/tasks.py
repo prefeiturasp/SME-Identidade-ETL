@@ -97,6 +97,7 @@ def task_identidade_extrair_se1426(
     self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
+    apenas_ativos: bool = False,
 ) -> dict:
     """Extrai dados institucionais da fonte SE1426.
 
@@ -104,6 +105,7 @@ def task_identidade_extrair_se1426(
         id_execucao: UUID da ExecucaoETL associada.
         data_referencia: Data ISO para replay
             (sobrepõe o watermark persistido).
+        apenas_ativos: Se True, filtra apenas registros ativos.
 
     Returns:
         Dicionário com ``total_extraido``.
@@ -114,7 +116,9 @@ def task_identidade_extrair_se1426(
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_se1426 — início", id_execucao)
     try:
-        registros = extrair_se1426(data_referencia=data_referencia)
+        registros = extrair_se1426(
+            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        )
         total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
@@ -164,12 +168,14 @@ def task_identidade_extrair_coresso(
     self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
+    apenas_ativos: bool = False,
 ) -> dict:
     """Extrai usuários e perfis legados da fonte CoreSSO.
 
     Args:
         id_execucao: UUID da ExecucaoETL associada.
         data_referencia: Data ISO para replay.
+        apenas_ativos: Se True, filtra apenas registros ativos.
 
     Returns:
         Dicionário com ``total_extraido``.
@@ -180,7 +186,9 @@ def task_identidade_extrair_coresso(
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_coresso — início", id_execucao)
     try:
-        registros = extrair_coresso(data_referencia=data_referencia)
+        registros = extrair_coresso(
+            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        )
         total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
@@ -225,6 +233,7 @@ def task_reprocessar_pendencias(
     self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
+    apenas_ativos: bool = False,
 ) -> dict:
     """Garante que clientes com `token_ms_pendente=True` sejam reenviados.
 
@@ -251,6 +260,9 @@ def task_reprocessar_pendencias(
         data_referencia: Aceito por compatibilidade de assinatura com
             as demais tasks de extração do chord; não utilizado (a
             pendência não depende de janela de data).
+        apenas_ativos: Aceito por compatibilidade de assinatura com
+            as demais tasks de extração do chord; não utilizado (a
+            pendência não depende de filtrar ativos).
 
     Returns:
         Dicionário com ``total_pendentes`` e ``total_reextraido``.
@@ -348,12 +360,14 @@ def task_identidade_extrair_eol_alunos(
     self: Any,
     id_execucao: str,
     data_referencia: str | None = None,
+    apenas_ativos: bool = False,
 ) -> dict:
     """Extrai alunos da fonte EOL_DB.
 
     Args:
         id_execucao: UUID da ExecucaoETL associada.
         data_referencia: Data ISO para replay.
+        apenas_ativos: Se True, filtra apenas registros ativos.
 
     Returns:
         Dicionário com ``total_extraido``.
@@ -367,7 +381,9 @@ def task_identidade_extrair_eol_alunos(
         id_execucao,
     )
     try:
-        registros = extrair_eol_alunos(data_referencia=data_referencia)
+        registros = extrair_eol_alunos(
+            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        )
         total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
@@ -1526,7 +1542,10 @@ def task_identidade_executar_pipeline(
         execucao.realm_destino,
     )
 
-    kwargs = {"id_execucao": id_execucao}
+    kwargs = {
+        "id_execucao": id_execucao,
+        "apenas_ativos": execucao.apenas_ativos,
+    }
     if data_referencia:
         kwargs["data_referencia"] = data_referencia
 
