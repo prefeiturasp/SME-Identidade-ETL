@@ -7,6 +7,12 @@ from typing import Any
 from celery import shared_task
 from django.db.models import Model
 
+from apps.staging.models import (
+    UsuarioAlunoStaging,
+    UsuarioServidorStaging,
+    UsuarioTerceiroStaging,
+)
+
 logger = logging.getLogger("etl_identidade")
 
 _MODELO_POR_TIPO = {
@@ -203,6 +209,28 @@ def persistir_extracao_staging(
     return estado.total
 
 
+def _validar_usuario(
+    usuario: (
+        UsuarioAlunoStaging | UsuarioTerceiroStaging | UsuarioServidorStaging
+    ),
+) -> tuple[str, str | None]:
+    from apps.staging.utils import is_valid_cpf
+
+    if not usuario.nome and not usuario.cpf:
+        return "erro", "nome e CPF ausentes"
+
+    cpf_valido = usuario.cpf and is_valid_cpf(usuario.cpf)
+
+    if cpf_valido:
+        return "pronto", None
+
+    if not usuario.rf and not usuario.matricula:
+        return "erro", "CPF inválido e RF e Matrícula ausentes"
+
+    usuario.cpf = None
+    return "pronto", None
+
+
 @shared_task(name="staging.tasks.transformar_staging")
 def transformar_staging(id_execucao: str) -> dict:
     """Normaliza e valida registros de staging de uma execução.
@@ -217,13 +245,6 @@ def transformar_staging(id_execucao: str) -> dict:
     Returns:
         Dicionário com totais por tipo de usuário.
     """
-    from apps.staging.models import (  # noqa: PLC0415
-        UsuarioAlunoStaging,
-        UsuarioServidorStaging,
-        UsuarioTerceiroStaging,
-    )
-    from apps.staging.utils import is_valid_cpf
-
     totais: dict[str, int] = {
         "servidor": 0,
         "aluno": 0,
@@ -242,24 +263,12 @@ def transformar_staging(id_execucao: str) -> dict:
         prontos = erros = 0
         atualizacoes: list = []
         for usuario in qs.iterator(chunk_size=500):
-            cpf_valido = usuario.cpf and is_valid_cpf(usuario.cpf)
-            if not usuario.nome and not usuario.cpf:
-                usuario.situacao = "erro"
-                usuario.detalhe_erro = "nome e CPF ausentes"
+            situacao, detalhe_erro = _validar_usuario(usuario)
+            usuario.situacao = situacao
+            if situacao == "erro":
+                usuario.detalhe_erro = detalhe_erro
                 erros += 1
-            elif not cpf_valido:
-                if not usuario.rf and not usuario.matricula:
-                    usuario.situacao = "erro"
-                    usuario.detalhe_erro = (
-                        "CPF inválido e RF e Matrícula ausentes"
-                    )
-                    erros += 1
-                else:
-                    usuario.cpf = None
-                    usuario.situacao = "pronto"
-                    prontos += 1
             else:
-                usuario.situacao = "pronto"
                 prontos += 1
             atualizacoes.append(usuario)
 
