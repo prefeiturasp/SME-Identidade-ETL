@@ -67,6 +67,7 @@ class ExecucaoETLSerializer(serializers.ModelSerializer):
             "disparado_por",
             "duracao_segundos",
             "etapas",
+            "apenas_ativos",
         ]
         read_only_fields = [
             "id",
@@ -98,6 +99,7 @@ class CriarExecucaoETLSerializer(serializers.Serializer):
         default=settings.KEYCLOAK_REALM,
     )
     observacao = serializers.CharField(required=False, allow_blank=True)
+    apenas_ativos = serializers.BooleanField(default=False)
 
 
 class ListarExecucaoETLSerializer(serializers.ModelSerializer):
@@ -116,6 +118,7 @@ class ListarExecucaoETLSerializer(serializers.ModelSerializer):
             "criado_em",
             "iniciado_em",
             "finalizado_em",
+            "apenas_ativos",
         ]
         read_only_fields = fields
 

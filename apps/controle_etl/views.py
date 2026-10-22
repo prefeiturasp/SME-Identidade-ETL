@@ -130,9 +130,7 @@ def _progresso_keycloak_token(execucao: ExecucaoETL) -> dict:
         "kc_carregado": total_carregado,
         "kc_erro": total_erro_kc,
         "kc_percentual": (
-            round(total_carregado * 100 / total_pronto)
-            if total_pronto
-            else 0
+            round(total_carregado * 100 / total_pronto) if total_pronto else 0
         ),
         "token_lotes_enviados": token_lotes_sucesso,
         "token_lotes_erro": token_lotes_erro,
@@ -274,6 +272,7 @@ def _disparar_execucao(
     realm_destino: str = settings.KEYCLOAK_REALM,
     observacao: str = "",
     disparado_por: str = "api",
+    apenas_ativos: bool = False,
 ) -> ExecucaoETL:
     """Cria a ExecucaoETL e dispara o pipeline completo via Celery.
 
@@ -301,6 +300,7 @@ def _disparar_execucao(
         tipo_disparo=ExecucaoETL.TipoDisparo.MANUAL,
         observacao=observacao,
         disparado_por=disparado_por,
+        apenas_ativos=apenas_ativos,
     )
 
     tarefa = task_identidade_executar_pipeline.apply_async(
@@ -345,6 +345,11 @@ class ExecucoesView(APIView):
                     "Filtra pela fonte: todos | se1426 | coresso | eol_alunos"
                 ),
             ),
+            OpenApiParameter(
+                "apenas_ativos",
+                bool,
+                description=("Filtra por apenas ativos: True | False"),
+            ),
         ],
         responses={200: ListarExecucaoETLSerializer(many=True)},
     )
@@ -353,10 +358,14 @@ class ExecucoesView(APIView):
         qs = ExecucaoETL.objects.all()
         situacao = request.query_params.get("situacao")
         fonte = request.query_params.get("fonte")
+        apenas_ativos = request.query_params.get("apenas_ativos", None)
         if situacao:
             qs = qs.filter(situacao=situacao)
         if fonte:
             qs = qs.filter(fonte=fonte)
+        if apenas_ativos is not None:
+            apenas_ativos_bool = apenas_ativos.lower() == "true"
+            qs = qs.filter(apenas_ativos=apenas_ativos_bool)
         dados = ListarExecucaoETLSerializer(qs[:100], many=True).data
         return Response(dados)
 
@@ -369,7 +378,9 @@ class ExecucoesView(APIView):
             "provisionamento no Keycloak, carga de atributos no token-ms "
             "e registro operacional. Use `fonte=todos` (padrão) para "
             "executar todas as fontes ou uma fonte específica "
-            "(`se1426`, `coresso`, `eol_alunos`) para execução parcial."
+            "(`se1426`, `coresso`, `eol_alunos`) para execução parcial. Use "
+            "`apenas_ativos=True` (padrão apenas_ativos=False) para ignorar "
+            "registros inativos na extração."
         ),
         request=CriarExecucaoETLSerializer,
         responses={201: ExecucaoETLSerializer},
@@ -386,6 +397,9 @@ class ExecucoesView(APIView):
             ),
             observacao=serializador.validated_data.get("observacao", ""),
             disparado_por=request.META.get("HTTP_X_FORWARDED_USER", "api"),
+            apenas_ativos=serializador.validated_data.get(
+                "apenas_ativos", False
+            ),
         )
         return Response(
             ExecucaoETLSerializer(execucao).data,
@@ -432,12 +446,20 @@ def _padrao_erro(detalhe_erro: str) -> str:
     Mantém só o código HTTP + ``field``/``errorMessage``, descartando
     ``params``.
     """
+    import re
+
     match = re.match(r"^(\d+):\s*(.*)$", detalhe_erro, re.DOTALL)
-    codigo, corpo = (match.group(1), match.group(2)) if match else (None, detalhe_erro)
+    codigo, corpo = (
+        (match.group(1), match.group(2)) if match else (None, detalhe_erro)
+    )
     campo = re.search(r'"field"\s*:\s*"([^"]*)"', corpo)
     mensagem = re.search(r'"errorMessage"\s*:\s*"([^"]*)"', corpo)
     if campo or mensagem:
-        partes = [p for p in (campo and campo.group(1), mensagem and mensagem.group(1)) if p]
+        partes = [
+            p
+            for p in (campo and campo.group(1), mensagem and mensagem.group(1))
+            if p
+        ]
         resumo = " / ".join(partes)
     else:
         resumo = corpo.strip()[:120]
@@ -503,10 +525,7 @@ class ResumoErrosExecucaoView(APIView):
                 grupo["total"] += 1
 
         resumo = sorted(
-            (
-                {"padrao": padrao, **dados}
-                for padrao, dados in grupos.items()
-            ),
+            ({"padrao": padrao, **dados} for padrao, dados in grupos.items()),
             key=lambda item: item["total"],
             reverse=True,
         )
