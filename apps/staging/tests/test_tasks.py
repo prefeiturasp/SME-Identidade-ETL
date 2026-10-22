@@ -15,10 +15,69 @@ from apps.staging.models import (
     VinculoServidorStaging,
 )
 from apps.staging.tasks import (
+    _validar_usuario,
     deduplicar_identidades,
     persistir_extracao_staging,
     transformar_staging,
 )
+
+
+class TestValidarUsuario:
+    def test_retorna_erro_quando_nome_e_cpf_ausentes(self) -> None:
+        """Marca erro quando não há identificadores mínimos."""
+        usuario = UsuarioServidorStaging(nome="", cpf="")
+
+        situacao, detalhe = _validar_usuario(usuario)
+
+        assert situacao == "erro"
+        assert detalhe == "nome e CPF ausentes"
+
+    def test_retorna_pronto_quando_cpf_valido(self) -> None:
+        """Mantém pronto quando CPF é válido."""
+        usuario = UsuarioServidorStaging(
+            nome="Ana Lima",
+            cpf="52998224725",
+            rf="",
+            matricula="",
+        )
+
+        situacao, detalhe = _validar_usuario(usuario)
+
+        assert situacao == "pronto"
+        assert detalhe is None
+        assert usuario.cpf == "52998224725"
+
+    def test_retorna_erro_quando_cpf_invalido_sem_rf_e_sem_matricula(
+        self,
+    ) -> None:
+        """Retorna erro se CPF inválido não tiver fallback de identificação."""
+        usuario = UsuarioServidorStaging(
+            nome="Ana Lima",
+            cpf="12345678901",
+            rf="",
+            matricula="",
+        )
+
+        situacao, detalhe = _validar_usuario(usuario)
+
+        assert situacao == "erro"
+        assert detalhe == "CPF inválido e RF e Matrícula ausentes"
+        assert usuario.cpf == "12345678901"
+
+    def test_limpa_cpf_invalido_quando_tiver_matricula_ou_rf(self) -> None:
+        """Mantém pronto removendo CPF inválido com outro identificador."""
+        usuario = UsuarioAlunoStaging(
+            nome="Aluno",
+            cpf="12345678901",
+            matricula="A123",
+            rf="",
+        )
+
+        situacao, detalhe = _validar_usuario(usuario)
+
+        assert situacao == "pronto"
+        assert detalhe is None
+        assert usuario.cpf is None
 
 
 @pytest.mark.django_db
