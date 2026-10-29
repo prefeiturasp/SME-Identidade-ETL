@@ -424,12 +424,18 @@ def _extrair_vinculos_servidor_se1426() -> dict[str, list[VinculoServidor]]:
     return vinculos_por_rf
 
 
-def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
+def _extrair_se1426_sql(
+    filtro_where_apenas_ativos: str,
+) -> Iterator[RegistroIdentidade]:
     """Extrai servidores do SE1426 via SQL Server (read-only).
 
     A view ``v_servidor_sme_serap`` não expõe coluna de data de
     atualização — sem suporte a filtro incremental por enquanto;
     a extração sempre traz a base completa.
+
+    Args:
+        filtro_where_apenas_ativos: Cláusula ``WHERE`` para filtrar por
+          apenas ativos (ou string vazia).
 
     Yields:
         RegistroIdentidade para cada servidor encontrado, com os
@@ -445,7 +451,7 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
     # única linha por RF — sem isso, cada RF duplicado geraria dois
     # RegistroIdentidade recebendo a mesma lista de vínculos, dobrando
     # staging/payload sem necessidade.
-    consulta = """
+    consulta = f"""
         SELECT rf, nome, cpf, situacao, email
         FROM (
             SELECT
@@ -464,6 +470,7 @@ def _extrair_se1426_sql() -> Iterator[RegistroIdentidade]:
             LEFT JOIN v_servidor_email_cotic e
                 ON e.cd_servidor = sc.cd_servidor
                 AND e.dt_fim IS NULL
+            {filtro_where_apenas_ativos}
         ) dedup
         WHERE rn = 1
     """
@@ -574,6 +581,7 @@ def _extrair_se1426_api(
 
 def extrair_se1426(
     data_referencia: str | None = None,
+    apenas_ativos: bool = False,
 ) -> Iterator[RegistroIdentidade]:
     """Extrai dados institucionais da fonte SE1426 em streaming.
 
@@ -596,10 +604,14 @@ def extrair_se1426(
     else:
         desde = _obter_watermark("se1426")
 
+    filtro_where_apenas_ativos = (
+        "WHERE s.situacao = 'Ativo'" if apenas_ativos else ""
+    )
+
     logger.info("extrair_se1426 — desde=%s", desde)
 
     if settings.SE1426_DB_SERVIDOR:
-        fonte_iter = _extrair_se1426_sql()
+        fonte_iter = _extrair_se1426_sql(filtro_where_apenas_ativos)
     else:
         fonte_iter = _extrair_se1426_api(desde=desde)
 
@@ -682,7 +694,7 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
             LEFT JOIN PES_PessoaDocumento doc
                 ON doc.pes_id = pes.pes_id
                 AND doc.tdo_id = '{_TDO_ID_CPF}'
-            {filtro_where}
+            WHERE 1 = 1 {filtro_where}
         ) sub
         WHERE rn = 1
     """
@@ -707,23 +719,29 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
 
 
 def _extrair_coresso_sql(
-    desde: datetime | None = None,
+    desde: datetime | None = None, apenas_ativos: bool = False
 ) -> Iterator[RegistroIdentidade]:
     """Extrai usuários legados do CoreSSO via SQL Server (read-only).
 
     Args:
         desde: Data mínima de alteração para extração incremental
             (filtra por ``usu_dataAlteracao``); None extrai tudo.
+        apenas_ativos: Se True, filtra apenas registros ativos.
+            (filtra por ``usu_situacao = 1``)
 
     Yields:
         RegistroIdentidade para cada usuário encontrado.
     """
-    filtro_data = ""
+    filtro_where = ""
+
     if desde:
         dt = desde.strftime("%Y-%m-%d")
-        filtro_data = f"WHERE u.usu_dataAlteracao >= '{dt}'"
+        filtro_where += f" AND u.usu_dataAlteracao >= '{dt}'"
 
-    for item in _consultar_coresso_sql(filtro_data):
+    if apenas_ativos:
+        filtro_where += " AND u.usu_situacao = 1"
+
+    for item in _consultar_coresso_sql(filtro_where):
         yield _registro_coresso_de_linha(item)
 
 
@@ -762,7 +780,9 @@ def _extrair_coresso_por_identificadores(
         valores = ", ".join(
             "'" + str(ident).replace("'", "''") + "'" for ident in sublote
         )
-        filtro = f"WHERE doc.psd_numero IN ({valores}) OR u.usu_login IN ({valores})"
+        filtro = (
+            f" AND doc.psd_numero IN ({valores}) OR u.usu_login IN ({valores})"
+        )
         for item in _consultar_coresso_sql(filtro):
             yield _registro_coresso_de_linha(item)
 
@@ -802,7 +822,7 @@ def _extrair_coresso_api(
 
 
 def extrair_coresso(
-    data_referencia: str | None = None,
+    data_referencia: str | None = None, apenas_ativos: bool = False
 ) -> Iterator[RegistroIdentidade]:
     """Extrai usuários e perfis legados da fonte CoreSSO em streaming.
 
@@ -812,6 +832,7 @@ def extrair_coresso(
 
     Args:
         data_referencia: Data ISO para replay.
+        apenas_ativos: Se True, filtra apenas registros ativos.
 
     Yields:
         RegistroIdentidade conforme extraído da fonte.
@@ -825,7 +846,9 @@ def extrair_coresso(
     logger.info("extrair_coresso — desde=%s", desde)
 
     if settings.CORESSO_DB_SERVIDOR:
-        fonte_iter = _extrair_coresso_sql(desde=desde)
+        fonte_iter = _extrair_coresso_sql(
+            desde=desde, apenas_ativos=apenas_ativos
+        )
     elif settings.CORESSO_API_URL:
         fonte_iter = _extrair_coresso_api(desde=desde)
     else:
@@ -840,7 +863,7 @@ def extrair_coresso(
 # ---------------------------------------------------------------------------
 
 
-def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
+def _extrair_eol_alunos_sql(filtro_where: str) -> Iterator[RegistroIdentidade]:
     """Extrai alunos do EOL_DB via SQL Server (read-only).
 
     As tabelas aluno/v_matricula_cotic/matricula_turma_escola não
@@ -848,12 +871,15 @@ def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
     incremental — sem suporte a watermark por enquanto; a extração
     sempre traz a base completa.
 
+    Args:
+        filtro_where: Cláusula ``WHERE`` completa (ou string vazia).
+
     Yields:
         RegistroIdentidade para cada aluno encontrado.
     """
     import pyodbc
 
-    consulta = """
+    consulta = f"""
         SELECT
             a.cd_aluno                                  AS matricula,
             a.nm_aluno                                  AS nome,
@@ -870,6 +896,7 @@ def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
             ON mt.cd_matricula = mat.cd_matricula
         INNER JOIN v_cadastro_unidade_educacao ue
             ON ue.cd_unidade_educacao = mat.cd_escola
+        {filtro_where}
     """
 
     conn = pyodbc.connect(
@@ -906,7 +933,7 @@ def _extrair_eol_alunos_sql() -> Iterator[RegistroIdentidade]:
 
 
 def extrair_eol_alunos(
-    data_referencia: str | None = None,
+    data_referencia: str | None = None, apenas_ativos: bool = False
 ) -> Iterator[RegistroIdentidade]:
     """Extrai alunos da fonte EOL_DB em streaming.
 
@@ -915,6 +942,7 @@ def extrair_eol_alunos(
 
     Args:
         data_referencia: Data ISO para replay.
+        apenas_ativos: Se True, filtra apenas registros ativos.
 
     Yields:
         RegistroIdentidade conforme extraído da fonte.
@@ -925,13 +953,19 @@ def extrair_eol_alunos(
     else:
         desde = _obter_watermark("eol_alunos")
 
+    filtro_where = (
+        "WHERE mat.st_matricula IN (1, 5, 6, 10, 13)" if apenas_ativos else ""
+    )
+
     logger.info("extrair_eol_alunos — desde=%s", desde)
 
     if not settings.EOL_DB_STRING_CONEXAO and not settings.SE1426_DB_SERVIDOR:
         logger.warning("EOL_DB: sem configuração de conexão — skipping.")
         return
 
-    yield from _iterar_com_watermark("eol_alunos", _extrair_eol_alunos_sql())
+    yield from _iterar_com_watermark(
+        "eol_alunos", _extrair_eol_alunos_sql(filtro_where=filtro_where)
+    )
 
 
 # ---------------------------------------------------------------------------

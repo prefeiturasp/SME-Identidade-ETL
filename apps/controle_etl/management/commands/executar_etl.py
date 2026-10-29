@@ -17,11 +17,12 @@ class Command(BaseCommand):
     help = (
         "Dispara o pipeline de identidade (extração → resolução → "
         "provisionamento Keycloak → token-ms → registro operacional). "
-        "Use --lote-maximo para limitar o volume em testes locais."
+        "Use --apenas-ativos para ignorar registros inativos e --lote-maximo "
+        "para limitar o volume em testes locais."
     )
 
     def add_arguments(self, parser: Any) -> None:
-        """Registra as flags de fonte, realm, data-referência e lote."""
+        """Registra flags de fonte, realm, data-referência, ativos e lote."""
         parser.add_argument(
             "--fonte",
             type=str,
@@ -50,6 +51,14 @@ class Command(BaseCommand):
                 "(sobrepõe ETL_LOTE_MAXIMO só para este comando)."
             ),
         )
+        parser.add_argument(
+            "--apenas-ativos",
+            action="store_true",
+            help=(
+                "Se definido, apenas registros ativos serão extraídos. "
+                "Padrão: False."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         """Cria a ExecucaoETL e roda o pipeline síncrono ou assíncrono."""
@@ -64,6 +73,7 @@ class Command(BaseCommand):
             fonte=options["fonte"],
             realm_destino=options["realm"],
             tipo_disparo=ExecucaoETL.TipoDisparo.MANUAL,
+            apenas_ativos=options["apenas_ativos"],
         )
 
         modo = (
@@ -75,6 +85,7 @@ class Command(BaseCommand):
             f"Execução {execucao.id_execucao} criada"
             f" | fonte={options['fonte']} realm={options['realm']}"
             f" | lote_maximo={settings.ETL_LOTE_MAXIMO or 'sem limite'}"
+            f" | apenas_ativos={options['apenas_ativos']}"
             f" | modo={modo}"
         )
 

@@ -19,7 +19,7 @@ from apps.controle_etl.models import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def cliente(settings: Any) -> APIClient:
     """Retorna APIClient autenticado com chave de teste."""
     settings.API_KEY = "chave-teste"
@@ -29,7 +29,7 @@ def cliente(settings: Any) -> APIClient:
     return c
 
 
-@pytest.fixture()
+@pytest.fixture
 def cliente_anonimo() -> APIClient:
     """Retorna APIClient sem autenticação."""
     return APIClient()

@@ -40,6 +40,10 @@ class ExecucaoETL(models.Model):
         default="todos",
         help_text="Fonte: todos | se1426 | coresso | eol_alunos",
     )
+    apenas_ativos = models.BooleanField(
+        default=False,
+        help_text="Se True, ignora registros inativos na extração",
+    )
     realm_destino = models.CharField(
         max_length=100,
         default=django_settings.KEYCLOAK_REALM,
@@ -77,6 +81,9 @@ class ExecucaoETL(models.Model):
             models.Index(fields=["-criado_em"], name="idx_execucao_criado"),
             models.Index(fields=["situacao"], name="idx_execucao_situacao"),
             models.Index(fields=["fonte"], name="idx_execucao_fonte"),
+            models.Index(
+                fields=["apenas_ativos"], name="idx_execucao_apenas_ativos"
+            ),
         ]
 
     def __str__(self) -> str:
