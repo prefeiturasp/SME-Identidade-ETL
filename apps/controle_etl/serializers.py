@@ -419,3 +419,24 @@ class HealthStatusSerializer(serializers.Serializer):
     """Serializa o status de saúde do serviço."""
 
     status = serializers.ChoiceField(choices=["healthy", "unhealthy"])
+
+
+class DadosUsuarioCoreSSOSerializer(serializers.Serializer):
+    """Serializa os dados cadastrais do usuário."""
+
+    nome = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+    cpf = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+    email = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+    codigo_rf = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )

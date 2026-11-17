@@ -145,4 +145,9 @@ urlpatterns = [
         views.executar_pipeline_sistema,
         name="etl-pipeline-sistema",
     ),
+    path(
+        "etl/coresso/usuarios/<str:login>/dados/",
+        views.ConsultaDadosUsuarioCoreSSOView.as_view(),
+        name="etl-coresso-usuarios-dados",
+    ),
 ]

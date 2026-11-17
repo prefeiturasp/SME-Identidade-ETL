@@ -19,6 +19,11 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.extracao.consultas_coresso import (
+    ConsultaCoreSSOError,
+    selecionar_dados_usuario_por_login,
+)
+
 from .models import (
     CheckpointEtl,
     ControleProvisionamento,
@@ -33,6 +38,7 @@ from .serializers import (
     ControleProvisionamentoSerializer,
     CriarExecucaoETLSerializer,
     CriarUsuarioManualSerializer,
+    DadosUsuarioCoreSSOSerializer,
     ExecucaoETLSerializer,
     ExtrairVinculosSerializer,
     HealthStatusSerializer,
@@ -2025,4 +2031,51 @@ class KanbanView(View):
                 "todas_fontes": todas_fontes,
                 "mensagem_kanban_vazio": mensagem_kanban_vazio,
             },
+        )
+
+
+@extend_schema(tags=["CoreSSO"])
+class ConsultaDadosUsuarioCoreSSOView(APIView):
+    """Disponibiliza a consulta de dados do usuário no CoreSSO."""
+
+    @extend_schema(
+        summary="Consulta dados do usuário por login no CoreSSO",
+        responses={
+            200: DadosUsuarioCoreSSOSerializer,
+            204: None,
+            401: None,
+            503: None,
+        },
+    )
+    def get(self, request: Request, login: str) -> Response:
+        """Consulta os dados do usuário pelo login.
+
+        Args:
+            request: Requisição HTTP.
+            login: Login do usuário.
+
+        Returns:
+            Resposta HTTP com os dados do usuário ou o status
+            correspondente à consulta.
+        """
+        try:
+            dados = selecionar_dados_usuario_por_login(login)
+
+        except ConsultaCoreSSOError:
+            logger.exception(
+                "Erro na consulta de dados de usuário CoreSSO."
+            )
+            return Response(
+                {"codigo": "ERRO_CONSULTA_CORESSO"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if dados is None:
+            return Response(
+                status=status.HTTP_204_NO_CONTENT,
+            )
+
+        return Response(
+            dados,
+            status=status.HTTP_200_OK,
         )
