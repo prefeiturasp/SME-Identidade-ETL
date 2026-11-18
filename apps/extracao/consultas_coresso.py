@@ -1,15 +1,15 @@
-
 """Consultas ao CoreSSO para integrações do identidade."""
 
 from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import closing, contextmanager
+from typing import TYPE_CHECKING
 
-import pyodbc
 from django.conf import settings
 
-from apps.extracao.tasks import _string_conexao_coresso
+if TYPE_CHECKING:
+    import pyodbc
 
 _SQL_DADOS_USUARIO = """
     SELECT
@@ -45,6 +45,15 @@ def _abrir_cursor() -> Generator[pyodbc.Cursor, None, None]:
         raise ConsultaCoreSSOError(
             "CoreSSO não configurado."
         )
+
+    try:
+        import pyodbc
+    except ImportError as exc:
+        raise ConsultaCoreSSOError(
+            "Driver ODBC indisponível."
+        ) from exc
+
+    from apps.extracao.tasks import _string_conexao_coresso
 
     try:
         with closing(

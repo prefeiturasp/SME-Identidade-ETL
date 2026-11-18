@@ -1,8 +1,9 @@
 
-"""Testes das consultas de dados de usuários no CoreSSO."""
+"""Testes das consultas de dados no CoreSSO."""
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apps.extracao import consultas_coresso
+
+
+class ODBCError(Exception):
+    """Simula erros do driver ODBC."""
 
 
 @pytest.fixture
@@ -24,17 +29,18 @@ def conexao_mocada(
     conexao = MagicMock()
     conexao.cursor.return_value = cursor
 
+    pyodbc_mocado = MagicMock()
+    pyodbc_mocado.Error = ODBCError
+    pyodbc_mocado.connect.return_value = conexao
+
     with (
+        patch.dict(sys.modules, {"pyodbc": pyodbc_mocado}),
         patch(
-            "apps.extracao.consultas_coresso._string_conexao_coresso",
+            "apps.extracao.tasks._string_conexao_coresso",
             return_value="CONEXAO_TESTE",
         ),
-        patch(
-            "apps.extracao.consultas_coresso.pyodbc.connect",
-            return_value=conexao,
-        ) as conectar,
     ):
-        yield cursor, conexao, conectar
+        yield cursor, conexao, pyodbc_mocado.connect
 
 
 class TestSelecionarDadosUsuarioPorLogin:
@@ -145,9 +151,7 @@ class TestSelecionarDadosUsuarioPorLogin:
         conexao_mocada: tuple[MagicMock, MagicMock, MagicMock],
     ) -> None:
         _, _, conectar = conexao_mocada
-        conectar.side_effect = consultas_coresso.pyodbc.Error(
-            "falha de conexão"
-        )
+        conectar.side_effect = ODBCError("falha de conexão")
 
         with pytest.raises(consultas_coresso.ConsultaCoreSSOError):
             consultas_coresso.selecionar_dados_usuario_por_login("1234567")
@@ -157,9 +161,7 @@ class TestSelecionarDadosUsuarioPorLogin:
         conexao_mocada: tuple[MagicMock, MagicMock, MagicMock],
     ) -> None:
         cursor, conexao, _ = conexao_mocada
-        cursor.execute.side_effect = consultas_coresso.pyodbc.Error(
-            "erro de SQL"
-        )
+        cursor.execute.side_effect = ODBCError("erro de SQL")
 
         with pytest.raises(consultas_coresso.ConsultaCoreSSOError):
             consultas_coresso.selecionar_dados_usuario_por_login("1234567")
