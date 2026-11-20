@@ -327,7 +327,7 @@
   <a class="sidebar-domain"
      href="?fonte={{ exec.fonte }}">
     <span class="dot dot-{{ exec.situacao }}"></span>
-    {{ exec.fonte|truncatechars:22 }}
+    {{ exec.fonte|nome_fonte|truncatechars:22 }}
   </a>
   {% endfor %}
   {% endif %}
@@ -351,9 +351,9 @@
   {% if resumo_geral %}
   <div class="row g-3 mb-4">
     {% for r in resumo_geral %}
-    <div class="col-12 col-sm-6 col-xl-4">
+    <div class="col-12 col-sm-6 col-xl-3">
       <div class="domain-card">
-        <div class="domain-name mb-2">{{ r.fonte }}</div>
+        <div class="domain-name mb-2">{{ r.fonte|nome_fonte }}</div>
         <div class="progresso-linha">
           <span><i class="bi bi-download me-1"></i>Lidos</span>
           <strong>{{ r.lidos|numero_br }}</strong>
@@ -380,7 +380,7 @@
     <div class="col-12 col-sm-6 col-xl-4">
       <div class="domain-card {{ exec.situacao }}">
         <div class="d-flex justify-content-between align-items-start mb-1">
-          <div class="domain-name">{{ exec.fonte }}</div>
+          <div class="domain-name">{{ exec.fonte|nome_fonte }}</div>
           <span class="pill {{ exec.situacao }} ms-2">
             {% if exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
             {% elif exec.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
@@ -470,7 +470,7 @@
             {% for etapa in etapas %}
             <tr>
               {% if forloop.first %}
-              <td class="td-domain" rowspan="{{ etapas|length }}">{{ item.fonte }}</td>
+              <td class="td-domain" rowspan="{{ etapas|length }}">{{ item.fonte|nome_fonte }}</td>
               <td rowspan="{{ etapas|length }}">
                 <span class="pill {{ item.situacao }}">
                   {% if item.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
@@ -490,7 +490,7 @@
             {% endfor %}
           {% else %}
           <tr>
-            <td class="td-domain">{{ item.fonte }}</td>
+            <td class="td-domain">{{ item.fonte|nome_fonte }}</td>
             <td>
               <span class="pill {{ item.situacao }}">
                 {% if item.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
@@ -526,7 +526,7 @@
         <select id="id_fonte" name="fonte" class="form-select form-select-sm">
           <option value="">Todas</option>
           {% for f in fontes %}
-          <option value="{{ f }}" {% if filtros.fonte == f %}selected{% endif %}>{{ f }}</option>
+          <option value="{{ f }}" {% if filtros.fonte == f %}selected{% endif %}>{{ f|nome_fonte }}</option>
           {% endfor %}
         </select>
       </div>
@@ -576,7 +576,7 @@
       <tbody>
         {% for exec in execucoes %}
         <tr>
-          <td class="td-domain">{{ exec.fonte }}</td>
+          <td class="td-domain">{{ exec.fonte|nome_fonte }}</td>
           <td>
             <span class="pill {{ exec.situacao }}">
               {% if exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>

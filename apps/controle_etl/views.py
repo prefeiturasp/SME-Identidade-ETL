@@ -172,9 +172,16 @@ def _resumo_geral_por_fonte() -> list[dict]:
         )
     )
     por_sistema = {c["sistema_origem"]: c for c in contagem_hash}
+    por_sistema["eol_db_apoio"] = {
+        "keycloak": 0,
+        "token_ms": ExecucaoETL.objects.filter(fonte="eol_db_apoio").aggregate(
+            total=Sum("total_carregado")
+        )["total"]
+        or 0,
+    }
 
     resumo = []
-    for fonte in ("se1426", "coresso", "eol_alunos"):
+    for fonte in ("se1426", "coresso", "eol_alunos", "eol_db_apoio"):
         dados_hash = por_sistema.get(fonte, {"keycloak": 0, "token_ms": 0})
         resumo.append(
             {

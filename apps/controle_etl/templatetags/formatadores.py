@@ -7,6 +7,20 @@ from django import template
 
 register = template.Library()
 
+_NOMES_FONTES = {
+    "todos": "Todas as fontes",
+    "se1426": "SE1426",
+    "coresso": "CoreSSO",
+    "eol_alunos": "EOL DB",
+    "eol_db_apoio": "EOL DB APOIO",
+}
+
+
+@register.filter(name="nome_fonte")
+def nome_fonte(value: str) -> str:
+    """Exiba o nome da base mantendo seu identificador interno."""
+    return _NOMES_FONTES.get(value, value)
+
 
 @register.filter(name="numero_br")
 def numero_br(value: Any) -> Any:

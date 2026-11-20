@@ -159,7 +159,7 @@
   {% for f in todas_fontes %}
   <a class="sidebar-domain" href="?fonte={{ f }}">
     <span class="dot dot-default"></span>
-    {{ f|truncatechars:22 }}
+    {{ f|nome_fonte|truncatechars:22 }}
   </a>
   {% endfor %}
   {% endif %}
@@ -184,7 +184,7 @@
         <select id="id_fonte_kb" name="fonte" class="form-select form-select-sm" onchange="this.form.submit()">
           <option value="">Todas</option>
           {% for f in todas_fontes %}
-          <option value="{{ f }}" {% if fonte_filtro == f %}selected{% endif %}>{{ f }}</option>
+          <option value="{{ f }}" {% if fonte_filtro == f %}selected{% endif %}>{{ f|nome_fonte }}</option>
           {% endfor %}
         </select>
       </div>
@@ -207,7 +207,7 @@
     {% for item in fontes_kanban %}
     <div class="domain-block">
       <div class="domain-header">
-        <span class="domain-title">{{ item.exec.fonte }}</span>
+        <span class="domain-title">{{ item.exec.fonte|nome_fonte }}</span>
         <span class="pill {{ item.exec.situacao }}">
           {% if item.exec.situacao == "sucesso" %}<i class="bi bi-check-circle-fill"></i>
           {% elif item.exec.situacao == "falha" %}<i class="bi bi-x-circle-fill"></i>
