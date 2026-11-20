@@ -1,5 +1,6 @@
 # NOSONAR
-FROM --platform=linux/amd64 python:3.12-slim AS builder
+ARG BUILD_PLATFORM=linux/amd64
+FROM --platform=$BUILD_PLATFORM python:3.12-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,7 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     unixodbc-dev \
     freetds-dev \
-    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-max-time 180 \
+        --connect-timeout 15 --max-time 60 \
+        -o /tmp/microsoft.asc https://packages.microsoft.com/keys/microsoft.asc \
+    && gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg /tmp/microsoft.asc \
+    && rm /tmp/microsoft.asc \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
@@ -29,7 +34,7 @@ RUN pip install --upgrade pip \
     && pip install --prefix=/install gunicorn
 
 
-FROM --platform=linux/amd64 python:3.12-slim
+FROM --platform=$BUILD_PLATFORM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -42,7 +47,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     unixodbc \
     tdsodbc \
-    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-max-time 180 \
+        --connect-timeout 15 --max-time 60 \
+        -o /tmp/microsoft.asc https://packages.microsoft.com/keys/microsoft.asc \
+    && gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg /tmp/microsoft.asc \
+    && rm /tmp/microsoft.asc \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
