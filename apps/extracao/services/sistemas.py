@@ -6,6 +6,7 @@ import logging
 
 from django.conf import settings
 
+from apps.extracao.sql import sistemas_queries
 from config import conexoes_db
 
 logger = logging.getLogger("etl_identidade")
@@ -28,17 +29,15 @@ def extrair_sistemas_coresso() -> int:
 
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     filtro_exclusao = (
-        f"WHERE sis_id NOT IN ({','.join(str(i) for i in excluidos)})"
+        sistemas_queries.FILTRO_EXCLUIR_SISTEMAS_CORESSO.format(
+            ids=",".join(str(i) for i in excluidos)
+        )
         if excluidos
         else ""
     )
-    consulta = f"""
-        SELECT
-            sis_id, sis_nome, sis_descricao,
-            sis_tipoAutenticacao, sis_urlIntegracao,
-            sis_caminhoLogout, sis_situacao
-        FROM SYS_Sistema {filtro_exclusao} ORDER BY sis_id
-    """
+    consulta = sistemas_queries.SISTEMAS_CORESSO.format(
+        filtro_exclusao=filtro_exclusao
+    )
     conn = conexoes_db.conectar_coresso()
     total = 0
     try:
@@ -81,14 +80,15 @@ def extrair_perfis_coresso() -> int:
 
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     filtro_exclusao = (
-        f"WHERE sis_id NOT IN ({','.join(str(i) for i in excluidos)})"
+        sistemas_queries.FILTRO_EXCLUIR_SISTEMAS_CORESSO.format(
+            ids=",".join(str(i) for i in excluidos)
+        )
         if excluidos
         else ""
     )
-    consulta = f"""
-        SELECT gru_id, gru_nome, sis_id, vis_id, gru_situacao
-        FROM SYS_Grupo {filtro_exclusao} ORDER BY sis_id, gru_id
-    """
+    consulta = sistemas_queries.PERFIS_CORESSO.format(
+        filtro_exclusao=filtro_exclusao
+    )
     conn = conexoes_db.conectar_coresso()
     total = 0
     try:
@@ -140,9 +140,7 @@ def extrair_sistemas_recuperacao() -> list[dict]:
         conexao.set_session(readonly=True)
         with conexao.cursor() as cursor:
             cursor.execute(
-                "SELECT codigo_sistema, nome_sistema, "
-                "pagina_recuperacao_senha "
-                "FROM public.sistemarecuperacaosenha ORDER BY codigo_sistema"
+                sistemas_queries.CONFIGURACOES_RECUPERACAO_SENHA_EOL_APOIO
             )
             return [
                 {

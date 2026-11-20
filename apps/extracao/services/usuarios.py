@@ -15,6 +15,7 @@ from apps.extracao.services.base import (
     _sanitizar_cpf,
     _sanitizar_email,
 )
+from apps.extracao.sql import usuarios_queries
 from config import conexoes_db
 
 logger = logging.getLogger("etl_identidade")
@@ -29,7 +30,11 @@ class Se1426Service(BaseETLService):
         self, desde: datetime | None, apenas_ativos: bool
     ) -> Iterator[RegistroIdentidade]:
         if settings.SE1426_DB_SERVIDOR:
-            filtro = "WHERE s.situacao = 'Ativo'" if apenas_ativos else ""
+            filtro = (
+                usuarios_queries.FILTRO_SERVIDORES_ATIVOS_SE1426
+                if apenas_ativos
+                else ""
+            )
             yield from extrair_servidor_serap_se1426(filtro)
         else:
             yield from _extrair_se1426_api(desde=desde)
@@ -41,82 +46,6 @@ def extrair_vinculos_se1426(
 ) -> Iterator[RegistroIdentidade]:
     """Lê servidores sem confirmar avanço do watermark."""
     yield from Se1426Service().extrair(data_referencia, apenas_ativos)
-
-
-_CONSULTAS_VINCULO_SE1426 = {
-    "cargo_base": """
-        SELECT
-            sev.cd_registro_funcional     AS rf,
-            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))
-                                           AS codigo_vinculo_origem,
-            CAST(cba.cd_cargo AS VARCHAR(50)) AS cargo_codigo,
-            NULL                           AS cargo_nome,
-            ls.cd_unidade_educacao        AS unidade_codigo,
-            ue.nm_unidade_educacao        AS unidade_nome,
-            ue.cd_unidade_administrativa_referencia AS dre_codigo,
-            NULL                           AS situacao
-        FROM v_servidor_cotic sev
-        INNER JOIN v_cargo_base_cotic cba
-            ON sev.cd_servidor = cba.cd_servidor
-        INNER JOIN lotacao_servidor ls
-            ON ls.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
-            AND ls.dt_fim IS NULL
-        LEFT JOIN v_cadastro_unidade_educacao ue
-            ON ue.cd_unidade_educacao = ls.cd_unidade_educacao
-        WHERE cba.dt_fim_nomeacao IS NULL
-            AND cba.dt_cancelamento IS NULL
-    """,
-    "cargo_sobreposto": """
-        SELECT
-            sev.cd_registro_funcional     AS rf,
-            CAST(cba.cd_cargo_base_servidor AS VARCHAR(50))
-                                           AS codigo_vinculo_origem,
-            CAST(css.cd_cargo AS VARCHAR(50)) AS cargo_codigo,
-            NULL                           AS cargo_nome,
-            css.cd_unidade_local_servico   AS unidade_codigo,
-            ue.nm_unidade_educacao         AS unidade_nome,
-            ue.cd_unidade_administrativa_referencia AS dre_codigo,
-            NULL                           AS situacao
-        FROM v_servidor_cotic sev
-        INNER JOIN v_cargo_base_cotic cba
-            ON sev.cd_servidor = cba.cd_servidor
-        INNER JOIN cargo_sobreposto_servidor css
-            ON css.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
-            AND (css.dt_fim_cargo_sobreposto IS NULL
-                 OR css.dt_fim_cargo_sobreposto > getdate())
-        LEFT JOIN v_cadastro_unidade_educacao ue
-            ON ue.cd_unidade_educacao = css.cd_unidade_local_servico
-        WHERE cba.dt_fim_nomeacao IS NULL
-            AND cba.dt_cancelamento IS NULL
-    """,
-    "funcao_atividade": """
-        SELECT
-            sev.cd_registro_funcional     AS rf,
-            CONCAT(
-                fat.cd_cargo_base_servidor, '-', fat.cd_tipo_funcao, '-',
-                fat.cd_unidade_local_servico
-            )                              AS codigo_vinculo_origem,
-            CAST(fat.cd_tipo_funcao AS VARCHAR(50)) AS cargo_codigo,
-            NULL                           AS cargo_nome,
-            fat.cd_unidade_local_servico   AS unidade_codigo,
-            ue.nm_unidade_educacao         AS unidade_nome,
-            ue.cd_unidade_administrativa_referencia AS dre_codigo,
-            NULL                           AS situacao
-        FROM v_servidor_cotic sev
-        INNER JOIN v_cargo_base_cotic cba
-            ON sev.cd_servidor = cba.cd_servidor
-        INNER JOIN funcao_atividade_cargo_servidor fat
-            ON fat.cd_cargo_base_servidor = cba.cd_cargo_base_servidor
-            AND (fat.dt_cancelamento IS NULL
-                 OR fat.dt_fim_funcao_atividade > getdate())
-            AND (fat.dt_fim_funcao_atividade IS NULL
-                 OR fat.dt_fim_funcao_atividade > getdate())
-        LEFT JOIN v_cadastro_unidade_educacao ue
-            ON ue.cd_unidade_educacao = fat.cd_unidade_local_servico
-        WHERE cba.dt_fim_nomeacao IS NULL
-            AND cba.dt_cancelamento IS NULL
-    """,
-}
 
 
 def _extrair_vinculos_servidor_se1426() -> dict[str, list[VinculoServidor]]:
@@ -136,7 +65,10 @@ def _extrair_vinculos_servidor_se1426() -> dict[str, list[VinculoServidor]]:
     conn = conexoes_db.conectar_se1426()
     try:
         cursor = conn.cursor()
-        for tipo_vinculo, consulta in _CONSULTAS_VINCULO_SE1426.items():
+        for (
+            tipo_vinculo,
+            consulta,
+        ) in usuarios_queries.VINCULOS_SERVIDOR_SE1426.items():
             cursor.execute(consulta)
             colunas = [d[0] for d in cursor.description]
             while True:
@@ -195,29 +127,9 @@ def extrair_servidor_serap_se1426(
     # única linha por RF — sem isso, cada RF duplicado geraria dois
     # RegistroIdentidade recebendo a mesma lista de vínculos, dobrando
     # staging/payload sem necessidade.
-    consulta = f"""
-        SELECT rf, nome, cpf, situacao, email
-        FROM (
-            SELECT
-                s.cd_registro_funcional  AS rf,
-                s.nm_pessoa              AS nome,
-                s.cd_cpf_pessoa          AS cpf,
-                s.situacao               AS situacao,
-                e.dc_dispositivo         AS email,
-                ROW_NUMBER() OVER (
-                    PARTITION BY s.cd_registro_funcional
-                    ORDER BY CASE WHEN s.situacao = 'Ativo' THEN 0 ELSE 1 END
-                ) AS rn
-            FROM v_servidor_sme_serap s
-            LEFT JOIN v_servidor_cotic sc
-                ON sc.cd_registro_funcional = s.cd_registro_funcional
-            LEFT JOIN v_servidor_email_cotic e
-                ON e.cd_servidor = sc.cd_servidor
-                AND e.dt_fim IS NULL
-            {filtro_where_apenas_ativos}
-        ) dedup
-        WHERE rn = 1
-    """
+    consulta = usuarios_queries.SERVIDORES_SERAP_SE1426.format(
+        filtro_where_apenas_ativos=filtro_where_apenas_ativos
+    )
 
     vinculos_por_rf = _extrair_vinculos_servidor_se1426()
 
@@ -293,21 +205,7 @@ def buscar_complemento_se1426(rf: str) -> dict | None:
     if not settings.SE1426_DB_SERVIDOR or not rf:
         return None
 
-    consulta = """
-        SELECT
-            s.cd_registro_funcional  AS rf,
-            s.nm_pessoa              AS nome,
-            s.cd_cpf_pessoa          AS cpf,
-            e.dc_dispositivo         AS email
-        FROM v_servidor_sme_serap s
-        LEFT JOIN v_servidor_cotic sc
-            ON sc.cd_registro_funcional
-               = s.cd_registro_funcional
-        LEFT JOIN v_servidor_email_cotic e
-            ON e.cd_servidor = sc.cd_servidor
-            AND e.dt_fim IS NULL
-        WHERE s.cd_registro_funcional = ?
-    """
+    consulta = usuarios_queries.COMPLEMENTO_SERVIDOR_SE1426
     try:
         conn = conexoes_db.conectar_se1426()
         try:
@@ -404,29 +302,9 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
         Dict por linha, com as colunas ``login``, ``cpf``, ``nome``,
         ``email``, ``situacao``, ``dt_atualizacao``.
     """
-    consulta = f"""
-        SELECT login, cpf, nome, email, situacao, dt_atualizacao
-        FROM (
-            SELECT
-                u.usu_login          AS login,
-                doc.psd_numero        AS cpf,
-                pes.pes_nome          AS nome,
-                u.usu_email           AS email,
-                u.usu_situacao        AS situacao,
-                u.usu_dataAlteracao   AS dt_atualizacao,
-                ROW_NUMBER() OVER (
-                    PARTITION BY pes.pes_id
-                    ORDER BY doc.psd_numero
-                ) AS rn
-            FROM SYS_Usuario u
-            INNER JOIN PES_Pessoa pes ON pes.pes_id = u.pes_id
-            LEFT JOIN PES_PessoaDocumento doc
-                ON doc.pes_id = pes.pes_id
-                AND doc.tdo_id = '{_TDO_ID_CPF}'
-            WHERE 1 = 1 {filtro_where}
-        ) sub
-        WHERE rn = 1
-    """
+    consulta = usuarios_queries.USUARIOS_CORESSO.format(
+        _TDO_ID_CPF=_TDO_ID_CPF, filtro_where=filtro_where
+    )
 
     conn = conexoes_db.conectar_coresso()
     conn.timeout = settings.CORESSO_DB_TIMEOUT
@@ -462,10 +340,12 @@ def _extrair_coresso_sql(
 
     if desde:
         dt = desde.strftime("%Y-%m-%d")
-        filtro_where += f" AND u.usu_dataAlteracao >= '{dt}'"
+        filtro_where += (
+            usuarios_queries.FILTRO_USUARIOS_ALTERADOS_CORESSO.format(data=dt)
+        )
 
     if apenas_ativos:
-        filtro_where += " AND u.usu_situacao = 1"
+        filtro_where += usuarios_queries.FILTRO_USUARIOS_ATIVOS_CORESSO
 
     for item in _consultar_coresso_sql(filtro_where):
         yield _registro_coresso_de_linha(item)
@@ -506,8 +386,8 @@ def _extrair_coresso_por_identificadores(
         valores = ", ".join(
             "'" + str(ident).replace("'", "''") + "'" for ident in sublote
         )
-        filtro = (
-            f" AND doc.psd_numero IN ({valores}) OR u.usu_login IN ({valores})"
+        filtro = usuarios_queries.FILTRO_IDENTIFICADORES_CORESSO.format(
+            valores=valores
         )
         for item in _consultar_coresso_sql(filtro):
             yield _registro_coresso_de_linha(item)
@@ -559,16 +439,7 @@ def buscar_grupos_coresso_por_login(login: str) -> list[dict]:
     if not login or not settings.CORESSO_DB_SERVIDOR:
         return []
 
-    consulta = """
-        SELECT
-            g.gru_id    AS gru_id,
-            g.gru_nome  AS nome
-        FROM SYS_Grupo g
-        INNER JOIN SYS_UsuarioGrupo ug ON ug.gru_id = g.gru_id
-        INNER JOIN SYS_Usuario u ON u.usu_id = ug.usu_id
-        WHERE u.usu_login = ?
-          AND g.gru_situacao = 1
-    """
+    consulta = usuarios_queries.GRUPOS_USUARIO_CORESSO
     try:
         conn = conexoes_db.conectar_coresso()
         try:
@@ -611,41 +482,24 @@ def extrair_vinculos_usuario_grupo_coresso(
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     if excluidos:
         filtros_extra.append(
-            "AND g.sis_id NOT IN" + f" ({','.join(str(i) for i in excluidos)})"
+            usuarios_queries.FILTRO_EXCLUIR_SISTEMAS_USUARIO_CORESSO.format(
+                ids=",".join(str(i) for i in excluidos)
+            )
         )
     if sis_id is not None:
-        filtros_extra.append(f"AND g.sis_id = {int(sis_id)}")
-    if gru_id is not None:
-        filtros_extra.append(f"AND g.gru_id = '{gru_id}'")
-    clausulas = "\n          ".join(filtros_extra)
-    consulta = f"""
-        SELECT
-            u.usu_login     AS login,
-            doc.psd_numero  AS cpf,
-            pes.pes_nome    AS nome,
-            u.usu_email     AS email,
-            g.gru_id        AS gru_id,
-            g.gru_nome      AS gru_nome,
-            g.sis_id        AS sis_id
-        FROM SYS_Usuario u
-        INNER JOIN PES_Pessoa pes
-            ON pes.pes_id = u.pes_id
-        LEFT JOIN PES_PessoaDocumento doc
-            ON doc.pes_id = pes.pes_id
-            AND doc.tdo_id = (
-                SELECT TOP 1 tdo_id
-                FROM SYS_TipoDocumentacao
-                WHERE tdo_nome LIKE '%CPF%'
+        filtros_extra.append(
+            usuarios_queries.FILTRO_SISTEMA_USUARIO_CORESSO.format(
+                sis_id=int(sis_id)
             )
-        INNER JOIN SYS_UsuarioGrupo ug
-            ON ug.usu_id = u.usu_id
-        INNER JOIN SYS_Grupo g
-            ON g.gru_id = ug.gru_id
-        WHERE g.gru_situacao = 1
-          AND u.usu_situacao = 1
-          {clausulas}
-        ORDER BY u.usu_login, g.sis_id
-    """
+        )
+    if gru_id is not None:
+        filtros_extra.append(
+            usuarios_queries.FILTRO_GRUPO_USUARIO_CORESSO.format(gru_id=gru_id)
+        )
+    clausulas = "\n          ".join(filtros_extra)
+    consulta = usuarios_queries.VINCULOS_USUARIO_GRUPO_CORESSO.format(
+        clausulas=clausulas
+    )
     lote_maximo = settings.ETL_LOTE_MAXIMO
     conn = conexoes_db.conectar_coresso()
     total = 0
@@ -689,43 +543,13 @@ def buscar_dados_usuario_coresso(
 
     ident = identificador.strip()
     if "@" in ident:
-        filtro = "u.usu_email = ?"
+        filtro = usuarios_queries.FILTRO_EMAIL_CORESSO
     elif len(ident) > 7:
-        filtro = "doc.psd_numero = ?"
+        filtro = usuarios_queries.FILTRO_CPF_CORESSO
     else:
-        filtro = "u.usu_login = ?"
+        filtro = usuarios_queries.FILTRO_LOGIN_CORESSO
 
-    consulta = f"""
-        SELECT
-            u.usu_login     AS login,
-            doc.psd_numero  AS cpf,
-            pes.pes_nome    AS nome,
-            u.usu_email     AS email,
-            u.usu_situacao  AS situacao,
-            g.gru_id        AS gru_id,
-            g.gru_nome      AS gru_nome,
-            g.sis_id        AS sis_id,
-            s.sis_nome      AS sis_nome
-        FROM SYS_Usuario u
-        INNER JOIN PES_Pessoa pes
-            ON pes.pes_id = u.pes_id
-        LEFT JOIN PES_PessoaDocumento doc
-            ON doc.pes_id = pes.pes_id
-            AND doc.tdo_id = (
-                SELECT TOP 1 tdo_id
-                FROM SYS_TipoDocumentacao
-                WHERE tdo_nome LIKE '%CPF%'
-            )
-        LEFT JOIN SYS_UsuarioGrupo ug
-            ON ug.usu_id = u.usu_id
-        LEFT JOIN SYS_Grupo g
-            ON g.gru_id = ug.gru_id
-            AND g.gru_situacao = 1
-        LEFT JOIN SYS_Sistema s
-            ON s.sis_id = g.sis_id
-        WHERE {filtro}
-        ORDER BY s.sis_nome, g.gru_nome
-    """
+    consulta = usuarios_queries.DADOS_USUARIO_CORESSO.format(filtro=filtro)
     conn = conexoes_db.conectar_coresso()
     try:
         cursor = conn.cursor()
@@ -773,27 +597,9 @@ def buscar_permissoes_usuario_coresso(gru_ids: list[str]) -> list[dict]:
         return []
 
     marcadores = ",".join("?" for _ in gru_ids)
-    consulta = f"""
-        SELECT
-            gp.sis_id          AS sis_id,
-            s.sis_nome         AS sis_nome,
-            gp.mod_id          AS mod_id,
-            m.mod_nome         AS mod_nome,
-            gp.grp_consultar   AS consultar,
-            gp.grp_inserir     AS inserir,
-            gp.grp_alterar     AS alterar,
-            gp.grp_excluir     AS excluir
-        FROM SYS_GrupoPermissao gp
-        LEFT JOIN SYS_Sistema s
-            ON s.sis_id = gp.sis_id
-        LEFT JOIN SYS_Modulo m
-            ON m.sis_id = gp.sis_id AND m.mod_id = gp.mod_id
-        WHERE gp.gru_id IN ({marcadores})
-          AND (
-              gp.grp_consultar = 1 OR gp.grp_inserir = 1
-              OR gp.grp_alterar = 1 OR gp.grp_excluir = 1
-          )
-    """
+    consulta = usuarios_queries.PERMISSOES_USUARIO_CORESSO.format(
+        marcadores=marcadores
+    )
     conn = conexoes_db.conectar_coresso()
     try:
         cursor = conn.cursor()
