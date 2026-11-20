@@ -21,9 +21,14 @@ from apps.extracao.services.base import (
     _sanitizar_cpf,
     _sanitizar_email,
 )
-from apps.extracao.services.sistemas import (
+from apps.extracao.services.grupos_e_permissoes import (
     _slugificar_role,
+    buscar_grupos_coresso_por_login,
+    buscar_permissoes_usuario_coresso,
     extrair_perfis_coresso,
+    extrair_vinculos_usuario_grupo_coresso,
+)
+from apps.extracao.services.sistemas import (
     extrair_sistemas_coresso,
 )
 from apps.extracao.services.usuarios import (
@@ -31,11 +36,8 @@ from apps.extracao.services.usuarios import (
     _extrair_vinculos_servidor_se1426,
     _montar_resultado_usuario,
     buscar_dados_usuario_coresso,
-    buscar_grupos_coresso_por_login,
-    buscar_permissoes_usuario_coresso,
     extrair_coresso,
     extrair_vinculos_se1426,
-    extrair_vinculos_usuario_grupo_coresso,
 )
 from config.conexoes_db import (
     _string_conexao_coresso,

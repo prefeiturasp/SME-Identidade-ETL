@@ -10,10 +10,6 @@ SISTEMAS_CORESSO = """
         FROM SYS_Sistema {filtro_exclusao} ORDER BY sis_id
     """
 
-PERFIS_CORESSO = """
-        SELECT gru_id, gru_nome, sis_id, vis_id, gru_situacao
-        FROM SYS_Grupo {filtro_exclusao} ORDER BY sis_id, gru_id
-    """
 
 CONFIGURACOES_RECUPERACAO_SENHA_EOL_APOIO = (
     "SELECT codigo_sistema, nome_sistema, pagina_recuperacao_senha "

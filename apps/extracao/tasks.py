@@ -10,8 +10,13 @@ from apps.extracao.dtos import (
 from apps.extracao.services.alunos import (
     extrair_eol_alunos,
 )
-from apps.extracao.services.sistemas import (
+from apps.extracao.services.grupos_e_permissoes import (
+    buscar_grupos_coresso_por_login,
+    buscar_permissoes_usuario_coresso,
     extrair_perfis_coresso,
+    extrair_vinculos_usuario_grupo_coresso,
+)
+from apps.extracao.services.sistemas import (
     extrair_sistemas_coresso,
     extrair_sistemas_recuperacao,
 )
@@ -19,11 +24,8 @@ from apps.extracao.services.usuarios import (
     _extrair_coresso_por_identificadores,
     buscar_complemento_se1426,
     buscar_dados_usuario_coresso,
-    buscar_grupos_coresso_por_login,
-    buscar_permissoes_usuario_coresso,
     extrair_coresso,
     extrair_vinculos_se1426,
-    extrair_vinculos_usuario_grupo_coresso,
 )
 
 __all__ = [

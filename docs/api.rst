@@ -134,13 +134,13 @@ Extração
 
 .. autofunction:: apps.extracao.tasks.extrair_sistemas_coresso
 
-.. autofunction:: apps.extracao.tasks.extrair_perfis_coresso
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.extrair_perfis_coresso
 
-.. autofunction:: apps.extracao.tasks.buscar_grupos_coresso_por_login
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.buscar_grupos_coresso_por_login
 
-.. autofunction:: apps.extracao.tasks.extrair_vinculos_usuario_grupo_coresso
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.extrair_vinculos_usuario_grupo_coresso
 
-.. autofunction:: apps.extracao.tasks.buscar_permissoes_usuario_coresso
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.buscar_permissoes_usuario_coresso
 
 .. autofunction:: apps.extracao.tasks.extrair_sistemas_recuperacao
 
