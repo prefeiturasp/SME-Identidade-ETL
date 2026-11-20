@@ -20,6 +20,8 @@ from datetime import datetime
 from django.conf import settings
 from django.utils import timezone
 
+from config import conexoes_db
+
 logger = logging.getLogger("etl_identidade")
 
 _TAMANHO_LOTE = 500
@@ -113,71 +115,6 @@ class RegistroIdentidade:
     tipo_acesso: str | None = None
     vinculos: list[VinculoServidor] = field(default_factory=list)
     dados_extras: dict = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Helpers de conexão SQL Server
-# ---------------------------------------------------------------------------
-
-
-def _string_conexao_se1426() -> str:
-    """Monta a string de conexão FreeTDS para SE1426.
-
-    Returns:
-        String de conexão no formato ODBC/FreeTDS.
-    """
-    return (
-        f"DRIVER={{FreeTDS}};"
-        f"SERVER={settings.SE1426_DB_SERVIDOR};"
-        f"PORT=1433;"
-        f"DATABASE={settings.SE1426_DB_NOME};"
-        f"UID={settings.SE1426_DB_USUARIO};"
-        f"PWD={settings.SE1426_DB_SENHA};"
-        f"TDS_Version=7.4;ClientCharset=UTF-8;"
-    )
-
-
-def _string_conexao_coresso() -> str:
-    """Monta a string de conexão FreeTDS para CoreSSO.
-
-    Returns:
-        String de conexão no formato ODBC/FreeTDS.
-    """
-    return (
-        f"DRIVER={{FreeTDS}};"
-        f"SERVER={settings.CORESSO_DB_SERVIDOR};"
-        f"PORT=1433;"
-        f"DATABASE={settings.CORESSO_DB_NOME};"
-        f"UID={settings.CORESSO_DB_USUARIO};"
-        f"PWD={settings.CORESSO_DB_SENHA};"
-        f"TDS_Version=7.4;ClientCharset=UTF-8;"
-    )
-
-
-def _string_conexao_eol_db() -> str:
-    """Monta a string de conexão FreeTDS para EOL_DB a partir da URL.
-
-    EOL_DB roda no mesmo servidor SQL Server do SE1426. A URL em
-    ``EOL_DB_STRING_CONEXAO`` segue o formato
-    ``mssql+pyodbc://usuario:senha@host:porta/banco?...`` — aqui ela
-    é parseada e convertida para a string de conexão FreeTDS usada
-    pelo pyodbc (mesmo driver das demais fontes SQL Server).
-
-    Returns:
-        String de conexão no formato ODBC/FreeTDS.
-    """
-    from urllib.parse import unquote, urlparse  # noqa: PLC0415
-
-    url = urlparse(settings.EOL_DB_STRING_CONEXAO)
-    return (
-        f"DRIVER={{FreeTDS}};"
-        f"SERVER={url.hostname};"
-        f"PORT={url.port or 1433};"
-        f"DATABASE={url.path.lstrip('/')};"
-        f"UID={url.username};"
-        f"PWD={unquote(url.password or '')};"
-        f"TDS_Version=7.4;ClientCharset=UTF-8;"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -382,12 +319,8 @@ def _extrair_vinculos_servidor_se1426() -> dict[str, list[VinculoServidor]]:
         ``RegistroIdentidade`` correspondente durante a extração de
         identidade.
     """
-    import pyodbc
-
     vinculos_por_rf: dict[str, list[VinculoServidor]] = {}
-    conn = pyodbc.connect(
-        _string_conexao_se1426(), timeout=settings.SE1426_DB_TIMEOUT
-    )
+    conn = conexoes_db.conectar_se1426()
     try:
         cursor = conn.cursor()
         for tipo_vinculo, consulta in _CONSULTAS_VINCULO_SE1426.items():
@@ -442,8 +375,6 @@ def _extrair_se1426_sql(
         vínculos funcionais vigentes (cargo base, sobreposto e
         função/atividade) já anexados em ``vinculos``.
     """
-    import pyodbc
-
     # v_servidor_sme_serap traz 2 linhas para ~16% dos RFs (Ativo +
     # Inativo, mesmo cadastro repetido só com a situação diferente —
     # confirmado por inspeção direta contra o SE1426; não é efeito do
@@ -477,9 +408,7 @@ def _extrair_se1426_sql(
 
     vinculos_por_rf = _extrair_vinculos_servidor_se1426()
 
-    conn = pyodbc.connect(
-        _string_conexao_se1426(), timeout=settings.SE1426_DB_TIMEOUT
-    )
+    conn = conexoes_db.conectar_se1426()
     try:
         cursor = conn.cursor()
         cursor.execute(consulta)
@@ -673,8 +602,6 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
         Dict por linha, com as colunas ``login``, ``cpf``, ``nome``,
         ``email``, ``situacao``, ``dt_atualizacao``.
     """
-    import pyodbc
-
     consulta = f"""
         SELECT login, cpf, nome, email, situacao, dt_atualizacao
         FROM (
@@ -699,10 +626,7 @@ def _consultar_coresso_sql(filtro_where: str) -> Iterator[dict]:
         WHERE rn = 1
     """
 
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     conn.timeout = settings.CORESSO_DB_TIMEOUT
     try:
         cursor = conn.cursor()
@@ -877,8 +801,6 @@ def _extrair_eol_alunos_sql(filtro_where: str) -> Iterator[RegistroIdentidade]:
     Yields:
         RegistroIdentidade para cada aluno encontrado.
     """
-    import pyodbc
-
     consulta = f"""
         SELECT
             a.cd_aluno                                  AS matricula,
@@ -899,9 +821,7 @@ def _extrair_eol_alunos_sql(filtro_where: str) -> Iterator[RegistroIdentidade]:
         {filtro_where}
     """
 
-    conn = pyodbc.connect(
-        _string_conexao_eol_db(), timeout=settings.SE1426_DB_TIMEOUT
-    )
+    conn = conexoes_db.conectar_eol_db()
     try:
         cursor = conn.cursor()
         cursor.execute(consulta)
@@ -985,8 +905,6 @@ def buscar_grupos_coresso_por_login(login: str) -> list[dict]:
     if not login or not settings.CORESSO_DB_SERVIDOR:
         return []
 
-    import pyodbc
-
     consulta = """
         SELECT
             g.gru_id    AS gru_id,
@@ -998,10 +916,7 @@ def buscar_grupos_coresso_por_login(login: str) -> list[dict]:
           AND g.gru_situacao = 1
     """
     try:
-        conn = pyodbc.connect(
-            _string_conexao_coresso(),
-            timeout=settings.CORESSO_DB_TIMEOUT,
-        )
+        conn = conexoes_db.conectar_coresso()
         try:
             cursor = conn.cursor()
             cursor.execute(consulta, (login,))
@@ -1030,8 +945,6 @@ def extrair_sistemas_coresso() -> int:
         logger.warning("CoreSSO SQL não configurado — skipping sistemas.")
         return 0
 
-    import pyodbc
-
     from apps.staging.models import SistemaStaging
 
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
@@ -1047,10 +960,7 @@ def extrair_sistemas_coresso() -> int:
             sis_caminhoLogout, sis_situacao
         FROM SYS_Sistema {filtro_exclusao} ORDER BY sis_id
     """
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     total = 0
     try:
         cursor = conn.cursor()
@@ -1088,8 +998,6 @@ def extrair_perfis_coresso() -> int:
         logger.warning("CoreSSO SQL não configurado — skipping perfis.")
         return 0
 
-    import pyodbc
-
     from apps.staging.models import PerfilCoressoStaging, SistemaStaging
 
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
@@ -1102,10 +1010,7 @@ def extrair_perfis_coresso() -> int:
         SELECT gru_id, gru_nome, sis_id, vis_id, gru_situacao
         FROM SYS_Grupo {filtro_exclusao} ORDER BY sis_id, gru_id
     """
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     total = 0
     try:
         cursor = conn.cursor()
@@ -1157,8 +1062,6 @@ def extrair_vinculos_usuario_grupo_coresso(
         logger.warning("CoreSSO SQL não configurado" + " — skipping vínculos.")
         return
 
-    import pyodbc
-
     filtros_extra: list[str] = []
     excluidos = settings.CORESSO_EXCLUDE_SISTEMA_IDS
     if excluidos:
@@ -1199,10 +1102,7 @@ def extrair_vinculos_usuario_grupo_coresso(
         ORDER BY u.usu_login, g.sis_id
     """
     lote_maximo = settings.ETL_LOTE_MAXIMO
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     total = 0
     try:
         cursor = conn.cursor()
@@ -1241,8 +1141,6 @@ def buscar_dados_usuario_coresso(
     """
     if not settings.CORESSO_DB_SERVIDOR:
         return None
-
-    import pyodbc
 
     ident = identificador.strip()
     if "@" in ident:
@@ -1283,10 +1181,7 @@ def buscar_dados_usuario_coresso(
         WHERE {filtro}
         ORDER BY s.sis_nome, g.gru_nome
     """
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     try:
         cursor = conn.cursor()
         cursor.execute(consulta, (ident,))
@@ -1332,8 +1227,6 @@ def buscar_permissoes_usuario_coresso(gru_ids: list[str]) -> list[dict]:
     if not settings.CORESSO_DB_SERVIDOR or not gru_ids:
         return []
 
-    import pyodbc
-
     marcadores = ",".join("?" for _ in gru_ids)
     consulta = f"""
         SELECT
@@ -1356,10 +1249,7 @@ def buscar_permissoes_usuario_coresso(gru_ids: list[str]) -> list[dict]:
               OR gp.grp_alterar = 1 OR gp.grp_excluir = 1
           )
     """
-    conn = pyodbc.connect(
-        _string_conexao_coresso(),
-        timeout=settings.CORESSO_DB_TIMEOUT,
-    )
+    conn = conexoes_db.conectar_coresso()
     try:
         cursor = conn.cursor()
         cursor.execute(consulta, tuple(gru_ids))
@@ -1410,8 +1300,6 @@ def buscar_complemento_se1426(rf: str) -> dict | None:
     if not settings.SE1426_DB_SERVIDOR or not rf:
         return None
 
-    import pyodbc
-
     consulta = """
         SELECT
             s.cd_registro_funcional  AS rf,
@@ -1428,10 +1316,7 @@ def buscar_complemento_se1426(rf: str) -> dict | None:
         WHERE s.cd_registro_funcional = ?
     """
     try:
-        conn = pyodbc.connect(
-            _string_conexao_se1426(),
-            timeout=settings.SE1426_DB_TIMEOUT,
-        )
+        conn = conexoes_db.conectar_se1426()
         try:
             cursor = conn.cursor()
             cursor.execute(consulta, (rf.strip(),))

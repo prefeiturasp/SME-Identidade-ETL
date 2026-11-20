@@ -1,8 +1,9 @@
 """Configurações Django do SME-Identidade-ETL."""
 
 import os
-import urllib.parse
 from pathlib import Path
+
+from config import conexoes_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -63,29 +64,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 
 
-def _url_para_bd(url: str | None) -> dict:
-    """Converta URL PostgreSQL em dicionário de configuração Django."""
-    if not url:
-        return {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
-    parsed = urllib.parse.urlparse(str(url))
-    return {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": parsed.path.lstrip("/"),
-        "USER": parsed.username or "postgres",
-        "PASSWORD": parsed.password or "postgres",
-        "HOST": parsed.hostname or "localhost",
-        "PORT": str(parsed.port or 5432),
-        "CONN_MAX_AGE": 600,
-        "CONN_HEALTH_CHECKS": True,
-        "OPTIONS": {"connect_timeout": 10},
-    }
-
-
-DATABASES = {
-    # SYNC_REC_DB — único banco do ETL: controle operacional
-    # (execuções, watermark, checkpoints, retries, lineage)
-    "default": _url_para_bd(os.getenv("SYNC_REC_DB_URL")),
-}
+DATABASES = conexoes_db.DATABASES
 
 SILENCED_SYSTEM_CHECKS: list[str] = []
 
@@ -243,11 +222,11 @@ ETL_CARGA_KEYCLOAK_BULK_HABILITADO = (
 # ---------------------------------------------------------------------------
 # SE1426 (PRODAM) — SQL Server
 # ---------------------------------------------------------------------------
-SE1426_DB_SERVIDOR = os.getenv("SE1426_DB_SERVIDOR", "")
-SE1426_DB_NOME = os.getenv("SE1426_DB_NOME", "se1426")
-SE1426_DB_USUARIO = os.getenv("SE1426_DB_USUARIO", "")
-SE1426_DB_SENHA = os.getenv("SE1426_DB_SENHA", "")
-SE1426_DB_TIMEOUT = int(os.getenv("SE1426_DB_TIMEOUT", "300"))
+SE1426_DB_SERVIDOR = conexoes_db.SE1426_DB_SERVIDOR
+SE1426_DB_NOME = conexoes_db.SE1426_DB_NOME
+SE1426_DB_USUARIO = conexoes_db.SE1426_DB_USUARIO
+SE1426_DB_SENHA = conexoes_db.SE1426_DB_SENHA
+SE1426_DB_TIMEOUT = conexoes_db.SE1426_DB_TIMEOUT
 
 SE1426_API_URL = os.getenv(
     "SE1426_API_URL", "https://hom-api.sme.prefeitura.sp.gov.br/api/v1"
@@ -258,7 +237,12 @@ SE1426_API_TIMEOUT = int(os.getenv("SE1426_API_TIMEOUT", "60"))
 # ---------------------------------------------------------------------------
 # EOL_DB — SQL Server
 # ---------------------------------------------------------------------------
-EOL_DB_STRING_CONEXAO = os.getenv("EOL_DB_STRING_CONEXAO", "")
+EOL_DB_STRING_CONEXAO = conexoes_db.EOL_DB_STRING_CONEXAO
+
+# ---------------------------------------------------------------------------
+# EOL DB APOIO — PostgreSQL (sistemas de recuperação de senha)
+# ---------------------------------------------------------------------------
+API_EOL_CONNECTION = conexoes_db.API_EOL_CONNECTION
 
 # ---------------------------------------------------------------------------
 # Controle de volume de extração — aplicado a SE1426, CoreSSO e EOL_DB
@@ -278,11 +262,11 @@ THREAD_POOL_CHUNK_TIMEOUT = int(os.getenv("THREAD_POOL_CHUNK_TIMEOUT", "120"))
 # ---------------------------------------------------------------------------
 # CoreSSO — SQL Server
 # ---------------------------------------------------------------------------
-CORESSO_DB_SERVIDOR = os.getenv("CORESSO_DB_SERVIDOR", "")
-CORESSO_DB_NOME = os.getenv("CORESSO_DB_NOME", "CoreSSO")
-CORESSO_DB_USUARIO = os.getenv("CORESSO_DB_USUARIO", "")
-CORESSO_DB_SENHA = os.getenv("CORESSO_DB_SENHA", "")
-CORESSO_DB_TIMEOUT = int(os.getenv("CORESSO_DB_TIMEOUT", "300"))
+CORESSO_DB_SERVIDOR = conexoes_db.CORESSO_DB_SERVIDOR
+CORESSO_DB_NOME = conexoes_db.CORESSO_DB_NOME
+CORESSO_DB_USUARIO = conexoes_db.CORESSO_DB_USUARIO
+CORESSO_DB_SENHA = conexoes_db.CORESSO_DB_SENHA
+CORESSO_DB_TIMEOUT = conexoes_db.CORESSO_DB_TIMEOUT
 CORESSO_API_URL = os.getenv("CORESSO_API_URL", "")
 CORESSO_API_TOKEN = os.getenv("CORESSO_API_TOKEN", "")
 

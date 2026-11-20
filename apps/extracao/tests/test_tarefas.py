@@ -20,8 +20,6 @@ from apps.extracao.tasks import (
     _sanitizar_cpf,
     _sanitizar_email,
     _slugificar_role,
-    _string_conexao_coresso,
-    _string_conexao_se1426,
     buscar_dados_usuario_coresso,
     buscar_grupos_coresso_por_login,
     buscar_permissoes_usuario_coresso,
@@ -31,6 +29,10 @@ from apps.extracao.tasks import (
     extrair_se1426,
     extrair_sistemas_coresso,
     extrair_vinculos_usuario_grupo_coresso,
+)
+from config.conexoes_db import (
+    _string_conexao_coresso,
+    _string_conexao_se1426,
 )
 
 _SEM_VINCULOS_SERVIDOR = (
