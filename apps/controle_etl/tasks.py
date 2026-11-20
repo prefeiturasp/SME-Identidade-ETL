@@ -84,7 +84,7 @@ def _atualizar_checkpoint(
 
 
 # ---------------------------------------------------------------------------
-# TASK_IDENTIDADE_EXTRAIR_SE1426
+# Sincronização de sistemas para recuperação de senha
 # ---------------------------------------------------------------------------
 
 
@@ -142,6 +142,11 @@ def sincronizar_sistemas_recuperacao() -> dict:
         raise
 
 
+# ---------------------------------------------------------------------------
+# TASK_IDENTIDADE_EXTRAIR_SE1426
+# ---------------------------------------------------------------------------
+
+
 @shared_task(
     bind=True,
     name="task_identidade_extrair_se1426",
@@ -164,16 +169,16 @@ def task_identidade_extrair_se1426(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_se1426  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.usuarios import Se1426Service
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_se1426 — início", id_execucao)
     try:
-        registros = extrair_se1426(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = Se1426Service().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,
@@ -234,16 +239,16 @@ def task_identidade_extrair_coresso(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_coresso  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.usuarios import CoreSSOService
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_coresso — início", id_execucao)
     try:
-        registros = extrair_coresso(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = CoreSSOService().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,
@@ -426,8 +431,7 @@ def task_identidade_extrair_eol_alunos(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_eol_alunos  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.alunos import AlunosService
 
     inicio = time.monotonic()
     logger.info(
@@ -435,10 +439,11 @@ def task_identidade_extrair_eol_alunos(
         id_execucao,
     )
     try:
-        registros = extrair_eol_alunos(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = AlunosService().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,
