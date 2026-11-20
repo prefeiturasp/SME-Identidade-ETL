@@ -889,6 +889,34 @@ def extrair_eol_alunos(
 
 
 # ---------------------------------------------------------------------------
+# Extração de configurações de recuperação de senha
+# ---------------------------------------------------------------------------
+
+
+def extrair_sistemas_recuperacao() -> list[dict]:
+    """Lê apenas os metadados de recuperação, sem copiar solicitações."""
+    conexao = conexoes_db.conectar_eol_db_apoio()
+    try:
+        conexao.set_session(readonly=True)
+        with conexao.cursor() as cursor:
+            cursor.execute(
+                "SELECT codigo_sistema, nome_sistema, "
+                "pagina_recuperacao_senha "
+                "FROM public.sistemarecuperacaosenha ORDER BY codigo_sistema"
+            )
+            return [
+                {
+                    "codigo_sistema": codigo,
+                    "nome_sistema": nome,
+                    "pagina_recuperacao_senha": pagina,
+                }
+                for codigo, nome, pagina in cursor.fetchall()
+            ]
+    finally:
+        conexao.close()
+
+
+# ---------------------------------------------------------------------------
 # Extração de sistemas e perfis CoreSSO (para provisionamento de clients)
 # ---------------------------------------------------------------------------
 

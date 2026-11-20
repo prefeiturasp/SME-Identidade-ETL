@@ -88,6 +88,60 @@ def _atualizar_checkpoint(
 # ---------------------------------------------------------------------------
 
 
+def sincronizar_sistemas_recuperacao() -> dict:
+    """Publica os sistemas na entrada de lote já utilizada pelo ETL.
+
+    Returns:
+        Totais de sistemas confirmados pelo MS-Token.
+
+    Raises:
+        ValueError: Se o destino não confirmar o processamento da seção.
+    """
+    from apps.controle_etl.cliente_token_ms import enviar_lote
+    from apps.controle_etl.models import ExecucaoETL
+    from apps.extracao.tasks import extrair_sistemas_recuperacao
+
+    execucao = ExecucaoETL.objects.create(
+        fonte="eol_db_apoio",
+        tipo_disparo=ExecucaoETL.TipoDisparo.MANUAL,
+        situacao=ExecucaoETL.Situacao.EXECUTANDO,
+        iniciado_em=timezone.now(),
+        disparado_por="sincronizar_sistemas_recuperacao",
+        observacao="Sincronização das configurações de recuperação de senha.",
+    )
+    try:
+        registros = extrair_sistemas_recuperacao()
+        execucao.total_extraido = len(registros)
+        execucao.save(update_fields=["total_extraido", "atualizado_em"])
+        resultado = enviar_lote(
+            [],
+            id_execucao=str(execucao.id_execucao),
+            sistemas_recuperacao_senha=registros,
+        )
+        confirmacao = resultado.get("sistemas_recuperacao_senha")
+        if not isinstance(confirmacao, dict):
+            raise ValueError("O MS-Token não confirmou a carga de sistemas.")
+        processados = confirmacao.get("processados")
+        if (
+            not isinstance(processados, int)
+            or isinstance(processados, bool)
+            or not 0 <= processados <= len(registros)
+        ):
+            raise ValueError("O MS-Token retornou totais inválidos da carga.")
+        execucao.total_carregado = processados
+        execucao.total_erros = len(registros) - processados
+        execucao.marcar_finalizada(
+            ExecucaoETL.Situacao.PARCIAL
+            if execucao.total_erros
+            else ExecucaoETL.Situacao.SUCESSO
+        )
+        return dict(confirmacao)
+    except Exception:
+        execucao.total_erros = max(1, execucao.total_extraido)
+        execucao.marcar_finalizada(ExecucaoETL.Situacao.FALHA)
+        raise
+
+
 @shared_task(
     bind=True,
     name="task_identidade_extrair_se1426",

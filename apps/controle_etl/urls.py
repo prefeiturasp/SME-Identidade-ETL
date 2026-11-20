@@ -74,6 +74,12 @@ urlpatterns = [
         views.HealthCheckView.as_view(),
         name="etl-health",
     ),
+    # Sistemas para recuperação de senha
+    path(
+        "etl/sistemas-recuperacao-senha/sincronizar/",
+        views.sincronizar_sistemas_recuperacao,
+        name="etl-sistemas-recuperacao-sincronizar",
+    ),
     # Sistemas e perfis CoreSSO → Keycloak
     path(
         "etl/sistemas/extrair/",
