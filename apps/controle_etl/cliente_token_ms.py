@@ -81,12 +81,14 @@ def enviar_lote(
     usuarios: list[dict],
     *,
     id_execucao: str,
+    sistemas_recuperacao_senha: list[dict] | None = None,
 ) -> dict:
     """Envia um lote de usuários para o token-ms com reintento exponencial.
 
     Args:
         usuarios: Lista de payloads de atributos de usuário.
         id_execucao: ID da execução ETL associada.
+        sistemas_recuperacao_senha: Seção opcional de sistemas de recuperação.
 
     Returns:
         Resposta JSON do token-ms ou ``{"situacao": "ok"}`` se sem corpo.
@@ -101,6 +103,8 @@ def enviar_lote(
     """
     url = f"{settings.TOKEN_MS_URL.rstrip('/')}/api/v1/etl/push-batch"
     corpo = {"id_execucao": id_execucao, "usuarios": usuarios}
+    if sistemas_recuperacao_senha is not None:
+        corpo["sistemas_recuperacao_senha"] = sistemas_recuperacao_senha
 
     tentativa = 0
     while True:

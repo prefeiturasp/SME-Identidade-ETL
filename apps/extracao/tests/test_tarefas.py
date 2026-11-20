@@ -8,33 +8,44 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apps.extracao.tasks import (
+from apps.extracao.dtos import (
     RegistroIdentidade,
     VinculoServidor,
+)
+from apps.extracao.services.alunos import (
+    extrair_eol_alunos,
+)
+from apps.extracao.services.base import (
     _atualizar_watermark,
-    _extrair_coresso_por_identificadores,
-    _extrair_vinculos_servidor_se1426,
-    _iterar_com_watermark,
-    _montar_resultado_usuario,
     _obter_watermark,
     _sanitizar_cpf,
     _sanitizar_email,
+)
+from apps.extracao.services.grupos_e_permissoes import (
     _slugificar_role,
-    _string_conexao_coresso,
-    _string_conexao_se1426,
-    buscar_dados_usuario_coresso,
     buscar_grupos_coresso_por_login,
     buscar_permissoes_usuario_coresso,
-    extrair_coresso,
-    extrair_eol_alunos,
     extrair_perfis_coresso,
-    extrair_se1426,
-    extrair_sistemas_coresso,
     extrair_vinculos_usuario_grupo_coresso,
+)
+from apps.extracao.services.sistemas import (
+    extrair_sistemas_coresso,
+)
+from apps.extracao.services.usuarios import (
+    _extrair_coresso_por_identificadores,
+    _extrair_vinculos_servidor_se1426,
+    _montar_resultado_usuario,
+    buscar_dados_usuario_coresso,
+    extrair_coresso,
+    extrair_vinculos_se1426,
+)
+from config.conexoes_db import (
+    _string_conexao_coresso,
+    _string_conexao_se1426,
 )
 
 _SEM_VINCULOS_SERVIDOR = (
-    "apps.extracao.tasks._extrair_vinculos_servidor_se1426"
+    "apps.extracao.services.usuarios._extrair_vinculos_servidor_se1426"
 )
 
 # ---------------------------------------------------------------------------
@@ -226,47 +237,13 @@ class TestWatermark:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.django_db
-class TestIterarComWatermark:
-    def test_repassa_registros_sem_consumir_tudo_antecipadamente(self) -> None:
-        from apps.controle_etl.models import MarcaDaguaExtracao
-
-        consumidos: list[int] = []
-
-        def _fonte() -> Any:
-            for n in range(3):
-                consumidos.append(n)
-                yield RegistroIdentidade(fonte="se1426", tipo="servidor")
-
-        gerador = _iterar_com_watermark("se1426", _fonte())
-
-        primeiro = next(gerador)
-        assert consumidos == [0]
-        assert primeiro is not None
-
-        assert not MarcaDaguaExtracao.objects.filter(fonte="se1426").exists()
-
-        list(gerador)
-
-        assert consumidos == [0, 1, 2]
-        marca = MarcaDaguaExtracao.objects.get(fonte="se1426")
-        assert marca.total_processado == 3
-
-    def test_nao_atualiza_watermark_quando_fonte_vazia(self) -> None:
-        from apps.controle_etl.models import MarcaDaguaExtracao
-
-        list(_iterar_com_watermark("coresso", iter([])))
-
-        assert not MarcaDaguaExtracao.objects.filter(fonte="coresso").exists()
-
-
 # ---------------------------------------------------------------------------
-# extrair_se1426
+# extrair_vinculos_se1426
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestExtrairSe1426:
+class TestExtrairVinculosSe1426:
     def test_sem_configuracao_chama_api(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
@@ -297,14 +274,14 @@ class TestExtrairSe1426:
             mock_client.get.return_value = mock_resp
             mock_client_cls.return_value = mock_client
 
-            registros = list(extrair_se1426())
+            registros = list(extrair_vinculos_se1426())
 
         assert len(registros) == 1
         assert registros[0].rf == "1234567"
         assert registros[0].fonte == "se1426"
         assert registros[0].tipo == "servidor"
 
-    def test_retorna_lista_vazia_quando_api_falha(self, settings: Any) -> None:
+    def test_propaga_falha_da_api(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
         settings.SE1426_API_URL = "https://api.test"
         settings.SE1426_API_TOKEN = "tok"
@@ -317,9 +294,8 @@ class TestExtrairSe1426:
             mock_client.get.side_effect = Exception("timeout")
             mock_client_cls.return_value = mock_client
 
-            registros = list(extrair_se1426())
-
-        assert registros == []
+            with pytest.raises(Exception, match="timeout"):
+                list(extrair_vinculos_se1426())
 
     def test_data_referencia_sobrepoe_watermark(self, settings: Any) -> None:
         settings.SE1426_DB_SERVIDOR = ""
@@ -338,7 +314,9 @@ class TestExtrairSe1426:
             mock_client.get.return_value = mock_resp
             mock_client_cls.return_value = mock_client
 
-            registros = list(extrair_se1426(data_referencia="2026-01-01"))
+            registros = list(
+                extrair_vinculos_se1426(data_referencia="2026-01-01")
+            )
 
         assert registros == []
         call_kwargs = mock_client.get.call_args
@@ -375,7 +353,7 @@ class TestExtrairSe1426:
             mock_client.get.return_value = mock_resp
             mock_client_cls.return_value = mock_client
 
-            registros = list(extrair_se1426())
+            registros = list(extrair_vinculos_se1426())
 
         assert len(registros) == 2
 
@@ -409,7 +387,7 @@ class TestExtrairSe1426:
             patch("pyodbc.connect", return_value=mock_conn),
             patch(_SEM_VINCULOS_SERVIDOR, return_value={}),
         ):
-            registros = list(extrair_se1426())
+            registros = list(extrair_vinculos_se1426())
 
         assert len(registros) == 1
         assert registros[0].rf == "1234567"
@@ -441,14 +419,14 @@ class TestExtrairSe1426:
             patch("pyodbc.connect", return_value=mock_conn) as mock_connect,
             patch(_SEM_VINCULOS_SERVIDOR, return_value={}),
         ):
-            list(extrair_se1426(data_referencia="2026-01-01"))
+            list(extrair_vinculos_se1426(data_referencia="2026-01-01"))
 
         mock_connect.assert_called_once()
         consulta_executada = mock_cursor.execute.call_args[0][0]
         assert "dt_alteracao" not in consulta_executada.lower()
         assert "2026-01-01" not in consulta_executada
 
-    def test_atualiza_watermark_apos_extracao(self, settings: Any) -> None:
+    def test_leitura_nao_atualiza_watermark(self, settings: Any) -> None:
         from apps.controle_etl.models import MarcaDaguaExtracao
 
         settings.SE1426_DB_SERVIDOR = ""
@@ -471,9 +449,9 @@ class TestExtrairSe1426:
             mock_client.get.return_value = mock_resp
             mock_client_cls.return_value = mock_client
 
-            list(extrair_se1426())
+            list(extrair_vinculos_se1426())
 
-        assert MarcaDaguaExtracao.objects.filter(fonte="se1426").exists()
+        assert not MarcaDaguaExtracao.objects.filter(fonte="se1426").exists()
 
     def test_anexa_vinculos_extraidos_ao_registro_do_rf(
         self, settings: Any
@@ -523,7 +501,7 @@ class TestExtrairSe1426:
                 return_value={"1234567": [vinculo]},
             ),
         ):
-            registros = list(extrair_se1426())
+            registros = list(extrair_vinculos_se1426())
 
         assert len(registros) == 1
         assert registros[0].vinculos == [vinculo]
@@ -560,7 +538,7 @@ class TestExtrairSe1426:
                 return_value={"1234567": [vinculo_de_outro_rf]},
             ),
         ):
-            registros = list(extrair_se1426())
+            registros = list(extrair_vinculos_se1426())
 
         assert registros[0].vinculos == []
 
@@ -860,9 +838,8 @@ class TestExtrairCoresso:
             mock_client.get.side_effect = Exception("falha de rede")
             mock_client_cls.return_value = mock_client
 
-            registros = list(extrair_coresso())
-
-        assert registros == []
+            with pytest.raises(Exception, match="falha de rede"):
+                list(extrair_coresso())
 
     def test_data_referencia_repassada_para_api(self, settings: Any) -> None:
         settings.CORESSO_DB_SERVIDOR = ""

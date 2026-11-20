@@ -20,9 +20,6 @@ from apps.controle_etl.tasks import (
     task_carregar_atributos_token,
     task_carregar_lote_atributos_token,
     task_identidade_executar_pipeline,
-    task_identidade_extrair_coresso,
-    task_identidade_extrair_eol_alunos,
-    task_identidade_extrair_se1426,
     task_identidade_limpar_staging,
     task_identidade_resolver_identidade,
     task_identidade_tratar_erro_pipeline,
@@ -59,117 +56,72 @@ class TestCalcularAtraso:
 
 
 @pytest.mark.django_db
-class TestTaskIdentidadeExtrairSe1426:
-    """Testa a task de extração e persistência do SE1426."""
+@pytest.mark.parametrize(
+    "nome_task,servico",
+    [
+        ("task_identidade_extrair_se1426", "usuarios.Se1426Service"),
+        ("task_identidade_extrair_coresso", "usuarios.CoreSSOService"),
+        ("task_identidade_extrair_eol_alunos", "alunos.AlunosService"),
+    ],
+)
+class TestTasksExtracaoServices:
+    """Verifica a delegação das tasks e a preservação das retentativas."""
 
-    def test_extrai_e_persiste_com_sucesso(self) -> None:
-        """Verifica extração, persistência e registro da tentativa."""
+    def test_delega_e_registra_sucesso(
+        self, nome_task: str, servico: str
+    ) -> None:
+        from apps.controle_etl import tasks
+
         id_execucao = str(uuid.uuid4())
-        registros = [object(), object()]
-
-        with (
-            patch(
-                "apps.extracao.tasks.extrair_se1426", return_value=registros
-            ) as mock_extrair,
-            patch(
-                "apps.staging.tasks.persistir_extracao_staging",
-                return_value=2,
-            ) as mock_persistir,
-        ):
-            resultado = task_identidade_extrair_se1426(id_execucao)
-
+        with patch(
+            f"apps.extracao.services.{servico}.executar", return_value=2
+        ) as executar:
+            resultado = getattr(tasks, nome_task)(id_execucao)
         assert resultado == {"total_extraido": 2}
-        mock_extrair.assert_called_once_with(
+        executar.assert_called_once_with(
+            id_execucao=id_execucao,
             data_referencia=None,
             apenas_ativos=False,
         )
-        mock_persistir.assert_called_once_with(
-            registros, id_execucao=id_execucao
-        )
         tentativa = RastreioTentativa.objects.get()
-        assert tentativa.nome_tarefa == "task_identidade_extrair_se1426"
+        assert tentativa.nome_tarefa == nome_task
         assert tentativa.erro is None
 
-    def test_repassa_data_referencia(self) -> None:
-        """Verifica que data_referencia é repassada à extração."""
-        id_execucao = str(uuid.uuid4())
-        with (
-            patch(
-                "apps.extracao.tasks.extrair_se1426", return_value=[]
-            ) as mock_extrair,
-            patch(
-                "apps.staging.tasks.persistir_extracao_staging",
-                return_value=0,
-            ),
-        ):
-            task_identidade_extrair_se1426(
-                id_execucao, data_referencia="2026-01-01"
-            )
+    def test_repassa_data_e_filtro(self, nome_task: str, servico: str) -> None:
+        from apps.controle_etl import tasks
 
-        mock_extrair.assert_called_once_with(
+        id_execucao = str(uuid.uuid4())
+        with patch(
+            f"apps.extracao.services.{servico}.executar", return_value=0
+        ) as executar:
+            getattr(tasks, nome_task)(
+                id_execucao,
+                data_referencia="2026-01-01",
+                apenas_ativos=True,
+            )
+        executar.assert_called_once_with(
+            id_execucao=id_execucao,
             data_referencia="2026-01-01",
-            apenas_ativos=False,
+            apenas_ativos=True,
         )
 
-    def test_erro_registra_tentativa_e_reagenda(self) -> None:
-        """Verifica que erro registra a tentativa com falha e chama retry."""
-        id_execucao = str(uuid.uuid4())
+    def test_erro_preserva_retry(self, nome_task: str, servico: str) -> None:
+        from apps.controle_etl import tasks
+
+        tarefa = getattr(tasks, nome_task)
         with (
             patch(
-                "apps.extracao.tasks.extrair_se1426",
-                side_effect=ConnectionError("falha de rede"),
+                f"apps.extracao.services.{servico}.executar",
+                side_effect=ConnectionError("origem indisponível"),
             ),
-            patch(
-                "apps.controle_etl.tasks.task_identidade_extrair_se1426.retry",
-                side_effect=Exception("retry-chamado"),
-            ) as mock_retry,
-            pytest.raises(Exception, match="retry-chamado"),
+            patch.object(
+                tarefa, "retry", side_effect=RuntimeError("retry-chamado")
+            ) as retry,
+            pytest.raises(RuntimeError, match="retry-chamado"),
         ):
-            task_identidade_extrair_se1426(id_execucao)
-
-        mock_retry.assert_called_once()
-        tentativa = RastreioTentativa.objects.get()
-        assert tentativa.erro == "falha de rede"
-
-
-@pytest.mark.django_db
-class TestTaskIdentidadeExtrairCoresso:
-    """Testa a task de extração e persistência do CoreSSO."""
-
-    def test_extrai_e_persiste_com_sucesso(self) -> None:
-        """Verifica extração e persistência com sucesso."""
-        id_execucao = str(uuid.uuid4())
-        with (
-            patch(
-                "apps.extracao.tasks.extrair_coresso", return_value=[1, 2, 3]
-            ),
-            patch(
-                "apps.staging.tasks.persistir_extracao_staging",
-                return_value=3,
-            ),
-        ):
-            resultado = task_identidade_extrair_coresso(id_execucao)
-
-        assert resultado == {"total_extraido": 3}
-
-    def test_erro_reagenda(self) -> None:
-        """Verifica que erro na extração dispara retentativa."""
-        id_execucao = str(uuid.uuid4())
-        with (
-            patch(
-                "apps.extracao.tasks.extrair_coresso",
-                side_effect=TimeoutError("timeout"),
-            ),
-            patch(
-                "apps.controle_etl.tasks"
-                ".task_identidade_extrair_coresso.retry",
-                side_effect=Exception("retry-chamado"),
-            ) as mock_retry,
-            pytest.raises(Exception, match="retry-chamado"),
-        ):
-            task_identidade_extrair_coresso(id_execucao)
-
-        mock_retry.assert_called_once()
+            tarefa(str(uuid.uuid4()))
+        retry.assert_called_once()
+        assert RastreioTentativa.objects.get().erro == "origem indisponível"
 
 
 @pytest.mark.django_db
@@ -238,51 +190,12 @@ class TestTaskReprocessarPendencias:
                 side_effect=Exception("coresso indisponível"),
             ),
             patch(
-                "apps.controle_etl.tasks"
-                ".task_reprocessar_pendencias.retry",
+                "apps.controle_etl.tasks" ".task_reprocessar_pendencias.retry",
                 side_effect=Exception("retry-chamado"),
             ) as mock_retry,
             pytest.raises(Exception, match="retry-chamado"),
         ):
             task_reprocessar_pendencias(id_execucao)
-
-        mock_retry.assert_called_once()
-
-
-@pytest.mark.django_db
-class TestTaskIdentidadeExtrairEolAlunos:
-    """Testa a task de extração e persistência do EOL Alunos."""
-
-    def test_extrai_e_persiste_com_sucesso(self) -> None:
-        """Verifica extração e persistência com sucesso."""
-        id_execucao = str(uuid.uuid4())
-        with (
-            patch("apps.extracao.tasks.extrair_eol_alunos", return_value=[1]),
-            patch(
-                "apps.staging.tasks.persistir_extracao_staging",
-                return_value=1,
-            ),
-        ):
-            resultado = task_identidade_extrair_eol_alunos(id_execucao)
-
-        assert resultado == {"total_extraido": 1}
-
-    def test_erro_reagenda(self) -> None:
-        """Verifica que erro na extração dispara retentativa."""
-        id_execucao = str(uuid.uuid4())
-        with (
-            patch(
-                "apps.extracao.tasks.extrair_eol_alunos",
-                side_effect=ConnectionError("falha"),
-            ),
-            patch(
-                "apps.controle_etl.tasks"
-                ".task_identidade_extrair_eol_alunos.retry",
-                side_effect=Exception("retry-chamado"),
-            ) as mock_retry,
-            pytest.raises(Exception, match="retry-chamado"),
-        ):
-            task_identidade_extrair_eol_alunos(id_execucao)
 
         mock_retry.assert_called_once()
 

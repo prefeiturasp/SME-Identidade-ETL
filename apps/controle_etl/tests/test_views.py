@@ -137,17 +137,11 @@ class TestExecucoesView:
                 "apps.controle_etl.tasks"
                 ".task_identidade_executar_pipeline.apply_async"
             ) as mock_apply_async,
-            patch(
-                "config.celery.app.control.revoke"
-            ) as mock_revoke,
-            patch(
-                "config.celery.app.connection_or_acquire"
-            ) as mock_conn,
+            patch("config.celery.app.control.revoke") as mock_revoke,
+            patch("config.celery.app.connection_or_acquire") as mock_conn,
         ):
             mock_apply_async.return_value.id = "nova-task"
-            resp = cliente.post(
-                self.URL, {"fonte": "coresso"}, format="json"
-            )
+            resp = cliente.post(self.URL, {"fonte": "coresso"}, format="json")
 
         assert resp.status_code == status.HTTP_201_CREATED
         mock_revoke.assert_called_once_with("task-antiga", terminate=True)
@@ -233,9 +227,7 @@ class TestCancelarExecucaoView:
         base = "/identidade-etl/api/v1/etl/execucoes"
         with (
             patch("config.celery.app.control.revoke") as mock_revoke,
-            patch(
-                "config.celery.app.connection_or_acquire"
-            ) as mock_conn,
+            patch("config.celery.app.connection_or_acquire") as mock_conn,
         ):
             resp = cliente.post(f"{base}/{mais_recente.pk}/cancelar/")
 
@@ -256,9 +248,7 @@ class TestCancelarExecucaoView:
         base = "/identidade-etl/api/v1/etl/execucoes"
         with (
             patch("config.celery.app.control.revoke") as mock_revoke,
-            patch(
-                "config.celery.app.connection_or_acquire"
-            ) as mock_conn,
+            patch("config.celery.app.connection_or_acquire") as mock_conn,
         ):
             resp = cliente.post(f"{base}/{mais_antiga.pk}/cancelar/")
 
@@ -646,6 +636,39 @@ class TestResumoExecucoesView:
 @pytest.mark.django_db
 class TestDashboardView:
     URL = reverse("dashboard")
+
+    def test_resumo_eol_db_apoio_usa_totais_confirmados(
+        self, cliente_anonimo: APIClient
+    ) -> None:
+        """Conta leituras e envios da fonte sem atribuir carga ao Keycloak."""
+        from apps.controle_etl.views import _resumo_geral_por_fonte
+
+        ExecucaoETL.objects.create(
+            fonte="eol_db_apoio",
+            situacao="sucesso",
+            total_extraido=4,
+            total_carregado=4,
+        )
+        ExecucaoETL.objects.create(
+            fonte="eol_db_apoio",
+            situacao="falha",
+            total_extraido=2,
+            total_carregado=0,
+        )
+        resumo = next(
+            r
+            for r in _resumo_geral_por_fonte()
+            if r["fonte"] == "eol_db_apoio"
+        )
+        assert resumo == {
+            "fonte": "eol_db_apoio",
+            "lidos": 6,
+            "keycloak": 0,
+            "token_ms": 4,
+        }
+        resposta = cliente_anonimo.get(self.URL)
+        assert resposta.status_code == status.HTTP_200_OK
+        assert b"EOL DB APOIO" in resposta.content
 
     def test_renderiza_sem_execucoes(
         self,

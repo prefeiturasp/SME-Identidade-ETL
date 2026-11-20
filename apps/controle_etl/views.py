@@ -11,7 +11,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views import View
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.permissions import AllowAny
@@ -172,9 +172,16 @@ def _resumo_geral_por_fonte() -> list[dict]:
         )
     )
     por_sistema = {c["sistema_origem"]: c for c in contagem_hash}
+    por_sistema["eol_db_apoio"] = {
+        "keycloak": 0,
+        "token_ms": ExecucaoETL.objects.filter(fonte="eol_db_apoio").aggregate(
+            total=Sum("total_carregado")
+        )["total"]
+        or 0,
+    }
 
     resumo = []
-    for fonte in ("se1426", "coresso", "eol_alunos"):
+    for fonte in ("se1426", "coresso", "eol_alunos", "eol_db_apoio"):
         dados_hash = por_sistema.get(fonte, {"keycloak": 0, "token_ms": 0})
         resumo.append(
             {
@@ -1015,7 +1022,36 @@ def estatisticas(request: Request) -> Response:
     )
 
 
-@extend_schema(tags=["Sistemas"])
+@extend_schema(
+    tags=["Configurações de recuperação de senha"],
+    summary="Sincronizar configurações de recuperação de senha",
+    description=(
+        "Atualiza no MS-Token os códigos, nomes e URLs de recuperação "
+        "de senha cadastrados no EOL DB APOIO."
+    ),
+    request=None,
+    responses={200: OpenApiTypes.OBJECT},
+)
+@api_view(["POST"])
+def sincronizar_sistemas_recuperacao(request: Request) -> Response:
+    """Sincroniza as configurações de recuperação de senha por sistema."""
+    import httpx
+    import psycopg2
+
+    from apps.controle_etl.tasks import (
+        sincronizar_sistemas_recuperacao as sincronizar,
+    )
+
+    try:
+        return Response(sincronizar())
+    except (httpx.HTTPError, psycopg2.Error, ValueError):
+        return Response(
+            {"detalhe": "Falha ao sincronizar sistemas de recuperação."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+
+@extend_schema(tags=["Sistemas CoreSSO"])
 @api_view(["POST"])
 def extrair_sistemas(request: Request) -> Response:
     """Dispara extração síncrona de sistemas do CoreSSO."""
@@ -1033,7 +1069,7 @@ def extrair_sistemas(request: Request) -> Response:
 
 
 @extend_schema(
-    tags=["Sistemas"],
+    tags=["Sistemas CoreSSO"],
     request=ProvisionarSistemasSerializer,
 )
 @api_view(["POST"])
@@ -1092,7 +1128,7 @@ def provisionar_sistemas(request: Request) -> Response:
     )
 
 
-@extend_schema(tags=["Sistemas"])
+@extend_schema(tags=["Sistemas CoreSSO"])
 @api_view(["GET"])
 def listar_sistemas(request: Request) -> Response:
     """Lista sistemas CoreSSO sincronizados."""

@@ -84,6 +84,65 @@ def _atualizar_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Sincronização de sistemas para recuperação de senha
+# ---------------------------------------------------------------------------
+
+
+def sincronizar_sistemas_recuperacao() -> dict:
+    """Publica os sistemas na entrada de lote já utilizada pelo ETL.
+
+    Returns:
+        Totais de sistemas confirmados pelo MS-Token.
+
+    Raises:
+        ValueError: Se o destino não confirmar o processamento da seção.
+    """
+    from apps.controle_etl.cliente_token_ms import enviar_lote
+    from apps.controle_etl.models import ExecucaoETL
+    from apps.extracao.tasks import extrair_sistemas_recuperacao
+
+    execucao = ExecucaoETL.objects.create(
+        fonte="eol_db_apoio",
+        tipo_disparo=ExecucaoETL.TipoDisparo.MANUAL,
+        situacao=ExecucaoETL.Situacao.EXECUTANDO,
+        iniciado_em=timezone.now(),
+        disparado_por="sincronizar_sistemas_recuperacao",
+        observacao="Sincronização das configurações de recuperação de senha.",
+    )
+    try:
+        registros = extrair_sistemas_recuperacao()
+        execucao.total_extraido = len(registros)
+        execucao.save(update_fields=["total_extraido", "atualizado_em"])
+        resultado = enviar_lote(
+            [],
+            id_execucao=str(execucao.id_execucao),
+            sistemas_recuperacao_senha=registros,
+        )
+        confirmacao = resultado.get("sistemas_recuperacao_senha")
+        if not isinstance(confirmacao, dict):
+            raise ValueError("O MS-Token não confirmou a carga de sistemas.")
+        processados = confirmacao.get("processados")
+        if (
+            not isinstance(processados, int)
+            or isinstance(processados, bool)
+            or not 0 <= processados <= len(registros)
+        ):
+            raise ValueError("O MS-Token retornou totais inválidos da carga.")
+        execucao.total_carregado = processados
+        execucao.total_erros = len(registros) - processados
+        execucao.marcar_finalizada(
+            ExecucaoETL.Situacao.PARCIAL
+            if execucao.total_erros
+            else ExecucaoETL.Situacao.SUCESSO
+        )
+        return dict(confirmacao)
+    except Exception:
+        execucao.total_erros = max(1, execucao.total_extraido)
+        execucao.marcar_finalizada(ExecucaoETL.Situacao.FALHA)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # TASK_IDENTIDADE_EXTRAIR_SE1426
 # ---------------------------------------------------------------------------
 
@@ -110,16 +169,16 @@ def task_identidade_extrair_se1426(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_se1426  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.usuarios import Se1426Service
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_se1426 — início", id_execucao)
     try:
-        registros = extrair_se1426(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = Se1426Service().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,
@@ -180,16 +239,16 @@ def task_identidade_extrair_coresso(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_coresso  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.usuarios import CoreSSOService
 
     inicio = time.monotonic()
     logger.info("[%s] task_identidade_extrair_coresso — início", id_execucao)
     try:
-        registros = extrair_coresso(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = CoreSSOService().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,
@@ -372,8 +431,7 @@ def task_identidade_extrair_eol_alunos(
     Returns:
         Dicionário com ``total_extraido``.
     """
-    from apps.extracao.tasks import extrair_eol_alunos  # noqa: PLC0415
-    from apps.staging.tasks import persistir_extracao_staging  # noqa: PLC0415
+    from apps.extracao.services.alunos import AlunosService
 
     inicio = time.monotonic()
     logger.info(
@@ -381,10 +439,11 @@ def task_identidade_extrair_eol_alunos(
         id_execucao,
     )
     try:
-        registros = extrair_eol_alunos(
-            data_referencia=data_referencia, apenas_ativos=apenas_ativos
+        total = AlunosService().executar(
+            id_execucao=id_execucao,
+            data_referencia=data_referencia,
+            apenas_ativos=apenas_ativos,
         )
-        total = persistir_extracao_staging(registros, id_execucao=id_execucao)
         duracao = time.monotonic() - inicio
         _registrar_tentativa(
             id_execucao,

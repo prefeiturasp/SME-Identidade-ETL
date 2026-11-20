@@ -58,6 +58,8 @@ Controle ETL — Views (API)
 
 .. autofunction:: apps.controle_etl.views.listar_perfis
 
+.. autofunction:: apps.controle_etl.views.sincronizar_sistemas_recuperacao
+
 Controle ETL — Dashboard e Kanban (HTML)
 -------------------------------------------
 
@@ -112,10 +114,19 @@ Extração
 
 .. automodule:: apps.extracao.tasks
 
-.. autoclass:: apps.extracao.tasks.RegistroIdentidade
+.. autoclass:: apps.extracao.dtos.RegistroIdentidade
    :members:
 
-.. autofunction:: apps.extracao.tasks.extrair_se1426
+.. autoclass:: apps.extracao.services.base.BaseETLService
+   :members: extrair, executar
+
+.. autoclass:: apps.extracao.services.usuarios.Se1426Service
+
+.. autoclass:: apps.extracao.services.usuarios.CoreSSOService
+
+.. autoclass:: apps.extracao.services.alunos.AlunosService
+
+.. autofunction:: apps.extracao.tasks.extrair_vinculos_se1426
 
 .. autofunction:: apps.extracao.tasks.extrair_coresso
 
@@ -123,9 +134,15 @@ Extração
 
 .. autofunction:: apps.extracao.tasks.extrair_sistemas_coresso
 
-.. autofunction:: apps.extracao.tasks.extrair_perfis_coresso
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.extrair_perfis_coresso
 
-.. autofunction:: apps.extracao.tasks.buscar_grupos_coresso_por_login
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.buscar_grupos_coresso_por_login
+
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.extrair_vinculos_usuario_grupo_coresso
+
+.. autofunction:: apps.extracao.services.grupos_e_permissoes.buscar_permissoes_usuario_coresso
+
+.. autofunction:: apps.extracao.tasks.extrair_sistemas_recuperacao
 
 Staging
 -------
